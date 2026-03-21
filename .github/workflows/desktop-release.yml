@@ -1,0 +1,43 @@
+name: Desktop Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'oneinfer-app/**'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        working-directory: ./oneinfer-app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: oneinfer-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build desktop app
+        run: npm run dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneinfer-desktop-${{ matrix.os }}
+          path: |
+            oneinfer-app/dist/**
+            oneinfer-app/release/**
