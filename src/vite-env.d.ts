@@ -19,6 +19,13 @@ interface DesktopMachineDetails {
   [key: string]: unknown;
 }
 
+interface DesktopClaudeCodeResult {
+  apiKeyName: string;
+  anthropicBaseUrl: string;
+  anthropicModel: string;
+  settingsPath: string;
+}
+
 interface Window {
   desktopBridge: {
     getState: () => Promise<DesktopState>;
@@ -26,5 +33,6 @@ interface Window {
     getVersion: () => Promise<string>;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
     syncMachineDetails: (payload: { baseUrl: string; session: DesktopSession }) => Promise<DesktopMachineDetails>;
+    enableClaudeCode: (payload: { apiBaseUrl: string; session: DesktopSession }) => Promise<DesktopClaudeCodeResult>;
   };
 }

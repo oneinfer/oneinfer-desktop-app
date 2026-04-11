@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   getMachineDetails: () => ipcRenderer.invoke('app:get-machine-details'),
   syncMachineDetails: (payload) => ipcRenderer.invoke('app:sync-machine-details', payload),
+  enableClaudeCode: (payload) => ipcRenderer.invoke('app:enable-claude-code', payload),
 });

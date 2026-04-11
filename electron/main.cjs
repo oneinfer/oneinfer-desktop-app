@@ -12,6 +12,9 @@ let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
 const MACHINE_SYNC_DEBOUNCE_MS = 15000;
 
+const CLAUDE_SETTINGS_SCHEMA_URL = 'https://json.schemastore.org/claude-code-settings.json';
+const DEFAULT_ANTHROPIC_MODEL = 'MiniMax-M2.7';
+
 if (process.platform === 'win32') {
   app.setAppUserModelId(appId);
 }
@@ -43,6 +46,209 @@ function writeState(nextState) {
   const filePath = getStateFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(nextState, null, 2), 'utf8');
+}
+
+function readJsonFile(filePath, fallbackValue = null) {
+  if (!fs.existsSync(filePath)) {
+    return fallbackValue;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    throw new Error(`Failed to parse JSON at ${filePath}: ${error.message}`);
+  }
+}
+
+function getClaudeConfigDirectory() {
+  return process.env.CLAUDE_CONFIG_DIR
+    ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
+    : path.join(os.homedir(), '.claude');
+}
+
+function getClaudeSettingsFilePath() {
+  return path.join(getClaudeConfigDirectory(), 'settings.json');
+}
+
+function deriveClaudeBaseUrl(apiBaseUrl) {
+  const trimmedBaseUrl = trimTrailingSlash(apiBaseUrl);
+  if (!trimmedBaseUrl) {
+    throw new Error('API base URL is required to configure Claude Code.');
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedBaseUrl);
+    const normalizedPath = parsedUrl.pathname.replace(/\/+$/, '');
+    const serverRoot = normalizedPath.endsWith('/v1')
+      ? normalizedPath.slice(0, -3)
+      : normalizedPath;
+
+    parsedUrl.pathname = serverRoot || '/';
+    parsedUrl.search = '';
+    parsedUrl.hash = '';
+    return trimTrailingSlash(parsedUrl.toString());
+  } catch {
+    return trimTrailingSlash(trimmedBaseUrl.replace(/\/v1$/i, ''));
+  }
+}
+
+function createClaudeCodeApiKeyName() {
+  const hostname = (os.hostname() || 'device').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 16) || 'device';
+  return `ClaudeCode-${hostname}-${Date.now().toString(36)}`;
+}
+
+async function readResponsePayload(response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return response.json();
+  }
+
+  return response.text();
+}
+
+function extractResponseData(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  if (payload.dataResponse !== undefined) {
+    return payload.dataResponse;
+  }
+
+  if (payload.data !== undefined) {
+    return payload.data;
+  }
+
+  return payload;
+}
+
+function extractErrorMessage(payload, fallbackMessage) {
+  const detail = extractResponseData(payload);
+
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload;
+  }
+
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.detail || fallbackMessage;
+  }
+
+  if (payload && typeof payload === 'object') {
+    return payload?.message || payload?.detail || fallbackMessage;
+  }
+
+  return fallbackMessage;
+}
+
+async function createClaudeCodeApiKey(payload) {
+  const baseUrl = trimTrailingSlash(payload?.apiBaseUrl);
+  const session = payload?.session || {};
+
+  if (!baseUrl) {
+    throw new Error('API base URL is required to create a Claude Code key.');
+  }
+
+  if (!session.developerId || !session.accessToken) {
+    throw new Error('A signed-in OneInfer session is required to enable Claude Code.');
+  }
+
+  const apiKeyName = createClaudeCodeApiKeyName();
+  const requestUrl = new URL(`${baseUrl}/developer/${session.developerId}/create-api-key`);
+  requestUrl.searchParams.set('api_key_name', apiKeyName);
+  requestUrl.searchParams.set('environment', 'production');
+
+  const response = await fetch(requestUrl.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.accessToken}`,
+    },
+  });
+
+  const responsePayload = await readResponsePayload(response);
+  if (!response.ok) {
+    throw new Error(extractErrorMessage(responsePayload, response.statusText));
+  }
+
+  const responseData = extractResponseData(responsePayload);
+  const apiKey = responseData?.api_key || responsePayload?.api_key;
+  if (typeof apiKey !== 'string' || !apiKey.trim()) {
+    throw new Error('OneInfer did not return a usable API key for Claude Code.');
+  }
+
+  return {
+    apiKey,
+    apiKeyName,
+  };
+}
+
+function configureClaudeCodeSettings(payload) {
+  const apiBaseUrl = trimTrailingSlash(payload?.apiBaseUrl);
+  const authToken = toTrimmedString(payload?.authToken);
+
+  if (!apiBaseUrl) {
+    throw new Error('API base URL is required to configure Claude Code.');
+  }
+
+  if (!authToken) {
+    throw new Error('Claude Code authentication token is missing.');
+  }
+
+  const settingsFilePath = getClaudeSettingsFilePath();
+  const existingSettings = readJsonFile(settingsFilePath, {});
+  if (!existingSettings || typeof existingSettings !== 'object' || Array.isArray(existingSettings)) {
+    throw new Error('Claude settings.json must contain a top-level JSON object.');
+  }
+
+  const existingEnv = existingSettings.env && typeof existingSettings.env === 'object' && !Array.isArray(existingSettings.env)
+    ? existingSettings.env
+    : {};
+
+  const anthropicBaseUrl = deriveClaudeBaseUrl(apiBaseUrl);
+  const anthropicModel =
+    toTrimmedString(payload?.anthropicModel)
+    || toTrimmedString(existingEnv.ANTHROPIC_MODEL)
+    || toTrimmedString(existingSettings.model)
+    || DEFAULT_ANTHROPIC_MODEL;
+  const nextEnv = {
+    ...existingEnv,
+    ANTHROPIC_BASE_URL: anthropicBaseUrl,
+    ANTHROPIC_AUTH_TOKEN: authToken,
+    ANTHROPIC_MODEL: anthropicModel,
+  };
+  delete nextEnv.CLAUDE_CODE_GIT_BASH_PATH;
+
+  const nextSettings = {
+    ...existingSettings,
+    $schema: existingSettings.$schema || CLAUDE_SETTINGS_SCHEMA_URL,
+    env: nextEnv,
+  };
+  delete nextSettings.model;
+
+  fs.mkdirSync(path.dirname(settingsFilePath), { recursive: true });
+  fs.writeFileSync(settingsFilePath, `${JSON.stringify(nextSettings, null, 2)}\n`, 'utf8');
+
+  return {
+    settingsPath: settingsFilePath,
+    anthropicBaseUrl,
+    anthropicModel,
+  };
+}
+
+async function enableClaudeCode(payload) {
+  const { apiKey, apiKeyName } = await createClaudeCodeApiKey(payload);
+  const configResult = configureClaudeCodeSettings({
+    apiBaseUrl: payload?.apiBaseUrl,
+    authToken: apiKey,
+  });
+
+  return {
+    ...configResult,
+    apiKeyName,
+  };
 }
 
 function getOrCreateMachineId() {
@@ -426,7 +632,8 @@ async function performMachineSync(payload) {
 
   console.log('[machine-sync] backend request succeeded');
 
-  return responsePayload?.dataResponse?.machine || responsePayload?.machine || machineDetails;
+  const responseData = extractResponseData(responsePayload);
+  return responseData?.machine || responsePayload?.machine || machineDetails;
 }
 
 function syncMachineDetails(payload, options = {}) {
@@ -520,6 +727,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:get-version', () => app.getVersion());
   ipcMain.handle('app:get-machine-details', async () => collectMachineDetails());
   ipcMain.handle('app:sync-machine-details', async (_event, payload) => syncMachineDetails(payload, { force: true }));
+  ipcMain.handle('app:enable-claude-code', async (_event, payload) => enableClaudeCode(payload));
 
   createWindow();
 

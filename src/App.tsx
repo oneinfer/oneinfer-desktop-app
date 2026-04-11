@@ -522,6 +522,38 @@ function App() {
     }
   }
 
+  async function handleEnableClaudeCode() {
+    if (!session || !window.desktopBridge?.enableClaudeCode) {
+      return;
+    }
+
+    setBusy('configure-claude-code');
+    setMessage(null);
+
+    try {
+      const result = await window.desktopBridge.enableClaudeCode({
+        apiBaseUrl: settingsDraft.apiBaseUrl,
+        session,
+      });
+
+      setMessage({
+        tone: 'success',
+        text: `Claude Code enabled with ${result.apiKeyName}. Base URL: ${result.anthropicBaseUrl}. Model: ${result.anthropicModel}`,
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Claude Code.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function handleClaudeCodeLoginHint() {
+    setMessage({
+      tone: 'info',
+      text: 'Log in first, then use the Enable Claude Code button from Overview or Settings.',
+    });
+  }
+
   async function handleRefreshCurrentSection() {
     if (!session) {
       return;
@@ -786,6 +818,16 @@ function App() {
                 Enter Workspace
               </button>
             </form>
+
+            <div className="stack-form">
+              <div className="form-hint">
+                Claude Code setup becomes available right after login. The desktop app will create a OneInfer API key for this device and update your Claude Code user settings automatically.
+              </div>
+              <button className="ghost-button" type="button" onClick={handleClaudeCodeLoginHint}>
+                <Bot size={16} />
+                Enable Claude Code
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -861,6 +903,23 @@ function App() {
 
         {activeSection === 'overview' ? (
           <div className="section-grid">
+            <Panel title="Claude Code Setup" icon={Bot}>
+              <div className="stack-form">
+                <div className="form-hint">
+                  Configure Claude Code for this machine using your current OneInfer session. This writes your user-level Claude Code settings file with the OneInfer Anthropic-compatible gateway.
+                </div>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleEnableClaudeCode}
+                  disabled={busy === 'configure-claude-code'}
+                >
+                  {busy === 'configure-claude-code' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
+                  Enable Claude Code
+                </button>
+              </div>
+            </Panel>
+
             <Panel title="Developer Profile" icon={ShieldCheck}>
               <DataList
                 entries={getDeveloperProfileEntries(dashboard.profile)}
@@ -1258,6 +1317,23 @@ function App() {
                 <button className="primary-button" type="button" onClick={handleSaveSettings}>
                   <Save size={16} />
                   Save Settings
+                </button>
+              </div>
+            </Panel>
+
+            <Panel title="Claude Code" icon={Bot}>
+              <div className="stack-form">
+                <div className="form-hint">
+                  Create a OneInfer API key for this device and merge your user-level Claude Code settings so the CLI routes through the Anthropic-compatible OneInfer gateway automatically.
+                </div>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleEnableClaudeCode}
+                  disabled={busy === 'configure-claude-code'}
+                >
+                  {busy === 'configure-claude-code' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
+                  Enable Claude Code
                 </button>
               </div>
             </Panel>
