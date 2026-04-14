@@ -3,13 +3,14 @@ import {
   AppWindowMac,
   Blocks,
   Bot,
+  Download,
   KeyRound,
   LoaderCircle,
   LogOut,
   Orbit,
   RefreshCw,
+  RotateCcw,
   Rocket,
-  Save,
   Send,
   Server,
   ShieldCheck,
@@ -34,6 +35,7 @@ import {
   listInferenceEndpoints,
   listIntelligentEndpoints,
   loginWithOtp,
+  normalizeApiBaseUrl,
   normalizeList,
   requestOtp,
   runInstanceAction,
@@ -48,8 +50,11 @@ import type {
 } from './types';
 import oneInferLogo from './assets/oneinfer-logo.png';
 
+const fallbackApiBaseUrl = 'https://api.oneinfer.ai/v1';
+const defaultApiBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_ONEINFER_API_BASE_URL || fallbackApiBaseUrl);
+
 const defaultSettings = {
-  apiBaseUrl: 'http://localhost:8000/v1',
+  apiBaseUrl: defaultApiBaseUrl,
 };
 
 const defaultDashboardState: DashboardState = {
@@ -230,6 +235,12 @@ function App() {
   const [dashboard, setDashboard] = useState<DashboardState>(defaultDashboardState);
   const [message, setMessage] = useState<{ tone: 'info' | 'success' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus>({
+    phase: 'idle',
+    message: 'Updates are idle.',
+    version: null,
+    progressPercent: null,
+  });
   const [loadedSections, setLoadedSections] = useState<Record<SectionKey, boolean>>(createLoadedSections);
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
@@ -416,21 +427,25 @@ function App() {
     let active = true;
 
     async function bootstrap() {
-      const [storedState, version] = await Promise.all([
+      const [storedState, version, initialUpdateStatus] = await Promise.all([
         window.desktopBridge?.getState?.(),
         window.desktopBridge?.getVersion?.(),
+        window.desktopBridge?.getUpdateStatus?.(),
       ]);
 
       if (!active) {
         return;
       }
 
-      const nextBaseUrl = storedState?.settings?.apiBaseUrl || defaultSettings.apiBaseUrl;
+      const nextBaseUrl = defaultSettings.apiBaseUrl;
       setSettingsDraft({ apiBaseUrl: nextBaseUrl });
       setSession(storedState?.session ?? null);
       setLoadedSections(createLoadedSections());
       setEmail(storedState?.session?.email ?? '');
       setAppVersion(version ?? '');
+      if (initialUpdateStatus) {
+        setUpdateStatus(initialUpdateStatus);
+      }
 
       if (storedState?.session) {
         await loadSectionData('overview', storedState.session, nextBaseUrl, { force: true, silent: true });
@@ -450,6 +465,16 @@ function App() {
 
     return () => {
       active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onUpdateStatus?.((status) => {
+      setUpdateStatus(status);
+    });
+
+    return () => {
+      unsubscribe?.();
     };
   }, []);
 
@@ -512,16 +537,6 @@ function App() {
     }
   }
 
-  async function handleSaveSettings() {
-    await persistState(session, settingsDraft.apiBaseUrl);
-    setMessage({ tone: 'success', text: 'Settings saved locally.' });
-    if (session) {
-      setLoadedSections(createLoadedSections());
-      setDashboard(defaultDashboardState);
-      await loadSectionData(activeSection === 'settings' ? 'overview' : activeSection, session, settingsDraft.apiBaseUrl, { force: true });
-    }
-  }
-
   async function handleEnableClaudeCode() {
     if (!session || !window.desktopBridge?.enableClaudeCode) {
       return;
@@ -542,6 +557,41 @@ function App() {
       });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Claude Code.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCheckForUpdates() {
+    if (!window.desktopBridge?.checkForUpdates) {
+      return;
+    }
+
+    setBusy('check-updates');
+
+    try {
+      const nextStatus = await window.desktopBridge.checkForUpdates();
+      setUpdateStatus(nextStatus);
+      setMessage({ tone: 'info', text: nextStatus.message });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to check for updates.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!window.desktopBridge?.installUpdate) {
+      return;
+    }
+
+    setBusy('install-update');
+
+    try {
+      await window.desktopBridge.installUpdate();
+      setMessage({ tone: 'info', text: 'Installer is restarting to apply the update.' });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to install update.' });
     } finally {
       setBusy(null);
     }
@@ -791,14 +841,6 @@ function App() {
 
             <form className="stack-form" onSubmit={handleOtpRequest}>
               <label>
-                <span>API Base URL</span>
-                <input
-                  value={settingsDraft.apiBaseUrl}
-                  onChange={(event) => setSettingsDraft({ apiBaseUrl: event.target.value })}
-                  placeholder="http://localhost:8000/v1"
-                />
-              </label>
-              <label>
                 <span>Email</span>
                 <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="developer@oneinfer.ai" />
               </label>
@@ -893,8 +935,8 @@ function App() {
             <div className="eyebrow">Unified API + Infrastructure Desktop</div>
             <h2>Operate your developer platform without living in raw HTTP requests.</h2>
             <p>
-              This app is backed by your current OneInfer API service. It is packaging-ready for Windows, Linux, and macOS,
-              with one native build artifact per operating system.
+              This app targets Windows, Linux, and macOS with native installers per operating system and connects to
+              the OneInfer API service by default.
             </p>
           </div>
         </section>
@@ -1305,22 +1347,6 @@ function App() {
 
         {activeSection === 'settings' ? (
           <div className="section-grid two-col">
-            <Panel title="Connection Settings" icon={Save}>
-              <div className="stack-form">
-                <label>
-                  <span>API Base URL</span>
-                  <input
-                    value={settingsDraft.apiBaseUrl}
-                    onChange={(event) => setSettingsDraft({ apiBaseUrl: event.target.value })}
-                  />
-                </label>
-                <button className="primary-button" type="button" onClick={handleSaveSettings}>
-                  <Save size={16} />
-                  Save Settings
-                </button>
-              </div>
-            </Panel>
-
             <Panel title="Claude Code" icon={Bot}>
               <div className="stack-form">
                 <div className="form-hint">
@@ -1334,6 +1360,38 @@ function App() {
                 >
                   {busy === 'configure-claude-code' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
                   Enable Claude Code
+                </button>
+              </div>
+            </Panel>
+
+            <Panel title="App Updates" icon={Download}>
+              <div className="stack-form">
+                <div className="form-hint">{updateStatus.message}</div>
+                <DataList
+                  entries={[
+                    ['status', updateStatus.phase],
+                    ['version', updateStatus.version || appVersion || 'unknown'],
+                    ['download', updateStatus.progressPercent === null ? '—' : `${updateStatus.progressPercent}%`],
+                  ]}
+                  emptyText="No update status available."
+                />
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={handleCheckForUpdates}
+                  disabled={busy === 'check-updates' || busy === 'install-update'}
+                >
+                  {busy === 'check-updates' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                  Check for Updates
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleInstallUpdate}
+                  disabled={updateStatus.phase !== 'downloaded' || busy === 'check-updates' || busy === 'install-update'}
+                >
+                  {busy === 'install-update' ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={16} />}
+                  Restart to Install Update
                 </button>
               </div>
             </Panel>

@@ -11,6 +11,11 @@
     "build": "npm run generate:assets && vite build",
     "preview": "vite preview",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:publish": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish always",
+    "dist:win": "node scripts/dist-win.mjs",
+    "dist:linux": "node scripts/dist-linux.mjs",
+    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
+    "prepare:upload": "node scripts/prepare-upload-artifacts.mjs",
     "lint": "tsc --noEmit"
   },
   "build": {
@@ -27,7 +32,13 @@
       "buildResources": "build",
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github"
+      }
+    ],
     "win": {
+      "artifactName": "OneInfer Desktop windows.${ext}",
       "icon": "build/icon.ico",
       "signAndEditExecutable": false,
       "target": [
@@ -35,15 +46,16 @@
       ]
     },
     "linux": {
+      "artifactName": "OneInfer Desktop linux.${ext}",
       "icon": "build/icon.png",
+      "maintainer": "OneInfer <developer@oneinfer.ai>",
       "target": [
-        "AppImage",
-        "deb"
+        "AppImage"
       ],
       "category": "Development"
     },
     "mac": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.icns",
       "target": [
         "dmg"
       ],
@@ -51,12 +63,14 @@
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "lucide-react": "^0.511.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "systeminformation": "^5.31.5"
   },
   "devDependencies": {
+    "@fiahfy/icns": "^0.0.7",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

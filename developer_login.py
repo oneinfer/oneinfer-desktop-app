@@ -2,11 +2,29 @@ import asyncio
 import json
 import httpx
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 from pydantic import EmailStr
 
-BASE_URL = "http://localhost:8000/v1/"
+DEFAULT_BASE_URL = "https://api.oneinfer.ai/v1/"
+
+def normalize_api_base_url(value: str) -> str:
+    trimmed_value = value.rstrip("/")
+    if not trimmed_value:
+        return ""
+
+    if trimmed_value.startswith("https://oneinfer.ai"):
+        trimmed_value = trimmed_value.replace("https://oneinfer.ai", "https://api.oneinfer.ai", 1)
+    elif trimmed_value.startswith("https://www.oneinfer.ai"):
+        trimmed_value = trimmed_value.replace("https://www.oneinfer.ai", "https://api.oneinfer.ai", 1)
+
+    if trimmed_value == "https://api.oneinfer.ai":
+        trimmed_value = f"{trimmed_value}/v1"
+
+    return f"{trimmed_value.rstrip('/')}/"
+
+BASE_URL = normalize_api_base_url(os.getenv("ONEINFER_API_BASE_URL", DEFAULT_BASE_URL))
 SESSION_DIR = Path.home() / ".oneinfer"
 SESSION_FILE = SESSION_DIR / "developer_session.json"
 

@@ -17,6 +17,37 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
+function isHtmlPayload(value: unknown): value is string {
+  return typeof value === 'string' && /<!doctype html|<html/i.test(value);
+}
+
+export function normalizeApiBaseUrl(value: string): string {
+  const trimmedValue = trimTrailingSlash(value.trim());
+  if (!trimmedValue) {
+    return trimmedValue;
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedValue);
+    const normalizedHostname = parsedUrl.hostname.replace(/^www\./i, '').toLowerCase();
+    const normalizedPathname = parsedUrl.pathname.replace(/\/+$/, '');
+
+    if (normalizedHostname === 'oneinfer.ai') {
+      parsedUrl.hostname = 'api.oneinfer.ai';
+    }
+
+    if (!normalizedPathname || normalizedPathname === '/') {
+      parsedUrl.pathname = '/v1';
+    }
+
+    parsedUrl.search = '';
+    parsedUrl.hash = '';
+    return trimTrailingSlash(parsedUrl.toString());
+  } catch {
+    return trimmedValue;
+  }
+}
+
 function extractResponseData(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object') {
     return payload;
@@ -59,7 +90,8 @@ async function request<T>(options: {
   body?: unknown;
 }): Promise<T> {
   const { baseUrl, path, method = 'GET', token, query, body } = options;
-  const url = `${trimTrailingSlash(baseUrl)}${path}${toQueryString(query)}`;
+  const normalizedBaseUrl = normalizeApiBaseUrl(baseUrl);
+  const url = `${normalizedBaseUrl}${path}${toQueryString(query)}`;
 
   const response = await fetch(url, {
     method,
@@ -79,6 +111,10 @@ async function request<T>(options: {
   }
 
   if (!response.ok) {
+    if (isHtmlPayload(payload)) {
+      throw new Error('Received the OneInfer website HTML instead of an API response. The app is now configured to use the API backend automatically; restart the app and try again.');
+    }
+
     const detail = extractResponseData(payload);
     const message = typeof detail === 'string'
       ? detail

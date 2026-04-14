@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -11,6 +12,13 @@ let mainWindow = null;
 let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
 const MACHINE_SYNC_DEBOUNCE_MS = 15000;
+let updaterConfigured = false;
+let updateState = {
+  phase: 'idle',
+  message: 'Updates are idle.',
+  version: null,
+  progressPercent: null,
+};
 
 const CLAUDE_SETTINGS_SCHEMA_URL = 'https://json.schemastore.org/claude-code-settings.json';
 const DEFAULT_ANTHROPIC_MODEL = 'MiniMax-M2.7';
@@ -20,6 +28,94 @@ if (process.platform === 'win32') {
 }
 
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+
+function broadcastUpdateState() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('app:update-status', updateState);
+}
+
+function setUpdateState(patch) {
+  updateState = {
+    ...updateState,
+    ...patch,
+  };
+
+  broadcastUpdateState();
+}
+
+function configureAutoUpdater() {
+  if (updaterConfigured) {
+    return;
+  }
+
+  updaterConfigured = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    setUpdateState({
+      phase: 'checking',
+      message: 'Checking for updates...',
+      progressPercent: null,
+    });
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    setUpdateState({
+      phase: 'available',
+      version: info?.version || null,
+      message: info?.version
+        ? `Update ${info.version} is available. Download started.`
+        : 'An update is available. Download started.',
+      progressPercent: 0,
+    });
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    setUpdateState({
+      phase: 'not-available',
+      version: app.getVersion(),
+      message: 'You already have the latest version.',
+      progressPercent: null,
+    });
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    const progressPercent = Number.isFinite(progress?.percent)
+      ? Math.round(progress.percent)
+      : null;
+
+    setUpdateState({
+      phase: 'downloading',
+      message: progressPercent === null
+        ? 'Downloading update...'
+        : `Downloading update... ${progressPercent}%`,
+      progressPercent,
+    });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    setUpdateState({
+      phase: 'downloaded',
+      version: info?.version || null,
+      message: info?.version
+        ? `Update ${info.version} downloaded. Restart to install.`
+        : 'Update downloaded. Restart to install.',
+      progressPercent: 100,
+    });
+  });
+
+  autoUpdater.on('error', (error) => {
+    setUpdateState({
+      phase: 'error',
+      message: error?.message || 'Update check failed.',
+      progressPercent: null,
+    });
+  });
+}
 
 function getStateFilePath() {
   return path.join(app.getPath('userData'), 'desktop-state.json');
@@ -70,8 +166,35 @@ function getClaudeSettingsFilePath() {
   return path.join(getClaudeConfigDirectory(), 'settings.json');
 }
 
+function normalizeApiBaseUrl(value) {
+  const trimmedValue = trimTrailingSlash(value);
+  if (!trimmedValue) {
+    return trimmedValue;
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedValue);
+    const normalizedHostname = parsedUrl.hostname.replace(/^www\./i, '').toLowerCase();
+    const normalizedPathname = parsedUrl.pathname.replace(/\/+$/, '');
+
+    if (normalizedHostname === 'oneinfer.ai') {
+      parsedUrl.hostname = 'api.oneinfer.ai';
+    }
+
+    if (!normalizedPathname || normalizedPathname === '/') {
+      parsedUrl.pathname = '/v1';
+    }
+
+    parsedUrl.search = '';
+    parsedUrl.hash = '';
+    return trimTrailingSlash(parsedUrl.toString());
+  } catch {
+    return trimmedValue;
+  }
+}
+
 function deriveClaudeBaseUrl(apiBaseUrl) {
-  const trimmedBaseUrl = trimTrailingSlash(apiBaseUrl);
+  const trimmedBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
   if (!trimmedBaseUrl) {
     throw new Error('API base URL is required to configure Claude Code.');
   }
@@ -145,7 +268,7 @@ function extractErrorMessage(payload, fallbackMessage) {
 }
 
 async function createClaudeCodeApiKey(payload) {
-  const baseUrl = trimTrailingSlash(payload?.apiBaseUrl);
+  const baseUrl = normalizeApiBaseUrl(payload?.apiBaseUrl);
   const session = payload?.session || {};
 
   if (!baseUrl) {
@@ -186,7 +309,7 @@ async function createClaudeCodeApiKey(payload) {
 }
 
 function configureClaudeCodeSettings(payload) {
-  const apiBaseUrl = trimTrailingSlash(payload?.apiBaseUrl);
+  const apiBaseUrl = normalizeApiBaseUrl(payload?.apiBaseUrl);
   const authToken = toTrimmedString(payload?.authToken);
 
   if (!apiBaseUrl) {
@@ -575,7 +698,7 @@ async function collectMachineDetails() {
 }
 
 async function performMachineSync(payload) {
-  const baseUrl = trimTrailingSlash(payload?.baseUrl);
+  const baseUrl = normalizeApiBaseUrl(payload?.baseUrl);
   const session = payload?.session || {};
   const developerId = session.developerId;
   const accessToken = session.accessToken;
@@ -675,20 +798,26 @@ function triggerMachineSyncFromState(state) {
 function createWindow() {
   const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
   const iconPath = path.join(__dirname, '..', 'build', iconFile);
-  mainWindow = new BrowserWindow({
+  const windowOptions = {
     width: 1480,
     height: 920,
     minWidth: 1180,
     minHeight: 760,
     backgroundColor: '#0a1016',
     icon: iconPath,
-    titleBarStyle: 'hiddenInset',
+    autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
-  });
+  };
+
+  if (process.platform === 'darwin') {
+    windowOptions.titleBarStyle = 'hiddenInset';
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -707,6 +836,12 @@ function createWindow() {
   });
 
   if (isDev) {
+    setUpdateState({
+      phase: 'idle',
+      version: app.getVersion(),
+      message: 'Auto-update is disabled in development mode.',
+      progressPercent: null,
+    });
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
@@ -714,6 +849,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (!isDev) {
+    configureAutoUpdater();
+  }
+
   ipcMain.handle('app:get-state', () => {
     const state = readState();
     triggerMachineSyncFromState(state);
@@ -725,11 +864,46 @@ app.whenReady().then(() => {
     return payload;
   });
   ipcMain.handle('app:get-version', () => app.getVersion());
+  ipcMain.handle('app:get-update-status', () => ({ ...updateState }));
+  ipcMain.handle('app:check-for-updates', async () => {
+    if (isDev) {
+      setUpdateState({
+        phase: 'idle',
+        version: app.getVersion(),
+        message: 'Auto-update is disabled in development mode.',
+        progressPercent: null,
+      });
+      return { ...updateState };
+    }
+
+    configureAutoUpdater();
+    await autoUpdater.checkForUpdates();
+    return { ...updateState };
+  });
+  ipcMain.handle('app:install-update', async () => {
+    if (updateState.phase !== 'downloaded') {
+      return { ...updateState };
+    }
+
+    setImmediate(() => {
+      autoUpdater.quitAndInstall(false, true);
+    });
+
+    return { ...updateState };
+  });
   ipcMain.handle('app:get-machine-details', async () => collectMachineDetails());
   ipcMain.handle('app:sync-machine-details', async (_event, payload) => syncMachineDetails(payload, { force: true }));
   ipcMain.handle('app:enable-claude-code', async (_event, payload) => enableClaudeCode(payload));
 
   createWindow();
+
+  if (!isDev) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((error) => {
+        console.error('[updater] startup check failed', error);
+      });
+    }, 4000);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
