@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
   AppWindowMac,
   Blocks,
@@ -7,7 +7,9 @@ import {
   KeyRound,
   LoaderCircle,
   LogOut,
+  Menu,
   Orbit,
+  Wifi,
   RefreshCw,
   RotateCcw,
   Rocket,
@@ -15,6 +17,7 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  X,
 } from 'lucide-react';
 import {
   attachEndpoint,
@@ -26,8 +29,6 @@ import {
   deleteInstance,
   getCredits,
   getGpuSpecs,
-  getModelPricing,
-  getModels,
   getProfile,
   getProviderInfo,
   getInstances,
@@ -61,8 +62,6 @@ const defaultDashboardState: DashboardState = {
   profile: null,
   credits: null,
   machineDetails: null,
-  models: [],
-  pricing: [],
   instances: [],
   apiKeys: [],
   intelligentEndpoints: [],
@@ -97,10 +96,11 @@ const defaultInferenceForm: CreateInferenceFormState = {
 
 const sections: Array<{ key: SectionKey; label: string; icon: typeof Sparkles }> = [
   { key: 'overview', label: 'Overview', icon: Sparkles },
-  { key: 'models', label: 'Models', icon: Bot },
-  { key: 'instances', label: 'Instances', icon: Server },
+  { key: 'selfHosting', label: 'Self-hosting', icon: Server },
+  { key: 'instances', label: 'Cloud Instances', icon: Server },
   { key: 'apiKeys', label: 'API Keys', icon: KeyRound },
   { key: 'routing', label: 'Routing', icon: Orbit },
+  { key: 'bandwidth', label: 'AI Bandwidth', icon: Wifi },
   { key: 'settings', label: 'Settings', icon: AppWindowMac },
 ];
 
@@ -218,10 +218,11 @@ function getMachineGpuRows(machine: DashboardState['machineDetails']): Array<Rec
 function createLoadedSections() {
   return {
     overview: false,
-    models: false,
+    selfHosting: false,
     instances: false,
     apiKeys: false,
     routing: false,
+    bandwidth: false,
     settings: true,
   } satisfies Record<SectionKey, boolean>;
 }
@@ -244,8 +245,7 @@ function App() {
   const [loadedSections, setLoadedSections] = useState<Record<SectionKey, boolean>>(createLoadedSections);
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
-  const [modelSearch, setModelSearch] = useState('');
-  const deferredModelSearch = useDeferredValue(modelSearch);
+  const [selfHostForm, setSelfHostForm] = useState({ name: '', model_id: '', endpoint_url: 'http://127.0.0.1:8000/v1' });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
   const [apiKeyName, setApiKeyName] = useState('Desktop Key');
   const [apiKeyEnvironment, setApiKeyEnvironment] = useState('production');
@@ -256,6 +256,7 @@ function App() {
     endpointType: 'inference_api',
     endpointId: '',
   });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -269,21 +270,6 @@ function App() {
 
     return machineDetails;
   }
-
-  const filteredModels = useMemo(() => {
-    const query = deferredModelSearch.trim().toLowerCase();
-    if (!query) {
-      return dashboard.models;
-    }
-
-    return dashboard.models.filter((model) => {
-      const haystack = [model.model_name, model.provider_name, model.model_id, model.model_type]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [dashboard.models, deferredModelSearch]);
 
   async function persistState(nextSession: DesktopSession | null, nextApiBaseUrl: string) {
     if (!window.desktopBridge) {
@@ -339,26 +325,6 @@ function App() {
           });
         } else if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Overview synced.' });
-        }
-      }
-
-      if (section === 'models') {
-        const results = await Promise.allSettled([
-          getModels(currentBaseUrl),
-          getModelPricing(currentBaseUrl),
-        ]);
-
-        setDashboard((current) => ({
-          ...current,
-          models: results[0].status === 'fulfilled' ? results[0].value : current.models,
-          pricing: results[1].status === 'fulfilled' ? results[1].value : current.pricing,
-        }));
-
-        const failed = results.filter((result) => result.status === 'rejected').length;
-        if (failed > 0) {
-          setMessage({ tone: 'error', text: `Models loaded with ${failed} partial failure${failed > 1 ? 's' : ''}.` });
-        } else if (!shouldBeSilent) {
-          setMessage({ tone: 'success', text: 'Models synced.' });
         }
       }
 
@@ -592,6 +558,46 @@ function App() {
       setMessage({ tone: 'info', text: 'Installer is restarting to apply the update.' });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to install update.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRegisterSelfHosted(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) {
+      return;
+    }
+
+    if (!selfHostForm.endpoint_url) {
+      setMessage({ tone: 'error', text: 'Local endpoint URL is required.' });
+      return;
+    }
+
+    const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
+    const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
+      ? dashboard.machineDetails.machineName
+      : typeof dashboard.machineDetails?.hostname === 'string'
+        ? dashboard.machineDetails.hostname
+        : '';
+
+    setBusy('register-self-hosted');
+    try {
+      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+        name: selfHostForm.name,
+        provider: 'openai',
+        model_id: selfHostForm.model_id,
+        deployment_target: 'local',
+        endpoint_url: selfHostForm.endpoint_url,
+        machine_id: detectedMachineId,
+        machine_name: detectedMachineName,
+        top_p: 0.9,
+        temperature: 0.7,
+        max_tokens: 4096,
+      });
+      setMessage({ tone: 'success', text: 'Local inference endpoint registered.' });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to register endpoint.' });
     } finally {
       setBusy(null);
     }
@@ -878,7 +884,29 @@ function App() {
 
   return (
     <div className="shell app-shell">
-      <aside className="sidebar glass-panel">
+      <header className="mobile-header glass-panel">
+        <div className="brand-lockup">
+          <div className="brand-icon">
+            <img src={oneInferLogo} alt="OneInfer logo" className="brand-image" />
+          </div>
+          <div>
+            <div className="eyebrow">Desktop Control Plane</div>
+            <h1>OneInfer</h1>
+          </div>
+        </div>
+        <button className="ghost-button" type="button" onClick={() => setSidebarOpen(true)}>
+          <Menu size={20} />
+        </button>
+      </header>
+
+      <div className={`sidebar-overlay${sidebarOpen ? ' active' : ''}`} onClick={() => setSidebarOpen(false)} />
+
+      <aside className={`sidebar glass-panel${sidebarOpen ? ' open' : ''}`}>
+        <button className="ghost-button sidebar-close" type="button" onClick={() => setSidebarOpen(false)}>
+          <X size={18} />
+          Close
+        </button>
+
         <div className="brand-lockup">
           <div className="brand-icon">
             <img src={oneInferLogo} alt="OneInfer logo" className="brand-image" />
@@ -902,7 +930,7 @@ function App() {
               <button
                 key={section.key}
                 className={`nav-button ${activeSection === section.key ? 'active' : ''}`}
-                onClick={() => setActiveSection(section.key)}
+                onClick={() => { setActiveSection(section.key); setSidebarOpen(false); }}
                 type="button"
               >
                 <Icon size={18} />
@@ -913,6 +941,7 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <div className="version-text">Version {appVersion || 'dev'}</div>
           <button
             className="ghost-button"
             onClick={handleRefreshCurrentSection}
@@ -925,7 +954,6 @@ function App() {
             <LogOut size={16} />
             Logout
           </button>
-          <div className="version-text">Version {appVersion || 'dev'}</div>
         </div>
       </aside>
 
@@ -962,13 +990,6 @@ function App() {
               </div>
             </Panel>
 
-            <Panel title="Developer Profile" icon={ShieldCheck}>
-              <DataList
-                entries={getDeveloperProfileEntries(dashboard.profile)}
-                emptyText="Profile data not loaded."
-              />
-            </Panel>
-
             <Panel title="Credits" icon={ShieldCheck}>
               <DataList
                 entries={getAvailableCreditsEntries(dashboard.credits)}
@@ -976,6 +997,12 @@ function App() {
               />
             </Panel>
 
+            <HardwareWidget machine={dashboard.machineDetails} />
+          </div>
+        ) : null}
+
+        {activeSection === 'selfHosting' ? (
+          <div className="section-grid two-col">
             <Panel title="Local Hardware" icon={Server}>
               <DataList
                 entries={getMachineSummaryEntries(dashboard.machineDetails)}
@@ -987,33 +1014,41 @@ function App() {
                 emptyText="No local GPU detected."
               />
             </Panel>
-          </div>
-        ) : null}
 
-        {activeSection === 'models' ? (
-          <div className="section-grid">
-            <Panel title="Model Catalog" icon={Bot}>
-              <div className="panel-actions">
-                <input
-                  className="search-input"
-                  value={modelSearch}
-                  onChange={(event) => setModelSearch(event.target.value)}
-                  placeholder="Search models, providers, ids"
-                />
-              </div>
-              <MiniTable
-                columns={['model_name', 'provider_name', 'model_id', 'model_type']}
-                rows={filteredModels.slice(0, 100)}
-                emptyText="No models returned from the API."
-              />
-            </Panel>
-
-            <Panel title="Pricing Snapshot" icon={Blocks}>
-              <MiniTable
-                columns={['model_name', 'provider_name', 'input_price_per_token', 'output_price_per_token']}
-                rows={dashboard.pricing.slice(0, 50)}
-                emptyText="Pricing data not available."
-              />
+            <Panel title="Register Local Inference Server" icon={Rocket}>
+              <form className="stack-form" onSubmit={handleRegisterSelfHosted}>
+                <div className="form-hint">
+                  Register this machine as a local inference provider. Start your inference server (e.g. vLLM, Ollama) before registering.
+                </div>
+                <label>
+                  <span>Name</span>
+                  <input
+                    value={selfHostForm.name}
+                    onChange={(event) => setSelfHostForm((current) => ({ ...current, name: event.target.value }))}
+                    placeholder="Local vLLM server"
+                  />
+                </label>
+                <label>
+                  <span>Endpoint URL</span>
+                  <input
+                    value={selfHostForm.endpoint_url}
+                    onChange={(event) => setSelfHostForm((current) => ({ ...current, endpoint_url: event.target.value }))}
+                    placeholder="http://127.0.0.1:8000/v1"
+                  />
+                </label>
+                <label>
+                  <span>Model ID</span>
+                  <input
+                    value={selfHostForm.model_id}
+                    onChange={(event) => setSelfHostForm((current) => ({ ...current, model_id: event.target.value }))}
+                    placeholder="meta-llama/Meta-Llama-3-8B-Instruct"
+                  />
+                </label>
+                <button className="primary-button" type="submit" disabled={busy === 'register-self-hosted'}>
+                  {busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
+                  Register Endpoint
+                </button>
+              </form>
             </Panel>
           </div>
         ) : null}
@@ -1345,6 +1380,33 @@ function App() {
           </div>
         ) : null}
 
+        {activeSection === 'bandwidth' ? (
+          <div className="section-grid two-col">
+            <Panel title="Active Subscriptions" icon={Wifi}>
+              <div className="card-stack">
+                <EmptyState text="No bandwidth subscriptions found." />
+              </div>
+            </Panel>
+
+            <Panel title="Subscription Summary" icon={Wifi}>
+              <div className="stack-form">
+                <div className="form-hint">
+                  Bandwidth subscriptions control the egress and throughput limits associated with your OneInfer account. Manage plans and usage caps from this panel.
+                </div>
+                <DataList
+                  entries={[
+                    ['plan', '—'],
+                    ['used', '—'],
+                    ['limit', '—'],
+                    ['renews', '—'],
+                  ]}
+                  emptyText="No subscription data available."
+                />
+              </div>
+            </Panel>
+          </div>
+        ) : null}
+
         {activeSection === 'settings' ? (
           <div className="section-grid two-col">
             <Panel title="Claude Code" icon={Bot}>
@@ -1396,6 +1458,13 @@ function App() {
               </div>
             </Panel>
 
+            <Panel title="Developer Profile" icon={ShieldCheck}>
+              <DataList
+                entries={getDeveloperProfileEntries(dashboard.profile)}
+                emptyText="Profile data not loaded."
+              />
+            </Panel>
+
             <Panel title="Session" icon={ShieldCheck}>
               <DataList
                 entries={[
@@ -1416,6 +1485,53 @@ function App() {
           </div>
         ) : null}
       </main>
+    </div>
+  );
+}
+
+function HardwareWidget(props: { machine: DashboardState['machineDetails'] }) {
+  const { machine } = props;
+
+  if (!machine) {
+    return (
+      <div className="hw-widget glass-panel">
+        <div className="hw-widget-header">
+          <Server size={15} />
+          <span>Local Hardware</span>
+        </div>
+        <p className="hw-widget-empty">Machine profile not synced yet.</p>
+      </div>
+    );
+  }
+
+  const gpuCount = Array.isArray(machine.gpus) ? machine.gpus.length : 0;
+  const gpuLabel = gpuCount === 0
+    ? 'No GPU'
+    : gpuCount === 1
+      ? String(machine.gpus![0].name ?? machine.gpus![0].model ?? '1 GPU')
+      : `${gpuCount} GPUs`;
+
+  const stats: Array<{ label: string; value: string }> = [
+    { label: 'Machine', value: String(machine.machineName ?? machine.hostname ?? '—') },
+    { label: 'CPU', value: String(machine.cpu?.brand ?? machine.cpu?.manufacturer ?? '—') },
+    { label: 'RAM', value: typeof machine.memory?.totalGb === 'number' ? `${machine.memory.totalGb} GB` : '—' },
+    { label: 'GPU', value: gpuLabel },
+  ];
+
+  return (
+    <div className="hw-widget glass-panel">
+      <div className="hw-widget-header">
+        <Server size={15} />
+        <span>Local Hardware</span>
+      </div>
+      <div className="hw-widget-stats">
+        {stats.map(({ label, value }) => (
+          <div className="hw-stat" key={label}>
+            <span className="hw-stat-label">{label}</span>
+            <strong className="hw-stat-value">{value}</strong>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

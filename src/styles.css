@@ -275,6 +275,14 @@ label span,
   gap: 12px;
 }
 
+.sidebar-footer {
+  margin-top: auto;
+}
+
+.version-text {
+  text-align: right;
+}
+
 .nav-button {
   width: 100%;
   padding: 14px 16px;
@@ -485,26 +493,212 @@ th {
   }
 }
 
-@media (max-width: 1180px) {
-  .app-shell,
+/* ── Hardware widget ─────────────────────────────────────────── */
+.hw-widget {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hw-widget-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--accent);
+}
+
+.hw-widget-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.hw-widget-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.hw-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hw-stat-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.hw-stat-value {
+  font-size: 0.9rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 600px) {
+  .hw-widget-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── Mobile header & overlay (hidden on desktop) ─────────────── */
+.mobile-header {
+  display: none;
+}
+
+.sidebar-close {
+  display: none !important;
+}
+
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  z-index: 299;
+}
+
+.sidebar-overlay.active {
+  display: block;
+}
+
+/* ── 1280px: narrow sidebar slightly ─────────────────────────── */
+@media (max-width: 1280px) {
+  .app-shell {
+    grid-template-columns: 250px minmax(0, 1fr);
+    gap: 16px;
+  }
+}
+
+/* ── 1100px: narrow sidebar + collapse multi-col grids ────────── */
+@media (max-width: 1100px) {
+  .app-shell {
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .auth-hero,
+  .auth-forms,
+  .sidebar,
+  .hero-panel,
+  .content-panel,
+  .loading-card {
+    padding: 20px;
+  }
+
   .auth-stage,
   .hero-panel,
   .section-grid.two-col,
   .hero-grid {
     grid-template-columns: 1fr;
   }
-
-  .sidebar {
-    position: static;
-  }
 }
 
-@media (max-width: 720px) {
+/* ── 860px: slide-out sidebar drawer + mobile header ─────────── */
+@media (max-width: 860px) {
   .shell {
-    padding: 14px;
+    padding: 12px;
+  }
+
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 100vh;
+  }
+
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    position: sticky;
+    top: 12px;
+    z-index: 200;
+    flex-shrink: 0;
+  }
+
+  .mobile-header h1 {
+    font-size: 1.1rem;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: -300px;
+    width: min(280px, 85vw);
+    height: 100vh;
+    height: 100dvh;
+    z-index: 300;
+    border-radius: 0 24px 24px 0;
+    overflow-y: auto;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 20px;
+  }
+
+  .sidebar.open {
+    left: 0;
+  }
+
+  .sidebar-close {
+    display: flex !important;
+  }
+
+  .main-stage {
+    min-width: 0;
   }
 
   .dense-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── 600px: tighten padding + compact panels ─────────────────── */
+@media (max-width: 600px) {
+  .shell {
+    padding: 8px;
+  }
+
+  .mobile-header {
+    top: 8px;
+  }
+
+  .auth-hero,
+  .auth-forms,
+  .content-panel,
+  .loading-card {
+    padding: 16px;
+  }
+
+  .hero-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .action-row {
+    flex-wrap: wrap;
+  }
+
+  th,
+  td {
+    padding: 10px 10px;
+    font-size: 0.82rem;
+  }
+
+  .primary-button,
+  .secondary-button,
+  .ghost-button,
+  .danger-button {
+    padding: 11px 13px;
+    font-size: 0.9rem;
   }
 }

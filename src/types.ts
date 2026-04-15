@@ -1,4 +1,4 @@
-export type SectionKey = 'overview' | 'models' | 'instances' | 'apiKeys' | 'routing' | 'settings';
+export type SectionKey = 'overview' | 'selfHosting' | 'instances' | 'apiKeys' | 'routing' | 'bandwidth' | 'settings';
 
 export interface DesktopSession {
   accessToken: string;
@@ -113,15 +113,6 @@ export interface InstanceItem {
   [key: string]: unknown;
 }
 
-export interface ModelItem {
-  model_id?: string;
-  model_name?: string;
-  provider_name?: string;
-  model_type?: string;
-  context_length?: number;
-  [key: string]: unknown;
-}
-
 export interface EndpointItem {
   intelligent_endpoint_id?: string;
   inference_endpoint_id?: string;
@@ -153,8 +144,6 @@ export interface DashboardState {
   profile: Record<string, unknown> | null;
   credits: Record<string, unknown> | null;
   machineDetails: MachineDetailsItem | null;
-  models: ModelItem[];
-  pricing: Array<Record<string, unknown>>;
   instances: InstanceItem[];
   apiKeys: ApiKeyItem[];
   intelligentEndpoints: EndpointItem[];

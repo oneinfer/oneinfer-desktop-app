@@ -7,7 +7,6 @@ import type {
   GpuSpecItem,
   InstanceItem,
   MachineDetailsItem,
-  ModelItem,
   ProviderInfoMap,
 } from './types';
 
@@ -224,22 +223,6 @@ export async function getCredits(baseUrl: string, session: DesktopSession): Prom
     path: `/developer/${session.developerId}/get-credits`,
     token: session.accessToken,
   });
-}
-
-export async function getModels(baseUrl: string): Promise<ModelItem[]> {
-  const data = await request<unknown>({
-    baseUrl,
-    path: '/developer/get-all-models',
-  });
-  return normalizeList<ModelItem>(data);
-}
-
-export async function getModelPricing(baseUrl: string): Promise<Array<Record<string, unknown>>> {
-  const data = await request<unknown>({
-    baseUrl,
-    path: '/developer/get-model-pricing',
-  });
-  return normalizeList<Record<string, unknown>>(data);
 }
 
 export async function getProviderInfo(baseUrl: string): Promise<ProviderInfoMap> {
