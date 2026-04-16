@@ -257,6 +257,7 @@ function App() {
     endpointId: '',
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>('oneinfer');
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -411,6 +412,9 @@ function App() {
       setAppVersion(version ?? '');
       if (initialUpdateStatus) {
         setUpdateStatus(initialUpdateStatus);
+        if (initialUpdateStatus.message) {
+          setMessage({ tone: 'info', text: initialUpdateStatus.message });
+        }
       }
 
       if (storedState?.session) {
@@ -437,12 +441,23 @@ function App() {
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onUpdateStatus?.((status) => {
       setUpdateStatus(status);
+      if (status.message) {
+        setMessage({ tone: 'info', text: status.message });
+      }
     });
 
     return () => {
       unsubscribe?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timer = setTimeout(() => setMessage(null), 4000);
+    return () => clearTimeout(timer);
+  }, [message]);
 
   useEffect(() => {
     if (!session) {
@@ -523,6 +538,31 @@ function App() {
       });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Claude Code.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleEnableClaudeCodeDirect() {
+    if (!session || !window.desktopBridge?.enableClaudeCode) {
+      return;
+    }
+
+    setBusy('configure-claude-code');
+    setMessage(null);
+
+    try {
+      const result = await window.desktopBridge.enableClaudeCode({
+        apiBaseUrl: 'https://api.anthropic.com',
+        session,
+      });
+
+      setMessage({
+        tone: 'success',
+        text: `Claude Code configured with Anthropic API. Settings saved to ${result.settingsPath}.`,
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to configure Claude Code.' });
     } finally {
       setBusy(null);
     }
@@ -973,22 +1013,13 @@ function App() {
 
         {activeSection === 'overview' ? (
           <div className="section-grid">
-            <Panel title="Claude Code Setup" icon={Bot}>
-              <div className="stack-form">
-                <div className="form-hint">
-                  Configure Claude Code for this machine using your current OneInfer session. This writes your user-level Claude Code settings file with the OneInfer Anthropic-compatible gateway.
-                </div>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={handleEnableClaudeCode}
-                  disabled={busy === 'configure-claude-code'}
-                >
-                  {busy === 'configure-claude-code' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
-                  Enable Claude Code
-                </button>
-              </div>
-            </Panel>
+            <ClaudeCodeSetupPanel
+              provider={claudeCodeProvider}
+              onSetProvider={setClaudeCodeProvider}
+              busy={busy}
+              onEnableOneinfer={handleEnableClaudeCode}
+              onEnableAnthropic={handleEnableClaudeCodeDirect}
+            />
 
             <Panel title="Credits" icon={ShieldCheck}>
               <DataList
@@ -1409,26 +1440,16 @@ function App() {
 
         {activeSection === 'settings' ? (
           <div className="section-grid two-col">
-            <Panel title="Claude Code" icon={Bot}>
-              <div className="stack-form">
-                <div className="form-hint">
-                  Create a OneInfer API key for this device and merge your user-level Claude Code settings so the CLI routes through the Anthropic-compatible OneInfer gateway automatically.
-                </div>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={handleEnableClaudeCode}
-                  disabled={busy === 'configure-claude-code'}
-                >
-                  {busy === 'configure-claude-code' ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
-                  Enable Claude Code
-                </button>
-              </div>
-            </Panel>
+            <ClaudeCodeSetupPanel
+              provider={claudeCodeProvider}
+              onSetProvider={setClaudeCodeProvider}
+              busy={busy}
+              onEnableOneinfer={handleEnableClaudeCode}
+              onEnableAnthropic={handleEnableClaudeCodeDirect}
+            />
 
             <Panel title="App Updates" icon={Download}>
               <div className="stack-form">
-                <div className="form-hint">{updateStatus.message}</div>
                 <DataList
                   entries={[
                     ['status', updateStatus.phase],
@@ -1616,6 +1637,81 @@ function MiniTable(props: { columns: string[]; rows: Array<Record<string, unknow
 
 function EmptyState(props: { text: string }) {
   return <div className="empty-state">{props.text}</div>;
+}
+
+function ClaudeCodeSetupPanel(props: {
+  provider: 'oneinfer' | 'anthropic';
+  onSetProvider: (p: 'oneinfer' | 'anthropic') => void;
+  busy: string | null;
+  onEnableOneinfer: () => void;
+  onEnableAnthropic: () => void;
+}) {
+  const isOneinfer = props.provider === 'oneinfer';
+  const busyConfig = props.busy === 'configure-claude-code';
+
+  return (
+    <section className={`content-panel glass-panel cc-widget cc-widget--${props.provider}`}>
+      <div className="panel-header">
+        <div className="panel-title">
+          <Bot size={18} />
+          <h3>Claude Code Setup</h3>
+        </div>
+      </div>
+
+      <div className="cc-toggle">
+        <button
+          className={`cc-toggle-btn${isOneinfer ? ' active' : ''}`}
+          type="button"
+          onClick={() => props.onSetProvider('oneinfer')}
+        >
+          <Orbit size={14} />
+          OneInfer API
+        </button>
+        <button
+          className={`cc-toggle-btn${!isOneinfer ? ' active' : ''}`}
+          type="button"
+          onClick={() => props.onSetProvider('anthropic')}
+        >
+          <Sparkles size={14} />
+          Anthropic API
+        </button>
+      </div>
+
+      <div className="stack-form">
+        {isOneinfer ? (
+          <>
+            <div className="form-hint">
+              Configure Claude Code using your current OneInfer session. Routes through the Anthropic-compatible OneInfer gateway automatically.
+            </div>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={props.onEnableOneinfer}
+              disabled={busyConfig}
+            >
+              {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
+              Enable via OneInfer
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="form-hint">
+              Configure Claude Code to use the Anthropic API directly. Routes requests through api.anthropic.com using your OneInfer session credentials.
+            </div>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={props.onEnableAnthropic}
+              disabled={busyConfig}
+            >
+              {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+              Enable via Anthropic
+            </button>
+          </>
+        )}
+      </div>
+    </section>
+  );
 }
 
 export default App;

@@ -94,6 +94,7 @@ button {
   display: grid;
   grid-template-columns: 1.3fr 0.9fr;
   gap: 22px;
+  align-items: start;
 }
 
 .glass-panel {
@@ -252,6 +253,12 @@ label span,
 .sub-card h4,
 .instance-card h4 {
   margin: 0;
+}
+
+.brand-lockup h1 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .developer-pill {
@@ -452,6 +459,11 @@ th {
   padding: 16px;
 }
 
+.instance-card {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
 .summary-list {
   margin: 0;
   padding-left: 18px;
@@ -477,7 +489,7 @@ th {
 .loading-card {
   flex-direction: column;
   text-align: center;
-  min-width: 340px;
+  width: min(420px, 90vw);
 }
 
 .spin {
@@ -491,6 +503,71 @@ th {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ── Claude Code Setup widget ────────────────────────────────── */
+.cc-widget {
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.cc-widget--oneinfer {
+  border-color: rgba(116, 227, 197, 0.35);
+  box-shadow: 0 0 0 1px rgba(116, 227, 197, 0.1), var(--shadow);
+}
+
+.cc-widget--anthropic {
+  border-color: rgba(255, 182, 94, 0.35);
+  box-shadow: 0 0 0 1px rgba(255, 182, 94, 0.1), var(--shadow);
+}
+
+.cc-widget--oneinfer .panel-title svg {
+  color: var(--accent);
+}
+
+.cc-widget--anthropic .panel-title svg {
+  color: var(--accent-2);
+}
+
+.cc-widget--anthropic .primary-button {
+  background: linear-gradient(135deg, #ffb65e, #ffd9a0);
+  color: #1a0e00;
+}
+
+.cc-toggle {
+  display: flex;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  padding: 4px;
+  margin-bottom: 16px;
+}
+
+.cc-toggle-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cc-widget--oneinfer .cc-toggle-btn.active {
+  background: rgba(116, 227, 197, 0.15);
+  color: #74e3c5;
+  box-shadow: 0 1px 6px rgba(116, 227, 197, 0.18);
+}
+
+.cc-widget--anthropic .cc-toggle-btn.active {
+  background: rgba(255, 182, 94, 0.15);
+  color: #ffb65e;
+  box-shadow: 0 1px 6px rgba(255, 182, 94, 0.18);
 }
 
 /* ── Hardware widget ─────────────────────────────────────────── */
@@ -661,6 +738,15 @@ th {
   .dense-grid {
     grid-template-columns: 1fr;
   }
+
+  .action-row {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .pill-row {
+    flex-wrap: wrap;
+  }
 }
 
 /* ── 600px: tighten padding + compact panels ─────────────────── */
@@ -684,8 +770,19 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .action-row {
-    flex-wrap: wrap;
+  .auth-shell {
+    align-items: flex-start;
+    padding-top: 8px;
+  }
+
+  .sub-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .sub-card > button,
+  .sub-card > .danger-button {
+    width: 100%;
   }
 
   th,

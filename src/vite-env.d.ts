@@ -61,6 +61,6 @@ interface Window {
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
     syncMachineDetails: (payload: { baseUrl: string; session: DesktopSession }) => Promise<DesktopMachineDetails>;
-    enableClaudeCode: (payload: { apiBaseUrl: string; session: DesktopSession }) => Promise<DesktopClaudeCodeResult>;
+    enableClaudeCode: (payload: { apiBaseUrl: string; session: DesktopSession; directApiKey?: string }) => Promise<DesktopClaudeCodeResult>;
   };
 }
