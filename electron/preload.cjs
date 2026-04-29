@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   getMachineDetails: () => ipcRenderer.invoke('app:get-machine-details'),
   syncMachineDetails: (payload) => ipcRenderer.invoke('app:sync-machine-details', payload),
   enableClaudeCode: (payload) => ipcRenderer.invoke('app:enable-claude-code', payload),
+  enableOpenCode: (payload) => ipcRenderer.invoke('app:enable-opencode', payload),
+  enableOpenClaw: (payload) => ipcRenderer.invoke('app:enable-openclaw', payload),
 });
