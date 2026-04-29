@@ -161,6 +161,7 @@ function getDeveloperProfileEntries(profile: DashboardState['profile']): Array<[
     ['Organization', organization],
     ['Organization Type', organizationType],
     ['Designation', designation],
+    ['Current Plan', rawProfile.plan_name ?? rawProfile.plan],
   ];
 
   return entries.filter(([, value]) => value !== undefined && value !== null && value !== '');
@@ -244,6 +245,7 @@ function App() {
   });
   const [loadedSections, setLoadedSections] = useState<Record<SectionKey, boolean>>(createLoadedSections);
   const [email, setEmail] = useState('');
+  const [loginStep, setLoginStep] = useState<'email' | 'otp'>('email');
   const [otp, setOtp] = useState('');
   const [selfHostForm, setSelfHostForm] = useState({ name: '', model_id: '', endpoint_url: 'http://127.0.0.1:8000/v1' });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
@@ -490,6 +492,7 @@ function App() {
 
     try {
       await requestOtp(settingsDraft.apiBaseUrl, email);
+      setLoginStep('otp');
       setMessage({ tone: 'success', text: `OTP sent to ${email}.` });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to request OTP.' });
@@ -673,6 +676,7 @@ function App() {
     setDashboard(defaultDashboardState);
     setLoadedSections(createLoadedSections());
     setOtp('');
+    setLoginStep('email');
     await persistState(null, settingsDraft.apiBaseUrl);
     setMessage({ tone: 'info', text: 'Local session cleared.' });
   }
@@ -885,29 +889,39 @@ function App() {
 
             {message ? <Banner tone={message.tone} text={message.text} /> : null}
 
-            <form className="stack-form" onSubmit={handleOtpRequest}>
-              <label>
-                <span>Email</span>
-                <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="developer@oneinfer.ai" />
-              </label>
-              <button className="primary-button" type="submit" disabled={busy === 'otp'}>
-                {busy === 'otp' ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
-                Request OTP
-              </button>
-            </form>
+            {loginStep === 'email' ? (
+              <form className="stack-form" onSubmit={handleOtpRequest}>
+                <label>
+                  <span>Email</span>
+                  <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="developer@oneinfer.ai" />
+                </label>
+                <button className="primary-button" type="submit" disabled={busy === 'otp'}>
+                  {busy === 'otp' ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
+                  Request OTP
+                </button>
+              </form>
+            ) : (
+              <form className="stack-form" onSubmit={handleLogin}>
+                <label>
+                  <span>One-Time Password</span>
+                  <input value={otp} onChange={(event) => setOtp(event.target.value)} placeholder="Enter OTP" autoFocus />
+                </label>
+                <button className="secondary-button" type="submit" disabled={busy === 'login'}>
+                  {busy === 'login' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
+                  Enter Workspace
+                </button>
+                <button 
+                  className="ghost-button" 
+                  type="button" 
+                  style={{ marginTop: '-8px' }}
+                  onClick={() => setLoginStep('email')}
+                >
+                  Change Email
+                </button>
+              </form>
+            )}
 
-            <form className="stack-form" onSubmit={handleLogin}>
-              <label>
-                <span>One-Time Password</span>
-                <input value={otp} onChange={(event) => setOtp(event.target.value)} placeholder="Enter OTP" />
-              </label>
-              <button className="secondary-button" type="submit" disabled={busy === 'login'}>
-                {busy === 'login' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-                Enter Workspace
-              </button>
-            </form>
-
-            <div className="stack-form">
+            <div className="stack-form login-hint-stack">
               <div className="form-hint">
                 Claude Code setup becomes available right after login. The desktop app will create a OneInfer API key for this device and update your Claude Code user settings automatically.
               </div>
@@ -941,71 +955,80 @@ function App() {
 
       <div className={`sidebar-overlay${sidebarOpen ? ' active' : ''}`} onClick={() => setSidebarOpen(false)} />
 
-      <aside className={`sidebar glass-panel${sidebarOpen ? ' open' : ''}`}>
-        <button className="ghost-button sidebar-close" type="button" onClick={() => setSidebarOpen(false)}>
-          <X size={18} />
-          Close
-        </button>
-
-        <div className="brand-lockup">
-          <div className="brand-icon">
-            <img src={oneInferLogo} alt="OneInfer logo" className="brand-image" />
-          </div>
-          <div>
-            <div className="eyebrow">Desktop Control Plane</div>
-            <h1>OneInfer</h1>
-          </div>
-        </div>
-
-        <div className="developer-pill">
-          <div>
-            <strong>{session.email}</strong>
-          </div>
-        </div>
-
-        <nav className="nav-stack">
-          {sections.map((section) => {
-            const Icon = section.icon;
-            return (
-              <button
-                key={section.key}
-                className={`nav-button ${activeSection === section.key ? 'active' : ''}`}
-                onClick={() => { setActiveSection(section.key); setSidebarOpen(false); }}
-                type="button"
-              >
-                <Icon size={18} />
-                {section.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="version-text">Version {appVersion || 'dev'}</div>
-          <button
-            className="ghost-button"
-            onClick={handleRefreshCurrentSection}
-            type="button"
-          >
-            <RefreshCw size={16} />
-            Refresh
+      <aside className={`sidebar-container glass-panel${sidebarOpen ? ' open' : ''}`}>
+        <div className="sidebar">
+          <button className="ghost-button sidebar-close" type="button" onClick={() => setSidebarOpen(false)}>
+            <X size={18} />
+            Close
           </button>
-          <button className="ghost-button" onClick={handleLogout} type="button">
-            <LogOut size={16} />
-            Logout
-          </button>
+
+          <div className="brand-lockup">
+            <div className="brand-icon">
+              <img src={oneInferLogo} alt="OneInfer logo" className="brand-image" />
+            </div>
+            <div>
+              <div className="eyebrow">Desktop Control Plane</div>
+              <h1>OneInfer</h1>
+            </div>
+          </div>
+
+          <div className="developer-pill">
+            <div>
+              <strong>{session.email}</strong>
+            </div>
+          </div>
+
+          <nav className="nav-stack">
+            {sections.map((section) => {
+              const Icon = section.icon;
+              return (
+                <button
+                  key={section.key}
+                  className={`nav-button ${activeSection === section.key ? 'active' : ''}`}
+                  onClick={() => { setActiveSection(section.key); setSidebarOpen(false); }}
+                  type="button"
+                >
+                  <Icon size={18} />
+                  {section.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="sidebar-footer">
+            <div className="version-text">Version {appVersion || 'dev'}</div>
+            <button
+              className="ghost-button"
+              onClick={handleRefreshCurrentSection}
+              type="button"
+            >
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+            <button className="ghost-button" onClick={handleLogout} type="button">
+              <LogOut size={16} />
+              Logout
+            </button>
+          </div>
         </div>
       </aside>
 
       <main className="main-stage">
         <section className="hero-panel hero-panel--single glass-panel">
-          <div>
-            <div className="eyebrow">Unified API + Infrastructure Desktop</div>
-            <h2>Operate your developer platform without living in raw HTTP requests.</h2>
-            <p>
-              This app targets Windows, Linux, and macOS with native installers per operating system and connects to
-              the OneInfer API service by default.
-            </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <div className="eyebrow">Unified API + Infrastructure Desktop</div>
+              <h2>Operate your developer platform without living in raw HTTP requests.</h2>
+              <p>
+                This app targets Windows, Linux, and macOS with native installers per operating system and connects to
+                the OneInfer API service by default.
+              </p>
+            </div>
+            {dashboard.profile && (
+              <div className="status-pill" style={{ background: 'rgba(116, 227, 197, 0.15)', color: 'var(--accent)', fontWeight: 600 }}>
+                {String((dashboard.profile?.developer as any)?.plan_name ?? dashboard.profile?.plan_name ?? dashboard.profile?.plan ?? 'Free')} Plan
+              </div>
+            )}
           </div>
         </section>
 
@@ -1021,14 +1044,16 @@ function App() {
               onEnableAnthropic={handleEnableClaudeCodeDirect}
             />
 
-            <Panel title="Credits" icon={ShieldCheck}>
-              <DataList
-                entries={getAvailableCreditsEntries(dashboard.credits)}
-                emptyText="Credit data not loaded."
-              />
-            </Panel>
+            <div className="section-grid dashboard-row">
+              <Panel title="Credits" icon={ShieldCheck}>
+                <DataList
+                  entries={getAvailableCreditsEntries(dashboard.credits)}
+                  emptyText="Credit data not loaded."
+                />
+              </Panel>
 
-            <HardwareWidget machine={dashboard.machineDetails} />
+              <HardwareWidget machine={dashboard.machineDetails} />
+            </div>
           </div>
         ) : null}
 
@@ -1426,7 +1451,7 @@ function App() {
                 </div>
                 <DataList
                   entries={[
-                    ['plan', '—'],
+                    ['plan', String((dashboard.profile?.developer as any)?.plan_name ?? dashboard.profile?.plan_name ?? dashboard.profile?.plan ?? '—')],
                     ['used', '—'],
                     ['limit', '—'],
                     ['renews', '—'],
