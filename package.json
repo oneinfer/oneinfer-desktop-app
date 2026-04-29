@@ -34,7 +34,8 @@
     },
     "publish": [
       {
-        "provider": "github"
+        "provider": "generic",
+        "url": "https://openbandwidth.ai/download/desktop"
       }
     ],
     "win": {
