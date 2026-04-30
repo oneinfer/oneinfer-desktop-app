@@ -16,6 +16,7 @@ interface DesktopSession {
 
 interface DesktopSettings {
   apiBaseUrl: string;
+  claudeCodeProvider: 'oneinfer' | 'anthropic';
 }
 
 interface DesktopState {
@@ -28,10 +29,30 @@ interface DesktopMachineDetails {
 }
 
 interface DesktopClaudeCodeResult {
-  apiKeyName: string;
-  anthropicBaseUrl: string;
+  alreadyConfigured: boolean;
+  apiKeyName: string | null;
+  anthropicBaseUrl: string | null;
   anthropicModel: string;
+  claudeCodeInstallState: 'already-installed' | 'installed' | 'not-required';
+  provider: 'oneinfer' | 'anthropic';
   settingsPath: string;
+}
+
+interface DesktopOpenCodeResult {
+  alreadyConfigured: boolean;
+  apiBaseUrl: string;
+  apiKeyName: string | null;
+  configPath: string;
+  model: string;
+  opencodeInstallState: 'already-installed' | 'installed';
+  providerId: string;
+}
+
+interface DesktopOpenClawResult {
+  alreadyConfigured: boolean;
+  apiKeyName: string | null;
+  openclawInstallState: 'already-installed' | 'installed' | 'not-required';
+  providerId: string;
 }
 
 type DesktopUpdatePhase =
@@ -61,6 +82,20 @@ interface Window {
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
     syncMachineDetails: (payload: { baseUrl: string; session: DesktopSession }) => Promise<DesktopMachineDetails>;
-    enableClaudeCode: (payload: { apiBaseUrl: string; session: DesktopSession; directApiKey?: string }) => Promise<DesktopClaudeCodeResult>;
+    enableClaudeCode: (payload: {
+      provider: 'oneinfer' | 'anthropic';
+      apiBaseUrl?: string;
+      session?: DesktopSession;
+      anthropicModel?: string;
+    }) => Promise<DesktopClaudeCodeResult>;
+    enableOpenCode: (payload: {
+      apiBaseUrl?: string;
+      session?: DesktopSession;
+      modelId?: string;
+    }) => Promise<DesktopOpenCodeResult>;
+    enableOpenClaw: (payload: {
+      apiBaseUrl?: string;
+      session?: DesktopSession;
+    }) => Promise<DesktopOpenClawResult>;
   };
 }

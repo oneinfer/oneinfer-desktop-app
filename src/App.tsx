@@ -57,6 +57,7 @@ const defaultApiBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_ONEINFER_API_
 const defaultSettings = {
   apiBaseUrl: defaultApiBaseUrl,
 };
+const defaultClaudeCodeProvider: 'oneinfer' | 'anthropic' = 'anthropic';
 
 const defaultDashboardState: DashboardState = {
   profile: null,
@@ -247,7 +248,7 @@ function App() {
   const [email, setEmail] = useState('');
   const [loginStep, setLoginStep] = useState<'email' | 'otp'>('email');
   const [otp, setOtp] = useState('');
-  const [selfHostForm, setSelfHostForm] = useState({ name: '', model_id: '', endpoint_url: 'http://127.0.0.1:8000/v1' });
+  const [selfHostForm, setSelfHostForm] = useState({ name: '', model_id: '', endpoint_url: 'https://api.oneinfer.ai/v1' });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
   const [apiKeyName, setApiKeyName] = useState('Desktop Key');
   const [apiKeyEnvironment, setApiKeyEnvironment] = useState('production');
@@ -259,7 +260,7 @@ function App() {
     endpointId: '',
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>('oneinfer');
+  const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -274,15 +275,36 @@ function App() {
     return machineDetails;
   }
 
-  async function persistState(nextSession: DesktopSession | null, nextApiBaseUrl: string) {
+  async function persistState(
+    nextSession: DesktopSession | null,
+    nextApiBaseUrl: string,
+    nextClaudeCodeProvider: 'oneinfer' | 'anthropic',
+  ) {
     if (!window.desktopBridge) {
       return;
     }
 
     await window.desktopBridge.saveState({
       session: nextSession,
-      settings: { apiBaseUrl: nextApiBaseUrl },
+      settings: {
+        apiBaseUrl: nextApiBaseUrl,
+        claudeCodeProvider: nextClaudeCodeProvider,
+      },
     });
+  }
+
+  async function handleClaudeCodeProviderChange(nextProvider: 'oneinfer' | 'anthropic') {
+    setClaudeCodeProvider(nextProvider);
+
+    await persistState(session, settingsDraft.apiBaseUrl, nextProvider).catch((error) => {
+      console.error('[state] failed to persist Claude Code provider selection', error);
+    });
+
+    if (nextProvider === 'oneinfer') {
+      await handleEnableClaudeCode();
+    } else {
+      await handleEnableClaudeCodeDirect();
+    }
   }
 
   async function loadSectionData(
@@ -406,8 +428,11 @@ function App() {
         return;
       }
 
-      const nextBaseUrl = defaultSettings.apiBaseUrl;
+      const savedProvider = storedState?.settings?.claudeCodeProvider;
+      const nextClaudeCodeProvider = (savedProvider === 'anthropic' || savedProvider === 'oneinfer') ? savedProvider : defaultClaudeCodeProvider;
+      const nextBaseUrl = storedState?.settings?.apiBaseUrl || defaultSettings.apiBaseUrl;
       setSettingsDraft({ apiBaseUrl: nextBaseUrl });
+      setClaudeCodeProvider(nextClaudeCodeProvider);
       setSession(storedState?.session ?? null);
       setLoadedSections(createLoadedSections());
       setEmail(storedState?.session?.email ?? '');
@@ -511,7 +536,7 @@ function App() {
       setSession(nextSession);
       setLoadedSections(createLoadedSections());
       setDashboard(defaultDashboardState);
-      await persistState(nextSession, settingsDraft.apiBaseUrl);
+      await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
       await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
       setMessage({ tone: 'success', text: 'Logged in successfully.' });
     } catch (error) {
@@ -531,13 +556,19 @@ function App() {
 
     try {
       const result = await window.desktopBridge.enableClaudeCode({
+        provider: 'oneinfer',
         apiBaseUrl: settingsDraft.apiBaseUrl,
         session,
       });
+      const installMessage = result.claudeCodeInstallState === 'installed'
+        ? ' Claude Code was installed first for this operating system.'
+        : '';
 
       setMessage({
         tone: 'success',
-        text: `Claude Code enabled with ${result.apiKeyName}. Base URL: ${result.anthropicBaseUrl}. Model: ${result.anthropicModel}`,
+        text: result.alreadyConfigured
+          ? `Claude Code is already using OneInfer. Settings: ${result.settingsPath}. Model: ${result.anthropicModel}.${installMessage}`
+          : `Claude Code enabled via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Settings: ${result.settingsPath}. Base URL: ${result.anthropicBaseUrl}. Model: ${result.anthropicModel}.${installMessage}`,
       });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Claude Code.' });
@@ -547,7 +578,7 @@ function App() {
   }
 
   async function handleEnableClaudeCodeDirect() {
-    if (!session || !window.desktopBridge?.enableClaudeCode) {
+    if (!window.desktopBridge?.enableClaudeCode) {
       return;
     }
 
@@ -556,13 +587,14 @@ function App() {
 
     try {
       const result = await window.desktopBridge.enableClaudeCode({
-        apiBaseUrl: 'https://api.anthropic.com',
-        session,
+        provider: 'anthropic',
       });
 
       setMessage({
         tone: 'success',
-        text: `Claude Code configured with Anthropic API. Settings saved to ${result.settingsPath}.`,
+        text: result.alreadyConfigured
+          ? `Claude Code is already reset for Anthropic. Settings: ${result.settingsPath}. Model: ${result.anthropicModel}.`
+          : `Claude Code reset for Anthropic. Settings: ${result.settingsPath}. Model: ${result.anthropicModel}.`,
       });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to configure Claude Code.' });
@@ -570,6 +602,67 @@ function App() {
       setBusy(null);
     }
   }
+
+  async function handleEnableOpenClaw() {
+    if (!session || !window.desktopBridge?.enableOpenClaw) {
+      return;
+    }
+
+    setBusy('configure-openclaw');
+    setMessage(null);
+
+    try {
+      const result = await window.desktopBridge.enableOpenClaw({
+        apiBaseUrl: settingsDraft.apiBaseUrl,
+        session,
+      });
+      const installMessage = result.openclawInstallState === 'installed'
+        ? ' OpenClaw was installed first for this operating system.'
+        : '';
+
+      setMessage({
+        tone: 'success',
+        text: result.alreadyConfigured
+          ? `OpenClaw is already configured for OneInfer.${installMessage}`
+          : `OpenClaw enabled via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}.${installMessage}`,
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable OpenClaw.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleEnableOpenCode() {
+    if (!session || !window.desktopBridge?.enableOpenCode) {
+      return;
+    }
+
+    setBusy('configure-opencode');
+    setMessage(null);
+
+    try {
+      const result = await window.desktopBridge.enableOpenCode({
+        apiBaseUrl: settingsDraft.apiBaseUrl,
+        session,
+      });
+      const installMessage = result.opencodeInstallState === 'installed'
+        ? ' OpenCode was installed first for this operating system.'
+        : '';
+
+      setMessage({
+        tone: 'success',
+        text: result.alreadyConfigured
+          ? `OpenCode is already enabled globally for OneInfer. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`
+          : `OpenCode enabled globally via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Config: ${result.configPath}. Base URL: ${result.apiBaseUrl}. Model: ${result.model}.${installMessage}`,
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable OpenCode.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
 
   async function handleCheckForUpdates() {
     if (!window.desktopBridge?.checkForUpdates) {
@@ -644,13 +737,6 @@ function App() {
     } finally {
       setBusy(null);
     }
-  }
-
-  function handleClaudeCodeLoginHint() {
-    setMessage({
-      tone: 'info',
-      text: 'Log in first, then use the Enable Claude Code button from Overview or Settings.',
-    });
   }
 
   async function handleRefreshCurrentSection() {
@@ -889,6 +975,27 @@ function App() {
 
             {message ? <Banner tone={message.tone} text={message.text} /> : null}
 
+            <form className="stack-form" onSubmit={handleOtpRequest}>
+              <label>
+                <span>Email</span>
+                <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="developer@oneinfer.ai" />
+              </label>
+              <button className="primary-button" type="submit" disabled={busy === 'otp'}>
+                {busy === 'otp' ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
+                Request OTP
+              </button>
+            </form>
+
+            <form className="stack-form" onSubmit={handleLogin}>
+              <label>
+                <span>One-Time Password</span>
+                <input value={otp} onChange={(event) => setOtp(event.target.value)} placeholder="Enter OTP" />
+              </label>
+              <button className="secondary-button" type="submit" disabled={busy === 'login'}>
+                {busy === 'login' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
+                Enter Workspace
+              </button>
+            </form>
             {loginStep === 'email' ? (
               <form className="stack-form" onSubmit={handleOtpRequest}>
                 <label>
@@ -1038,10 +1145,18 @@ function App() {
           <div className="section-grid">
             <ClaudeCodeSetupPanel
               provider={claudeCodeProvider}
-              onSetProvider={setClaudeCodeProvider}
+              onSetProvider={handleClaudeCodeProviderChange}
               busy={busy}
-              onEnableOneinfer={handleEnableClaudeCode}
-              onEnableAnthropic={handleEnableClaudeCodeDirect}
+            />
+
+            <OpenCodeSetupPanel
+              busy={busy}
+              onEnable={handleEnableOpenCode}
+            />
+
+            <OpenClawSetupPanel
+              busy={busy}
+              onEnable={handleEnableOpenClaw}
             />
 
             <div className="section-grid dashboard-row">
@@ -1089,7 +1204,7 @@ function App() {
                   <input
                     value={selfHostForm.endpoint_url}
                     onChange={(event) => setSelfHostForm((current) => ({ ...current, endpoint_url: event.target.value }))}
-                    placeholder="http://127.0.0.1:8000/v1"
+                    placeholder="https://api.oneinfer.ai/v1"
                   />
                 </label>
                 <label>
@@ -1334,7 +1449,7 @@ function App() {
                       <input
                         value={inferenceForm.endpoint_url}
                         onChange={(event) => setInferenceForm((current) => ({ ...current, endpoint_url: event.target.value }))}
-                        placeholder="http://127.0.0.1:8000/v1"
+                        placeholder="https://api.oneinfer.ai/v1"
                       />
                     </label>
                     <label>
@@ -1467,10 +1582,18 @@ function App() {
           <div className="section-grid two-col">
             <ClaudeCodeSetupPanel
               provider={claudeCodeProvider}
-              onSetProvider={setClaudeCodeProvider}
+              onSetProvider={handleClaudeCodeProviderChange}
               busy={busy}
-              onEnableOneinfer={handleEnableClaudeCode}
-              onEnableAnthropic={handleEnableClaudeCodeDirect}
+            />
+
+            <OpenCodeSetupPanel
+              busy={busy}
+              onEnable={handleEnableOpenCode}
+            />
+
+            <OpenClawSetupPanel
+              busy={busy}
+              onEnable={handleEnableOpenClaw}
             />
 
             <Panel title="App Updates" icon={Download}>
@@ -1668,8 +1791,6 @@ function ClaudeCodeSetupPanel(props: {
   provider: 'oneinfer' | 'anthropic';
   onSetProvider: (p: 'oneinfer' | 'anthropic') => void;
   busy: string | null;
-  onEnableOneinfer: () => void;
-  onEnableAnthropic: () => void;
 }) {
   const isOneinfer = props.provider === 'oneinfer';
   const busyConfig = props.busy === 'configure-claude-code';
@@ -1688,52 +1809,88 @@ function ClaudeCodeSetupPanel(props: {
           className={`cc-toggle-btn${isOneinfer ? ' active' : ''}`}
           type="button"
           onClick={() => props.onSetProvider('oneinfer')}
+          disabled={busyConfig}
         >
-          <Orbit size={14} />
+          {busyConfig && isOneinfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
           OneInfer API
         </button>
         <button
           className={`cc-toggle-btn${!isOneinfer ? ' active' : ''}`}
           type="button"
           onClick={() => props.onSetProvider('anthropic')}
+          disabled={busyConfig}
         >
-          <Sparkles size={14} />
+          {busyConfig && !isOneinfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
           Anthropic API
         </button>
       </div>
+    </section>
+  );
+}
+
+function OpenCodeSetupPanel(props: {
+  busy: string | null;
+  onEnable: () => void;
+}) {
+  const busyConfig = props.busy === 'configure-opencode';
+
+  return (
+    <section className="content-panel glass-panel">
+      <div className="panel-header">
+        <div className="panel-title">
+          <Blocks size={18} />
+          <h3>OpenCode Setup</h3>
+        </div>
+      </div>
 
       <div className="stack-form">
-        {isOneinfer ? (
-          <>
-            <div className="form-hint">
-              Configure Claude Code using your current OneInfer session. Routes through the Anthropic-compatible OneInfer gateway automatically.
-            </div>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={props.onEnableOneinfer}
-              disabled={busyConfig}
-            >
-              {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}
-              Enable via OneInfer
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="form-hint">
-              Configure Claude Code to use the Anthropic API directly. Routes requests through api.anthropic.com using your OneInfer session credentials.
-            </div>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={props.onEnableAnthropic}
-              disabled={busyConfig}
-            >
-              {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
-              Enable via Anthropic
-            </button>
-          </>
-        )}
+        <div className="form-hint">
+          Install OpenCode automatically if it is missing, then write a global OneInfer-backed
+          configuration for this user account.
+        </div>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={props.onEnable}
+          disabled={busyConfig}
+        >
+          {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
+          Enable OpenCode Globally
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function OpenClawSetupPanel(props: {
+  busy: string | null;
+  onEnable: () => void;
+}) {
+  const busyConfig = props.busy === 'configure-openclaw';
+
+  return (
+    <section className="content-panel glass-panel">
+      <div className="panel-header">
+        <div className="panel-title">
+          <Blocks size={18} />
+          <h3>OpenClaw Setup</h3>
+        </div>
+      </div>
+
+      <div className="stack-form">
+        <div className="form-hint">
+          Install OpenClaw automatically if it is missing, then write a global OneInfer-backed
+          configuration for this user account.
+        </div>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={props.onEnable}
+          disabled={busyConfig}
+        >
+          {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
+          Enable OpenClaw Globally
+        </button>
       </div>
     </section>
   );
