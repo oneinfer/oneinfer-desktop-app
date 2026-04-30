@@ -17,6 +17,23 @@
   box-sizing: border-box;
 }
 
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(144, 197, 255, 0.1);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(144, 197, 255, 0.2);
+}
+
 html,
 body,
 #root {
@@ -80,8 +97,10 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 290px minmax(0, 1fr);
+  grid-template-columns: 340px minmax(0, 1fr);
   gap: 22px;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .auth-shell {
@@ -94,7 +113,7 @@ button {
   display: grid;
   grid-template-columns: 1.3fr 0.9fr;
   gap: 22px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .glass-panel {
@@ -107,7 +126,6 @@ button {
 
 .auth-hero,
 .auth-forms,
-.sidebar,
 .hero-panel,
 .content-panel,
 .loading-card {
@@ -211,10 +229,20 @@ label span,
   background: linear-gradient(180deg, rgba(113, 190, 255, 0.14), rgba(113, 190, 255, 0.03));
 }
 
+.sidebar-container {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* Container doesn't scroll */
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 22px;
+  height: 100%;
+  overflow-y: auto; /* Inner content scrolls */
+  padding: 28px; /* Padding moved here */
+  padding-right: 12px; /* Extra room for scrollbar */
 }
 
 .brand-lockup,
@@ -270,6 +298,9 @@ label span,
 .hero-chip strong {
   display: block;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-stack,
@@ -280,6 +311,10 @@ label span,
 .data-list {
   display: grid;
   gap: 12px;
+}
+
+.login-hint-stack {
+  margin-top: 24px;
 }
 
 .sidebar-footer {
@@ -316,6 +351,9 @@ label span,
 .main-stage {
   display: grid;
   gap: 20px;
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .section-grid {
@@ -324,6 +362,11 @@ label span,
 
 .section-grid.two-col {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.section-grid.dashboard-row {
+  grid-template-columns: 0.6fr 1.4fr;
+  align-items: stretch;
 }
 
 .panel-header {
@@ -652,7 +695,7 @@ th {
 /* ── 1280px: narrow sidebar slightly ─────────────────────────── */
 @media (max-width: 1280px) {
   .app-shell {
-    grid-template-columns: 250px minmax(0, 1fr);
+    grid-template-columns: 290px minmax(0, 1fr);
     gap: 16px;
   }
 }
