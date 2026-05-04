@@ -92,14 +92,19 @@ async function request<T>(options: {
   const normalizedBaseUrl = normalizeApiBaseUrl(baseUrl);
   const url = `${normalizedBaseUrl}${path}${toQueryString(query)}`;
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error) {
+    throw new Error(`Network error: ${error instanceof Error ? error.message : String(error)} (URL: ${url})`);
+  }
 
   let payload: unknown = null;
   const contentType = response.headers.get('content-type') ?? '';
@@ -118,7 +123,7 @@ async function request<T>(options: {
     const message = typeof detail === 'string'
       ? detail
       : (detail as AnyRecord)?.message ?? (detail as AnyRecord)?.detail ?? response.statusText;
-    throw new Error(String(message));
+    throw new Error(`${message} (URL: ${url})`);
   }
 
   return extractResponseData(payload) as T;

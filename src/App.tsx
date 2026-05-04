@@ -125,6 +125,8 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+
+
 function getBalance(credits: DashboardState['credits']): string {
   if (!credits) {
     return '—';
@@ -261,6 +263,8 @@ function App() {
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
+  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'openclaw'>('claude-code');
+  const [settingsTab, setSettingsTab] = useState<'claude-code' | 'opencode' | 'openclaw' | 'account' | 'updates'>('claude-code');
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -664,6 +668,7 @@ function App() {
   }
 
 
+
   async function handleCheckForUpdates() {
     if (!window.desktopBridge?.checkForUpdates) {
       return;
@@ -763,7 +768,7 @@ function App() {
     setLoadedSections(createLoadedSections());
     setOtp('');
     setLoginStep('email');
-    await persistState(null, settingsDraft.apiBaseUrl);
+    await persistState(null, settingsDraft.apiBaseUrl, claudeCodeProvider);
     setMessage({ tone: 'info', text: 'Local session cleared.' });
   }
 
@@ -975,27 +980,6 @@ function App() {
 
             {message ? <Banner tone={message.tone} text={message.text} /> : null}
 
-            <form className="stack-form" onSubmit={handleOtpRequest}>
-              <label>
-                <span>Email</span>
-                <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="developer@oneinfer.ai" />
-              </label>
-              <button className="primary-button" type="submit" disabled={busy === 'otp'}>
-                {busy === 'otp' ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
-                Request OTP
-              </button>
-            </form>
-
-            <form className="stack-form" onSubmit={handleLogin}>
-              <label>
-                <span>One-Time Password</span>
-                <input value={otp} onChange={(event) => setOtp(event.target.value)} placeholder="Enter OTP" />
-              </label>
-              <button className="secondary-button" type="submit" disabled={busy === 'login'}>
-                {busy === 'login' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-                Enter Workspace
-              </button>
-            </form>
             {loginStep === 'email' ? (
               <form className="stack-form" onSubmit={handleOtpRequest}>
                 <label>
@@ -1028,15 +1012,6 @@ function App() {
               </form>
             )}
 
-            <div className="stack-form login-hint-stack">
-              <div className="form-hint">
-                Claude Code setup becomes available right after login. The desktop app will create a OneInfer API key for this device and update your Claude Code user settings automatically.
-              </div>
-              <button className="ghost-button" type="button" onClick={handleClaudeCodeLoginHint}>
-                <Bot size={16} />
-                Enable Claude Code
-              </button>
-            </div>
           </div>
         </div>
       </div>
@@ -1062,7 +1037,10 @@ function App() {
 
       <div className={`sidebar-overlay${sidebarOpen ? ' active' : ''}`} onClick={() => setSidebarOpen(false)} />
 
-      <aside className={`sidebar-container glass-panel${sidebarOpen ? ' open' : ''}`}>
+      <aside
+        className={`sidebar-container glass-panel${sidebarOpen ? ' open' : ''}`}
+        style={{ width: '360px', flexShrink: 0 }}
+      >
         <div className="sidebar">
           <button className="ghost-button sidebar-close" type="button" onClick={() => setSidebarOpen(false)}>
             <X size={18} />
@@ -1142,34 +1120,72 @@ function App() {
         {message ? <Banner tone={message.tone} text={message.text} /> : null}
 
         {activeSection === 'overview' ? (
-          <div className="section-grid">
-            <ClaudeCodeSetupPanel
-              provider={claudeCodeProvider}
-              onSetProvider={handleClaudeCodeProviderChange}
-              busy={busy}
-            />
+          <>
+            <div className="settings-layout">
+              <aside className="settings-sidebar glass-panel">
+                <button
+                  className={`settings-nav-btn ${overviewTab === 'claude-code' ? 'active' : ''}`}
+                  onClick={() => setOverviewTab('claude-code')}
+                  type="button"
+                >
+                  <Bot size={18} />
+                  Claude Code
+                </button>
+                <button
+                  className={`settings-nav-btn ${overviewTab === 'openclaw' ? 'active' : ''}`}
+                  onClick={() => setOverviewTab('openclaw')}
+                  type="button"
+                >
+                  <Orbit size={18} />
+                  OpenClaw
+                </button>
+                <button
+                  className={`settings-nav-btn ${overviewTab === 'opencode' ? 'active' : ''}`}
+                  onClick={() => setOverviewTab('opencode')}
+                  type="button"
+                >
+                  <Blocks size={18} />
+                  OpenCode
+                </button>
+              </aside>
 
-            <OpenCodeSetupPanel
-              busy={busy}
-              onEnable={handleEnableOpenCode}
-            />
+              <main className="settings-content">
+                <div className="card-stack">
+                  {overviewTab === 'claude-code' && (
+                    <ClaudeCodeSetupPanel
+                      provider={claudeCodeProvider}
+                      onSetProvider={handleClaudeCodeProviderChange}
+                      busy={busy}
+                    />
+                  )}
 
-            <OpenClawSetupPanel
-              busy={busy}
-              onEnable={handleEnableOpenClaw}
-            />
+                  {overviewTab === 'opencode' && (
+                    <OpenCodeSetupPanel
+                      busy={busy}
+                      onEnable={handleEnableOpenCode}
+                    />
+                  )}
 
-            <div className="section-grid dashboard-row">
+                  {overviewTab === 'openclaw' && (
+                    <OpenClawSetupPanel
+                      busy={busy}
+                      onEnable={handleEnableOpenClaw}
+                    />
+                  )}
+                </div>
+              </main>
+            </div>
+
+            <div className="section-grid dashboard-row compact-row" style={{ gridTemplateColumns: '1.6fr 1fr', marginTop: '0px' }}>
+              <HardwareWidget machine={dashboard.machineDetails} />
               <Panel title="Credits" icon={ShieldCheck}>
                 <DataList
                   entries={getAvailableCreditsEntries(dashboard.credits)}
                   emptyText="Credit data not loaded."
                 />
               </Panel>
-
-              <HardwareWidget machine={dashboard.machineDetails} />
             </div>
-          </div>
+          </>
         ) : null}
 
         {activeSection === 'selfHosting' ? (
@@ -1568,8 +1584,7 @@ function App() {
                   entries={[
                     ['plan', String((dashboard.profile?.developer as any)?.plan_name ?? dashboard.profile?.plan_name ?? dashboard.profile?.plan ?? '—')],
                     ['used', '—'],
-                    ['limit', '—'],
-                    ['renews', '—'],
+                                       ['renews', '—'],
                   ]}
                   emptyText="No subscription data available."
                 />
@@ -1579,71 +1594,112 @@ function App() {
         ) : null}
 
         {activeSection === 'settings' ? (
-          <div className="section-grid two-col">
-            <ClaudeCodeSetupPanel
-              provider={claudeCodeProvider}
-              onSetProvider={handleClaudeCodeProviderChange}
-              busy={busy}
-            />
+          <div className="settings-layout">
+            <aside className="settings-sidebar glass-panel">
+              <button
+                className={`settings-nav-btn ${settingsTab === 'claude-code' ? 'active' : ''}`}
+                onClick={() => setSettingsTab('claude-code')}
+                type="button"
+              >
+                <Bot size={18} />
+                Claude Code
+              </button>
+              <button
+                className={`settings-nav-btn ${settingsTab === 'openclaw' ? 'active' : ''}`}
+                onClick={() => setSettingsTab('openclaw')}
+                type="button"
+              >
+                <Orbit size={18} />
+                OpenClaw
+              </button>
+              <button
+                className={`settings-nav-btn ${settingsTab === 'opencode' ? 'active' : ''}`}
+                onClick={() => setSettingsTab('opencode')}
+                type="button"
+              >
+                <Blocks size={18} />
+                OpenCode
+              </button>
+            </aside>
 
-            <OpenCodeSetupPanel
-              busy={busy}
-              onEnable={handleEnableOpenCode}
-            />
-
-            <OpenClawSetupPanel
-              busy={busy}
-              onEnable={handleEnableOpenClaw}
-            />
-
-            <Panel title="App Updates" icon={Download}>
-              <div className="stack-form">
-                <DataList
-                  entries={[
-                    ['status', updateStatus.phase],
-                    ['version', updateStatus.version || appVersion || 'unknown'],
-                    ['download', updateStatus.progressPercent === null ? '—' : `${updateStatus.progressPercent}%`],
-                  ]}
-                  emptyText="No update status available."
+            <main className="settings-content">
+              {settingsTab === 'claude-code' && (
+                <ClaudeCodeSetupPanel
+                  provider={claudeCodeProvider}
+                  onSetProvider={handleClaudeCodeProviderChange}
+                  busy={busy}
                 />
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={handleCheckForUpdates}
-                  disabled={busy === 'check-updates' || busy === 'install-update'}
-                >
-                  {busy === 'check-updates' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                  Check for Updates
-                </button>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={handleInstallUpdate}
-                  disabled={updateStatus.phase !== 'downloaded' || busy === 'check-updates' || busy === 'install-update'}
-                >
-                  {busy === 'install-update' ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={16} />}
-                  Restart to Install Update
-                </button>
-              </div>
-            </Panel>
+              )}
 
-            <Panel title="Developer Profile" icon={ShieldCheck}>
-              <DataList
-                entries={getDeveloperProfileEntries(dashboard.profile)}
-                emptyText="Profile data not loaded."
-              />
-            </Panel>
+              {settingsTab === 'opencode' && (
+                <OpenCodeSetupPanel
+                  busy={busy}
+                  onEnable={handleEnableOpenCode}
+                />
+              )}
 
-            <Panel title="Session" icon={ShieldCheck}>
-              <DataList
-                entries={[
-                  ['email', session.email],
-                  ['developerId', session.developerId],
-                  ['token', `${session.accessToken.slice(0, 12)}...`],
-                ]}
-                emptyText="No session data."
-              />
-            </Panel>
+              {settingsTab === 'openclaw' && (
+                <OpenClawSetupPanel
+                  busy={busy}
+                  onEnable={handleEnableOpenClaw}
+                />
+              )}
+
+              {settingsTab === 'account' && (
+                <div className="section-grid two-col">
+                  <Panel title="Developer Profile" icon={ShieldCheck}>
+                    <DataList
+                      entries={getDeveloperProfileEntries(dashboard.profile)}
+                      emptyText="Profile data not loaded."
+                    />
+                  </Panel>
+
+                  <Panel title="Session" icon={ShieldCheck}>
+                    <DataList
+                      entries={[
+                        ['email', session.email],
+                        ['developerId', session.developerId],
+                        ['token', `${session.accessToken.slice(0, 12)}...`],
+                      ]}
+                      emptyText="No session data."
+                    />
+                  </Panel>
+                </div>
+              )}
+
+              {settingsTab === 'updates' && (
+                <Panel title="App Updates" icon={Download}>
+                  <div className="stack-form">
+                    <DataList
+                      entries={[
+                        ['status', updateStatus.phase],
+                        ['version', updateStatus.version || appVersion || 'unknown'],
+                        ['download', updateStatus.progressPercent === null ? '—' : `${updateStatus.progressPercent}%`],
+                      ]}
+                      emptyText="No update status available."
+                    />
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={handleCheckForUpdates}
+                      disabled={busy === 'check-updates' || busy === 'install-update'}
+                    >
+                      {busy === 'check-updates' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                      Check for Updates
+                    </button>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={handleInstallUpdate}
+                      disabled={updateStatus.phase !== 'downloaded' || busy === 'check-updates' || busy === 'install-update'}
+                    >
+                      {busy === 'install-update' ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={16} />}
+                      Restart to Install Update
+                    </button>
+                  </div>
+                </Panel>
+              )}
+            </main>
           </div>
         ) : null}
 
