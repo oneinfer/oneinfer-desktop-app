@@ -39,6 +39,8 @@ import {
   listApiKeys,
   listInferenceEndpoints,
   listIntelligentEndpoints,
+  listModels,
+  getHfModelInfo,
   loginWithOtp,
   normalizeApiBaseUrl,
   normalizeList,
@@ -46,6 +48,7 @@ import {
   runInstanceAction,
 } from './api';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
+import { validateHardwareSupport, type ValidationResult } from './helpers/hardwareValidation';
 import type {
   CreateInferenceFormState,
   CreateInstanceFormState,
@@ -73,6 +76,7 @@ const defaultDashboardState: DashboardState = {
   inferenceEndpoints: [],
   providerInfo: {},
   gpuSpecs: [],
+  models: [],
 };
 
 const defaultInstanceForm: CreateInstanceFormState = {
@@ -269,7 +273,13 @@ function App() {
   const [email, setEmail] = useState('');
   const [loginStep, setLoginStep] = useState<'email' | 'otp'>('email');
   const [otp, setOtp] = useState('');
-  const [selfHostForm, setSelfHostForm] = useState({ name: '', model_id: '', endpoint_url: 'https://api.oneinfer.ai/v1' });
+  const [selfHostForm, setSelfHostForm] = useState({ 
+    name: '', 
+    model_id: '', 
+    endpoint_url: 'http://localhost:8000/v1', // Defaulting to common vLLM port
+    useHfUrl: false,
+    hfUrl: ''
+  });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
   const [apiKeyName, setApiKeyName] = useState('');
   const [apiKeyEnvironment, setApiKeyEnvironment] = useState('production');
@@ -286,6 +296,62 @@ function App() {
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<'claude-code' | 'opencode' | 'openclaw' | 'account' | 'updates'>('claude-code');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function runValidation() {
+      if (!session) return;
+
+      const targetModelId = selfHostForm.useHfUrl ? selfHostForm.hfUrl : selfHostForm.model_id;
+      if (!targetModelId) {
+        setValidationResult(null);
+        return;
+      }
+
+      let requirements = { minVramGb: 0, modelSizeGb: 0 };
+
+      if (selfHostForm.useHfUrl) {
+        // Extract repo ID from URL
+        // Format: https://huggingface.co/owner/name
+        try {
+          const url = new URL(targetModelId);
+          const parts = url.pathname.split('/').filter(Boolean);
+          if (parts.length >= 2) {
+            const repoId = `${parts[0]}/${parts[1]}`;
+            const info = await getHfModelInfo(repoId);
+            const totalSize = (info.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
+            const sizeGb = totalSize / (1024 ** 3);
+            requirements = {
+              minVramGb: Math.ceil(sizeGb * 1.2), // Assume 20% overhead
+              modelSizeGb: Math.ceil(sizeGb),
+            };
+          }
+        } catch (e) {
+          // Fallback if not a valid URL yet
+          setValidationResult(null);
+          return;
+        }
+      } else {
+        const catalogModel = dashboard.models.find((m: any) => (m.model_id || m.id) === targetModelId);
+        if (catalogModel) {
+          requirements = {
+            minVramGb: Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0),
+            modelSizeGb: Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0),
+          };
+        }
+      }
+
+      if (active && (requirements.minVramGb > 0 || requirements.modelSizeGb > 0)) {
+        const result = validateHardwareSupport(requirements, dashboard.machineDetails);
+        setValidationResult(result);
+      }
+    }
+
+    runValidation();
+    return () => { active = false; };
+  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models]);
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -425,6 +491,14 @@ function App() {
           setMessage({ tone: 'error', text: `Routing loaded with ${failed} partial failure${failed > 1 ? 's' : ''}.` });
         } else if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Routing synced.' });
+        }
+      }
+
+      if (section === 'selfHosting') {
+        const models = await listModels(currentBaseUrl);
+        setDashboard((current) => ({ ...current, models }));
+        if (!shouldBeSilent) {
+          setMessage({ tone: 'success', text: 'Models catalog synced.' });
         }
       }
 
@@ -731,11 +805,6 @@ function App() {
       return;
     }
 
-    if (!selfHostForm.endpoint_url) {
-      setMessage({ tone: 'error', text: 'Local endpoint URL is required.' });
-      return;
-    }
-
     const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
     const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
       ? dashboard.machineDetails.machineName
@@ -743,12 +812,18 @@ function App() {
         ? dashboard.machineDetails.hostname
         : '';
 
+    const modelId = selfHostForm.useHfUrl ? selfHostForm.hfUrl : selfHostForm.model_id;
+    if (!modelId) {
+      setMessage({ tone: 'error', text: selfHostForm.useHfUrl ? 'Hugging Face URL is required.' : 'Please select a model.' });
+      return;
+    }
+
     setBusy('register-self-hosted');
     try {
       await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
         provider: 'openai',
-        model_id: selfHostForm.model_id,
+        model_id: modelId,
         deployment_target: 'local',
         endpoint_url: selfHostForm.endpoint_url,
         machine_id: detectedMachineId,
@@ -1121,7 +1196,7 @@ function App() {
       </aside>
 
       <main className="main-stage">
-        {activeSection !== 'apiKeys' && activeSection !== 'settings' && (
+        {activeSection !== 'apiKeys' && activeSection !== 'settings' && activeSection !== 'selfHosting' && (
           <section className="hero-panel hero-panel--single glass-panel" style={{ marginBottom: '24px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
@@ -1307,22 +1382,61 @@ function App() {
                     placeholder="Local vLLM server"
                   />
                 </label>
-                <label>
-                  <span>Endpoint URL</span>
-                  <input
-                    value={selfHostForm.endpoint_url}
-                    onChange={(event) => setSelfHostForm((current) => ({ ...current, endpoint_url: event.target.value }))}
-                    placeholder="https://api.oneinfer.ai/v1"
-                  />
-                </label>
-                <label>
-                  <span>Model ID</span>
-                  <input
-                    value={selfHostForm.model_id}
-                    onChange={(event) => setSelfHostForm((current) => ({ ...current, model_id: event.target.value }))}
-                    placeholder="meta-llama/Meta-Llama-3-8B-Instruct"
-                  />
-                </label>
+
+                <div className="cc-toggle" style={{ marginBottom: '8px' }}>
+                  <button
+                    className={`cc-toggle-btn ${!selfHostForm.useHfUrl ? 'active' : ''}`}
+                    onClick={() => setSelfHostForm((c) => ({ ...c, useHfUrl: false }))}
+                    type="button"
+                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                  >
+                    Select Model
+                  </button>
+                  <button
+                    className={`cc-toggle-btn ${selfHostForm.useHfUrl ? 'active' : ''}`}
+                    onClick={() => setSelfHostForm((c) => ({ ...c, useHfUrl: true }))}
+                    type="button"
+                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                  >
+                    Hugging Face URL
+                  </button>
+                </div>
+
+                {!selfHostForm.useHfUrl ? (
+                  <label>
+                    <span>Select Model</span>
+                    <select
+                      value={selfHostForm.model_id}
+                      onChange={(event) => setSelfHostForm((current) => ({ ...current, model_id: event.target.value }))}
+                    >
+                      <option value="">Select a model...</option>
+                      {dashboard.models.map((model: any) => (
+                        <option key={model.model_id || model.id} value={model.model_id || model.id}>
+                          {model.model_name || model.displayName || model.model_id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <label>
+                    <span>Hugging Face URL</span>
+                    <input
+                      value={selfHostForm.hfUrl}
+                      onChange={(event) => setSelfHostForm((current) => ({ ...current, hfUrl: event.target.value }))}
+                      placeholder="https://huggingface.co/meta-llama/Meta-Llama-3-8B"
+                    />
+                  </label>
+                )}
+
+                {validationResult && (
+                  <div className={`banner ${validationResult.status === 'insufficient' ? 'error' : validationResult.status === 'warning' ? 'info' : 'success'}`} style={{ fontSize: '0.85rem', padding: '10px 14px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                      <Sparkles size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <span>{validationResult.message}</span>
+                    </div>
+                  </div>
+                )}
+
                 <button className="primary-button" type="submit" disabled={busy === 'register-self-hosted'}>
                   {busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
                   Register Endpoint

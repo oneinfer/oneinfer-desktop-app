@@ -150,6 +150,7 @@ export interface DashboardState {
   inferenceEndpoints: EndpointItem[];
   providerInfo: ProviderInfoMap;
   gpuSpecs: GpuSpecItem[];
+  models: any[];
 }
 
 export interface CreateInstanceFormState {
