@@ -97,7 +97,7 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 22px;
   height: 100vh;
   overflow: hidden;
@@ -639,8 +639,8 @@ th {
 
 .hw-widget-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
 }
 
 .hw-stat {
@@ -664,11 +664,7 @@ th {
   text-overflow: ellipsis;
 }
 
-@media (max-width: 600px) {
-  .hw-widget-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
+/* Hardware stats are now 2 columns by default */
 
 /* ── Mobile header & overlay (hidden on desktop) ─────────────── */
 .mobile-header {
@@ -701,9 +697,81 @@ th {
 }
 
 /* ── 1100px: narrow sidebar + collapse multi-col grids ────────── */
+
+/* ── Settings Layout ────────────────────────────────────────── */
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 20px;
+  align-items: flex-start;
+  margin-top: 12px;
+}
+
+.settings-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  position: sticky;
+  top: 24px;
+}
+
+.settings-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.settings-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--foreground);
+}
+
+.settings-nav-btn.active {
+  background: rgba(116, 227, 197, 0.1);
+  color: var(--accent);
+}
+
+.settings-nav-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.05);
+  margin: 8px 12px;
+}
+
+.compact-row {
+  gap: 12px !important;
+}
+
+.compact-row .glass-panel {
+  padding: 12px !important;
+}
+
+.compact-row .data-list {
+  gap: 4px !important;
+}
+
+.settings-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 @media (max-width: 1100px) {
   .app-shell {
-    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-columns: 300px minmax(0, 1fr);
     gap: 12px;
   }
 
@@ -713,7 +781,7 @@ th {
   .hero-panel,
   .content-panel,
   .loading-card {
-    padding: 20px;
+    padding: 16px;
   }
 
   .auth-stage,
@@ -756,7 +824,7 @@ th {
     position: fixed;
     top: 0;
     left: -300px;
-    width: min(280px, 85vw);
+    width: min(320px, 85vw);
     height: 100vh;
     height: 100dvh;
     z-index: 300;
@@ -789,6 +857,25 @@ th {
 
   .pill-row {
     flex-wrap: wrap;
+  }
+
+  .settings-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .settings-sidebar {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    position: static;
+    padding: 4px;
+    gap: 8px;
+  }
+
+  .settings-nav-btn {
+    white-space: nowrap;
+    width: auto;
   }
 }
 
