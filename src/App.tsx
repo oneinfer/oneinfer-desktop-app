@@ -490,12 +490,16 @@ function App() {
         const results = await Promise.allSettled([
           getProfile(currentBaseUrl, currentSession),
           getCredits(currentBaseUrl, currentSession),
+          listInferenceEndpoints(currentBaseUrl, currentSession),
+          getInstances(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
           ...current,
           profile: results[0].status === 'fulfilled' ? results[0].value : current.profile,
           credits: results[1].status === 'fulfilled' ? results[1].value : current.credits,
+          inferenceEndpoints: results[2].status === 'fulfilled' ? results[2].value : current.inferenceEndpoints,
+          instances: results[3].status === 'fulfilled' ? results[3].value : current.instances,
         }));
 
         const failed = results.filter((result) => result.status === 'rejected').length;
@@ -534,9 +538,6 @@ function App() {
       if (section === 'apiKeys') {
         const apiKeys = await listApiKeys(currentBaseUrl, currentSession);
         setDashboard((current) => ({ ...current, apiKeys }));
-        if (!shouldBeSilent) {
-          setMessage({ tone: 'success', text: 'API keys synced.' });
-        }
       }
 
       if (section === 'routing') {
@@ -995,7 +996,7 @@ function App() {
     setBusy('create-key');
     try {
       await createApiKey(settingsDraft.apiBaseUrl, session, apiKeyName, apiKeyEnvironment);
-      setMessage({ tone: 'success', text: `API key ${apiKeyName} created.` });
+      setMessage({ tone: 'success', text: 'API key created successfully' });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
       setApiKeyName('');
     } catch (error) {
@@ -1013,7 +1014,7 @@ function App() {
     setBusy('delete-key');
     try {
       await deleteApiKey(settingsDraft.apiBaseUrl, session, name);
-      setMessage({ tone: 'success', text: `API key ${name} deleted.` });
+      setMessage({ tone: 'success', text: 'API Key removed successfully' });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'API key deletion failed.' });
@@ -1205,8 +1206,7 @@ function App() {
             <img src={oneInferLogo} alt="OneInfer logo" className="brand-image" />
           </div>
           <div>
-            <div className="eyebrow">Desktop Control Plane</div>
-            <h1>OneInfer</h1>
+            <h1 style={{ fontSize: '1.4rem' }}>OneInfer</h1>
           </div>
         </div>
         <button className="ghost-button" type="button" onClick={() => setSidebarOpen(true)}>
@@ -1231,14 +1231,17 @@ function App() {
               <img src={oneInferLogo} alt="OneInfer logo" className="brand-image" />
             </div>
             <div>
-              <div className="eyebrow">Desktop Control Plane</div>
-              <h1>OneInfer</h1>
+              <h1 style={{ fontSize: '1.4rem' }}>OneInfer</h1>
             </div>
           </div>
 
-          <div className="developer-pill">
-            <div>
-              <strong>{session.email}</strong>
+          <div className="developer-pill" style={{ background: 'rgba(116, 227, 197, 0.08)', borderColor: 'rgba(116, 227, 197, 0.2)', padding: '12px 16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <ShieldCheck size={18} style={{ color: 'var(--accent)' }} />
+              <div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '2px' }}>Available Balance</div>
+                <strong style={{ color: 'var(--accent)', fontSize: '1.15rem', fontWeight: 800 }}>{getBalance(dashboard.credits)}</strong>
+              </div>
             </div>
           </div>
 
@@ -1277,33 +1280,38 @@ function App() {
         </div>
       </aside>
 
-      <main className="main-stage">
-        {activeSection !== 'apiKeys' && activeSection !== 'settings' && activeSection !== 'selfHosting' && (
-          <section className="hero-panel hero-panel--single glass-panel" style={{ marginBottom: '24px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div className="eyebrow" style={{ color: 'var(--accent)', opacity: 0.9 }}>Account Subscription</div>
-                <h2 style={{ fontSize: '2.25rem', margin: '4px 0' }}>
-                  {(() => {
-                    const name = getPlanName(dashboard.profile);
-                    return name === 'No Active plan' ? name : `${name} Plan`;
-                  })()}
-                </h2>
-                <p style={{ color: 'var(--muted)', fontSize: '1rem' }}>OneInfer Developer Platform</p>
-              </div>
-              {dashboard.profile && getPlanName(dashboard.profile) !== 'No Active plan' && (
-                <div className="plan-badge">
-                  <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>Current</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>Active</div>
-                </div>
-              )}
-            </div>
-          </section>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+        {message && (
+          <div style={{ padding: '20px 20px 0 20px' }}>
+            <Banner tone={message.tone} text={message.text} />
+          </div>
         )}
 
-        {message ? <Banner tone={message.tone} text={message.text} /> : null}
+        <main className="main-stage" style={{ padding: '20px' }}>
+          {activeSection !== 'apiKeys' && activeSection !== 'settings' && activeSection !== 'selfHosting' && (
+            <section className="hero-panel hero-panel--single glass-panel" style={{ marginBottom: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div className="eyebrow" style={{ color: 'var(--accent)', opacity: 0.9 }}>Account Subscription</div>
+                  <h2 style={{ fontSize: '2.25rem', margin: '4px 0' }}>
+                    {(() => {
+                      const name = getPlanName(dashboard.profile);
+                      return name === 'No Active plan' ? name : `${name} Plan`;
+                    })()}
+                  </h2>
+                  <p style={{ color: 'var(--muted)', fontSize: '1rem' }}>OneInfer Developer Platform</p>
+                </div>
+                {dashboard.profile && getPlanName(dashboard.profile) !== 'No Active plan' && (
+                  <div className="plan-badge">
+                    <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>Current</div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>Active</div>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
 
-        {activeSection === 'overview' ? (
+          {activeSection === 'overview' ? (
           <>
             <div className="settings-layout">
               <aside className="glass-panel" style={{ padding: '20px' }}>
@@ -1334,8 +1342,8 @@ function App() {
                         <h3 className="panel-title">Self-hosted Models</h3>
                       </div>
                       <MiniTable
-                        columns={['name', 'model_id', 'endpoint_url']}
-                        rows={dashboard.inferenceEndpoints.filter((e: any) => e.deployment_target === 'local')}
+                        columns={['name', 'model_id', 'endpoint_url', 'status']}
+                        rows={dashboard.inferenceEndpoints.filter((e: any) => String(e.deployment_target).toLowerCase() === 'local')}
                         emptyText="No local models registered."
                       />
                     </>
@@ -1400,6 +1408,21 @@ function App() {
                 </div>
 
                 <div className="card-stack">
+                  {dashboard.inferenceEndpoints.some(e => e.deployment_target === 'local') && (
+                    <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
+                      <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+                         <Zap size={20} />
+                      </div>
+                      <div className="status-card-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <h4 style={{ color: '#10b981', margin: '0 0 4px 0' }}>Local Models Active</h4>
+                          <p style={{ fontSize: '0.85rem', opacity: 0.8, margin: 0 }}>{dashboard.inferenceEndpoints.filter(e => e.deployment_target === 'local').length} local inference server(s) registered and ready.</p>
+                        </div>
+                        <button className="ghost-button" onClick={() => setActiveSection('routing')} style={{ fontSize: '0.75rem' }}>Manage Routing</button>
+                      </div>
+                    </div>
+                  )}
+
                   {overviewTab === 'claude-code' && (
                     <ClaudeCodeSetupPanel
                       provider={claudeCodeProvider}
@@ -1428,10 +1451,20 @@ function App() {
             <div className="section-grid dashboard-row compact-row" style={{ gridTemplateColumns: '3fr 1fr', marginTop: '20px' }}>
               <HardwareWidget machine={dashboard.machineDetails} />
               <Panel title="Credits" icon={ShieldCheck}>
-                <DataList
-                  entries={getAvailableCreditsEntries(dashboard.credits)}
-                  emptyText="Credit data not loaded."
-                />
+                <div style={{ padding: '8px 4px' }}>
+                  {dashboard.credits ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                      <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--text)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+                        {getBalance(dashboard.credits)}
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--muted)', marginTop: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Available Credits
+                      </div>
+                    </div>
+                  ) : (
+                    <EmptyState text="Credit data not loaded." />
+                  )}
+                </div>
               </Panel>
             </div>
           </>
@@ -1534,24 +1567,6 @@ function App() {
         ) : null}
 
 
-        <Modal 
-          title="Model Analysis & Hardware Check" 
-          isOpen={isHfModelModalOpen && !!hfModelMetadata} 
-          onClose={() => setIsHfModelModalOpen(false)}
-        >
-          <div style={{ margin: '-24px' }}>
-            <HfModelDetailPanel 
-              model={hfModelMetadata} 
-              validation={validationResult}
-              machine={dashboard.machineDetails}
-              libraries={libraries}
-              busy={busy}
-              onInstall={handleInstallLibrary}
-              onRegister={() => handleRegisterSelfHosted()}
-            />
-
-          </div>
-        </Modal>
 
 
 
@@ -1669,7 +1684,7 @@ function App() {
         ) : null}
 
         {activeSection === 'apiKeys' ? (
-          <div className="card-stack" style={{ gap: '24px' }}>
+          <div className="card-stack" style={{ gap: '8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600 }}>API Keys</h2>
               <button 
@@ -1681,12 +1696,12 @@ function App() {
               </button>
             </div>
 
-            <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+            <div className="glass-panel" style={{ padding: '4px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
               <div style={{ position: 'relative', flex: 1 }}>
                 <KeyRound size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
                 <input 
                   placeholder="Search API keys..." 
-                  style={{ width: '100%', padding: '10px 10px 10px 36px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', color: 'var(--text)' }}
+                  style={{ width: '100%', padding: '8px 12px 8px 36px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', color: 'var(--text)' }}
                 />
               </div>
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
@@ -1695,9 +1710,9 @@ function App() {
               </label>
             </div>
 
-            <div className="glass-panel" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+            <div className="glass-panel" style={{ width: '100%', overflow: 'hidden' }}>
               {dashboard.apiKeys.length === 0 ? (
-                <div style={{ maxWidth: '400px' }}>
+                <div style={{ padding: '40px', textAlign: 'center' }}>
                   <p style={{ color: 'var(--muted)', marginBottom: '20px', fontSize: '1rem' }}>No API keys found. Create a new key to get started.</p>
                   <button 
                     className="primary-button"
@@ -1708,21 +1723,44 @@ function App() {
                   </button>
                 </div>
               ) : (
-                <div style={{ width: '100%' }} className="card-stack">
-                  {dashboard.apiKeys.map((apiKey, index) => {
-                    const name = String(apiKey.api_key_name ?? apiKey.id ?? `key-${index}`);
-                    return (
-                      <div className="sub-card" key={name} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div style={{ textAlign: 'left' }}>
-                          <h4 style={{ margin: '0 0 4px 0' }}>{name}</h4>
-                          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--muted)' }}>{formatValue(apiKey.environment)} · {formatValue(apiKey.prefix)}</p>
-                        </div>
-                        <button className="danger-button" type="button" onClick={() => handleDeleteApiKey(name)}>
-                          Delete
-                        </button>
-                      </div>
-                    );
-                  })}
+                <div className="table-shell">
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name</th>
+                        <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>API Key (Prefix)</th>
+                        <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Created</th>
+                        <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Last Used</th>
+                        <th style={{ textAlign: 'left', padding: '12px 16px', fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</th>
+                        <th style={{ textAlign: 'right', padding: '12px 16px', fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dashboard.apiKeys.map((apiKey, index) => {
+                        const name = String(apiKey.api_key_name ?? apiKey.id ?? `key-${index}`);
+                        return (
+                          <tr key={name} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                            <td style={{ padding: '24px 16px', fontWeight: 600 }}>{name}</td>
+                            <td style={{ padding: '24px 16px', fontFamily: 'monospace', color: 'var(--accent)' }}>{apiKey.prefix || '—'}</td>
+                            <td style={{ padding: '24px 16px', fontSize: '0.85rem' }}>{apiKey.created_at ? new Date(apiKey.created_at).toLocaleDateString() : '—'}</td>
+                            <td style={{ padding: '24px 16px', fontSize: '0.85rem', color: 'var(--muted)' }}>{formatValue(apiKey.last_used) || 'Never used'}</td>
+                            <td style={{ padding: '24px 16px' }}>
+                              <span className="status-pill active">Active</span>
+                            </td>
+                            <td style={{ padding: '24px 16px', textAlign: 'right' }}>
+                              <button 
+                                className="ghost-button" 
+                                style={{ color: '#818cf8', fontSize: '0.8rem', padding: '4px 8px', background: 'transparent', border: 'none' }}
+                                onClick={() => handleDeleteApiKey(name)}
+                              >
+                                Deactivate
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -1762,6 +1800,24 @@ function App() {
             </Modal>
           </div>
         ) : null}
+
+        <Modal 
+          title="Model Analysis & Hardware Check" 
+          isOpen={isHfModelModalOpen && !!hfModelMetadata} 
+          onClose={() => setIsHfModelModalOpen(false)}
+        >
+          <div style={{ margin: '-24px' }}>
+            <HfModelDetailPanel 
+              model={hfModelMetadata} 
+              validation={validationResult}
+              machine={dashboard.machineDetails}
+              libraries={libraries}
+              busy={busy}
+              onInstall={handleInstallLibrary}
+              onRegister={() => handleRegisterSelfHosted()}
+            />
+          </div>
+        </Modal>
 
         {activeSection === 'routing' ? (
           <div className="section-grid two-col">
@@ -2252,6 +2308,7 @@ function App() {
         ) : null}
       </main>
     </div>
+  </div>
   );
 }
 
@@ -2570,13 +2627,18 @@ function HfModelDetailPanel(props: {
 
   return (
     <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent', padding: '24px' }}>
+      {message && (
+        <div style={{ marginBottom: '12px' }}>
+          <Banner tone={message.tone} text={message.text} />
+        </div>
+      )}
       {localError && (
-        <div style={{ marginBottom: '20px' }}>
+        <div style={{ marginBottom: '12px' }}>
           <Banner tone="error" text={localError} />
         </div>
       )}
       {localSuccess && (
-        <div style={{ marginBottom: '20px' }}>
+        <div style={{ marginBottom: '12px' }}>
           <Banner tone="success" text={localSuccess} />
         </div>
       )}

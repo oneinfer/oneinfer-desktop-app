@@ -266,7 +266,7 @@ label span,
   border-radius: 14px;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, rgba(116, 227, 197, 0.22), rgba(113, 190, 255, 0.22));
+  background: white; /* Make the logo background solid white for maximum visibility */
   overflow: hidden;
 }
 
@@ -424,9 +424,16 @@ label span,
 }
 
 .banner {
-  border-radius: 18px;
-  padding: 14px 16px;
+  border-radius: 10px;
+  padding: 2px 16px;
   border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.85rem;
+  line-height: 1.2;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .banner.success {
@@ -442,6 +449,19 @@ label span,
 .banner.info {
   background: rgba(113, 190, 255, 0.08);
   color: #d5edff;
+}
+
+.status-pill {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-pill.active {
+  background: rgba(116, 227, 197, 0.15);
+  color: #74e3c5;
 }
 
 .dense-grid {
@@ -620,16 +640,22 @@ th {
   transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.cc-widget--oneinfer .cc-toggle-btn.active {
+.cc-toggle-btn.active {
   background: rgba(116, 227, 197, 0.15);
-  color: #74e3c5;
+  color: var(--accent);
   box-shadow: 0 1px 6px rgba(116, 227, 197, 0.18);
 }
 
+.cc-widget--oneinfer .cc-toggle-btn.active {
+  background: rgba(116, 227, 197, 0.25);
+  color: #74e3c5;
+  box-shadow: 0 1px 8px rgba(116, 227, 197, 0.3);
+}
+
 .cc-widget--anthropic .cc-toggle-btn.active {
-  background: rgba(255, 182, 94, 0.15);
+  background: rgba(255, 182, 94, 0.25);
   color: #ffb65e;
-  box-shadow: 0 1px 6px rgba(255, 182, 94, 0.18);
+  box-shadow: 0 1px 8px rgba(255, 182, 94, 0.3);
 }
 
 /* ── Hardware widget ─────────────────────────────────────────── */
@@ -1154,7 +1180,7 @@ input:checked + .slider:before {
   display: flex;
   gap: 20px;
   padding: 24px;
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 .status-card-icon {
