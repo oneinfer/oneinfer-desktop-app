@@ -419,3 +419,20 @@ export async function attachEndpoint(
     },
   });
 }
+
+export async function listModels(baseUrl: string): Promise<AnyRecord[]> {
+  const data = await request<unknown>({
+    baseUrl,
+    path: '/developer/get-all-models',
+  });
+  return normalizeList<AnyRecord>(data);
+}
+
+export async function getHfModelInfo(repoId: string): Promise<AnyRecord> {
+  const url = `https://huggingface.co/api/models/${repoId}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Hugging Face model info for ${repoId}`);
+  }
+  return await response.json() as AnyRecord;
+}

@@ -1,9 +1,11 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import React, { useEffect, useState, type FormEvent } from 'react';
 import {
   AppWindowMac,
+  Bell,
   Blocks,
   Bot,
   Download,
+  Edit,
   KeyRound,
   LoaderCircle,
   LogOut,
@@ -13,12 +15,28 @@ import {
   RefreshCw,
   RotateCcw,
   Rocket,
+  Save,
   Send,
   Server,
   ShieldCheck,
   Sparkles,
   X,
+  Zap,
+  FileText,
+  Heart,
+  Info,
+  Layers,
+  Calendar,
+  User,
+  Tag,
+  Monitor,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  ExternalLink,
+  Search
 } from 'lucide-react';
+
 import {
   attachEndpoint,
   createApiKey,
@@ -35,6 +53,8 @@ import {
   listApiKeys,
   listInferenceEndpoints,
   listIntelligentEndpoints,
+  listModels,
+  getHfModelInfo,
   loginWithOtp,
   normalizeApiBaseUrl,
   normalizeList,
@@ -42,12 +62,14 @@ import {
   runInstanceAction,
 } from './api';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
+import { validateHardwareSupport, type ValidationResult } from './helpers/hardwareValidation';
 import type {
   CreateInferenceFormState,
   CreateInstanceFormState,
   DashboardState,
   DesktopSession,
   SectionKey,
+  HfModelInfo,
 } from './types';
 import oneInferLogo from './assets/oneinfer-logo.png';
 
@@ -69,6 +91,7 @@ const defaultDashboardState: DashboardState = {
   inferenceEndpoints: [],
   providerInfo: {},
   gpuSpecs: [],
+  models: [],
 };
 
 const defaultInstanceForm: CreateInstanceFormState = {
@@ -142,6 +165,21 @@ function getBalance(credits: DashboardState['credits']): string {
   return numeric !== undefined ? `$${(Number(numeric) / 100).toFixed(2)}` : 'Available';
 }
 
+function getPlanName(profile: DashboardState['profile']) {
+  if (!profile) return 'No Active plan';
+  const rawProfile = typeof profile.developer === 'object' && profile.developer !== null
+    ? profile.developer as Record<string, unknown>
+    : profile;
+  
+  const rawName = rawProfile.plan_name ?? rawProfile.plan ?? (rawProfile as any).developer_plan ?? (rawProfile as any).subscription_tier;
+  
+  if (!rawName || String(rawName).toLowerCase() === 'free') {
+    return 'No Active plan';
+  }
+  
+  return String(rawName);
+}
+
 function getDeveloperProfileEntries(profile: DashboardState['profile']): Array<[string, unknown]> {
   if (!profile) {
     return [];
@@ -164,7 +202,7 @@ function getDeveloperProfileEntries(profile: DashboardState['profile']): Array<[
     ['Organization', organization],
     ['Organization Type', organizationType],
     ['Designation', designation],
-    ['Current Plan', rawProfile.plan_name ?? rawProfile.plan],
+    ['Current Plan', getPlanName(profile)],
   ];
 
   return entries.filter(([, value]) => value !== undefined && value !== null && value !== '');
@@ -250,9 +288,15 @@ function App() {
   const [email, setEmail] = useState('');
   const [loginStep, setLoginStep] = useState<'email' | 'otp'>('email');
   const [otp, setOtp] = useState('');
-  const [selfHostForm, setSelfHostForm] = useState({ name: '', model_id: '', endpoint_url: 'https://api.oneinfer.ai/v1' });
+  const [selfHostForm, setSelfHostForm] = useState({ 
+    name: '', 
+    model_id: '', 
+    endpoint_url: 'http://localhost:8000/v1', // Defaulting to common vLLM port
+    useHfUrl: false,
+    hfUrl: ''
+  });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
-  const [apiKeyName, setApiKeyName] = useState('Desktop Key');
+  const [apiKeyName, setApiKeyName] = useState('');
   const [apiKeyEnvironment, setApiKeyEnvironment] = useState('production');
   const [intelligentEndpointName, setIntelligentEndpointName] = useState('');
   const [inferenceForm, setInferenceForm] = useState<CreateInferenceFormState>(defaultInferenceForm);
@@ -264,7 +308,115 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
   const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'openclaw'>('claude-code');
+  const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<'claude-code' | 'opencode' | 'openclaw' | 'account' | 'updates'>('claude-code');
+  const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
+  const [libraries, setLibraries] = useState<{ vllm: boolean; ollama: boolean }>({ vllm: false, ollama: false });
+  const [isHfModelModalOpen, setIsHfModelModalOpen] = useState(false);
+
+
+
+  useEffect(() => {
+    let active = true;
+
+    async function runValidation() {
+      if (!session) return;
+
+      const targetModelId = selfHostForm.useHfUrl ? selfHostForm.hfUrl : selfHostForm.model_id;
+      if (!targetModelId) {
+        setValidationResult(null);
+        return;
+      }
+
+      let requirements = { minVramGb: 0, modelSizeGb: 0 };
+
+      if (selfHostForm.useHfUrl) {
+        // Extract repo ID from URL
+        // Format: https://huggingface.co/owner/name
+        try {
+          const url = new URL(targetModelId);
+          const parts = url.pathname.split('/').filter(Boolean);
+          if (parts.length >= 2) {
+            const repoId = `${parts[0]}/${parts[1]}`;
+            const info = await getHfModelInfo(repoId);
+            if (active) {
+              setHfModelMetadata(info);
+            }
+
+            const totalSizeFromSiblings = (info.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
+            const totalSizeFromSafetensors = (info as any).safetensors?.total || 0;
+            const totalSize = totalSizeFromSiblings || totalSizeFromSafetensors;
+            
+            const sizeGb = totalSize > 0 ? totalSize / (1024 ** 3) : 0;
+            requirements = {
+              minVramGb: sizeGb > 0 ? Math.ceil(sizeGb * 1.15) + 2 : 4, // Fallback to 4GB if size unknown
+              modelSizeGb: sizeGb > 0 ? Math.ceil(sizeGb) : 2,
+            };
+
+          } else {
+            if (active) setHfModelMetadata(null);
+          }
+        } catch (e) {
+          // Fallback if not a valid URL yet
+          if (active) {
+            setValidationResult(null);
+            setHfModelMetadata(null);
+          }
+          return;
+        }
+      } else {
+        const catalogModel = dashboard.models.find((m: any) => (m.model_id || m.id) === targetModelId);
+        if (active && catalogModel) {
+          // Map catalog model to HfModelInfo shape so analysis works
+          const virtualMetadata: HfModelInfo = {
+            id: catalogModel.model_id || catalogModel.id,
+            author: catalogModel.author || 'OneInfer Catalog',
+            lastModified: catalogModel.updated_at || catalogModel.last_modified,
+            pipeline_tag: catalogModel.pipeline_tag || 'text-generation',
+            tags: catalogModel.tags || [],
+            downloads: catalogModel.downloads || 0,
+            likes: catalogModel.likes || 0,
+            siblings: [{ rpath: 'weights.bin', size: (catalogModel.model_size_gb || catalogModel.modelSizeGb || 0) * (1024 ** 3) }],
+          };
+          setHfModelMetadata(virtualMetadata);
+
+          requirements = {
+            minVramGb: Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0),
+            modelSizeGb: Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0),
+          };
+        } else if (active) {
+          setHfModelMetadata(null);
+        }
+      }
+
+      if (active && (requirements.minVramGb > 0 || requirements.modelSizeGb > 0)) {
+        const result = validateHardwareSupport(requirements, dashboard.machineDetails);
+        setValidationResult(result);
+      }
+    }
+
+    runValidation();
+    return () => { active = false; };
+  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models]);
+
+  useEffect(() => {
+    async function checkLibs() {
+      if (!window.desktopBridge) return;
+      try {
+        const vllm = await window.desktopBridge.checkLibrary('vllm');
+        const ollama = await window.desktopBridge.checkLibrary('ollama');
+        setLibraries({ vllm, ollama });
+      } catch (err) {
+        console.error('[libraries] check failed', err);
+      }
+    }
+    if (session) {
+      checkLibs();
+    }
+  }, [activeSection, session]);
+
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -404,6 +556,14 @@ function App() {
           setMessage({ tone: 'error', text: `Routing loaded with ${failed} partial failure${failed > 1 ? 's' : ''}.` });
         } else if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Routing synced.' });
+        }
+      }
+
+      if (section === 'selfHosting') {
+        const models = await listModels(currentBaseUrl);
+        setDashboard((current) => ({ ...current, models }));
+        if (!shouldBeSilent) {
+          setMessage({ tone: 'success', text: 'Models catalog synced.' });
         }
       }
 
@@ -704,14 +864,10 @@ function App() {
     }
   }
 
-  async function handleRegisterSelfHosted(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) {
-      return;
-    }
+  async function handleRegisterSelfHosted(event?: FormEvent<HTMLFormElement>) {
+    if (event) event.preventDefault();
 
-    if (!selfHostForm.endpoint_url) {
-      setMessage({ tone: 'error', text: 'Local endpoint URL is required.' });
+    if (!session) {
       return;
     }
 
@@ -722,12 +878,18 @@ function App() {
         ? dashboard.machineDetails.hostname
         : '';
 
+    const modelId = selfHostForm.useHfUrl ? selfHostForm.hfUrl : selfHostForm.model_id;
+    if (!modelId) {
+      setMessage({ tone: 'error', text: selfHostForm.useHfUrl ? 'Hugging Face URL is required.' : 'Please select a model.' });
+      return;
+    }
+
     setBusy('register-self-hosted');
     try {
       await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
         provider: 'openai',
-        model_id: selfHostForm.model_id,
+        model_id: modelId,
         deployment_target: 'local',
         endpoint_url: selfHostForm.endpoint_url,
         machine_id: detectedMachineId,
@@ -835,6 +997,7 @@ function App() {
       await createApiKey(settingsDraft.apiBaseUrl, session, apiKeyName, apiKeyEnvironment);
       setMessage({ tone: 'success', text: `API key ${apiKeyName} created.` });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
+      setApiKeyName('');
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'API key creation failed.' });
     } finally {
@@ -914,6 +1077,22 @@ function App() {
       setBusy(null);
     }
   }
+
+  async function handleInstallLibrary(name: 'vllm' | 'ollama') {
+    if (!window.desktopBridge) return;
+    setBusy(`install-${name}`);
+    try {
+      await window.desktopBridge.installLibrary(name);
+      setMessage({ tone: 'success', text: `${name} installed successfully.` });
+      const status = await window.desktopBridge.checkLibrary(name);
+      setLibraries(prev => ({ ...prev, [name]: status }));
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : `Failed to install ${name}.` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
 
   async function handleAttachEndpoint(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1099,57 +1278,127 @@ function App() {
       </aside>
 
       <main className="main-stage">
-        <section className="hero-panel hero-panel--single glass-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div className="eyebrow">Unified API + Infrastructure Desktop</div>
-              <h2>Operate your developer platform without living in raw HTTP requests.</h2>
-              <p>
-                This app targets Windows, Linux, and macOS with native installers per operating system and connects to
-                the OneInfer API service by default.
-              </p>
-            </div>
-            {dashboard.profile && (
-              <div className="status-pill" style={{ background: 'rgba(116, 227, 197, 0.15)', color: 'var(--accent)', fontWeight: 600 }}>
-                {String((dashboard.profile?.developer as any)?.plan_name ?? dashboard.profile?.plan_name ?? dashboard.profile?.plan ?? 'Free')} Plan
+        {activeSection !== 'apiKeys' && activeSection !== 'settings' && activeSection !== 'selfHosting' && (
+          <section className="hero-panel hero-panel--single glass-panel" style={{ marginBottom: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div className="eyebrow" style={{ color: 'var(--accent)', opacity: 0.9 }}>Account Subscription</div>
+                <h2 style={{ fontSize: '2.25rem', margin: '4px 0' }}>
+                  {(() => {
+                    const name = getPlanName(dashboard.profile);
+                    return name === 'No Active plan' ? name : `${name} Plan`;
+                  })()}
+                </h2>
+                <p style={{ color: 'var(--muted)', fontSize: '1rem' }}>OneInfer Developer Platform</p>
               </div>
-            )}
-          </div>
-        </section>
+              {dashboard.profile && getPlanName(dashboard.profile) !== 'No Active plan' && (
+                <div className="plan-badge">
+                  <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>Current</div>
+                  <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>Active</div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {message ? <Banner tone={message.tone} text={message.text} /> : null}
 
         {activeSection === 'overview' ? (
           <>
             <div className="settings-layout">
-              <aside className="settings-sidebar glass-panel">
-                <button
-                  className={`settings-nav-btn ${overviewTab === 'claude-code' ? 'active' : ''}`}
-                  onClick={() => setOverviewTab('claude-code')}
-                  type="button"
-                >
-                  <Bot size={18} />
-                  Claude Code
-                </button>
-                <button
-                  className={`settings-nav-btn ${overviewTab === 'openclaw' ? 'active' : ''}`}
-                  onClick={() => setOverviewTab('openclaw')}
-                  type="button"
-                >
-                  <Orbit size={18} />
-                  OpenClaw
-                </button>
-                <button
-                  className={`settings-nav-btn ${overviewTab === 'opencode' ? 'active' : ''}`}
-                  onClick={() => setOverviewTab('opencode')}
-                  type="button"
-                >
-                  <Blocks size={18} />
-                  OpenCode
-                </button>
+              <aside className="glass-panel" style={{ padding: '20px' }}>
+                <div className="cc-toggle" style={{ marginBottom: '20px' }}>
+                  <button
+                    className={`cc-toggle-btn ${infraTab === 'self-hosted' ? 'active' : ''}`}
+                    onClick={() => setInfraTab('self-hosted')}
+                    type="button"
+                  >
+                    <Server size={14} />
+                    Self-hosted
+                  </button>
+                  <button
+                    className={`cc-toggle-btn ${infraTab === 'cloud' ? 'active' : ''}`}
+                    onClick={() => setInfraTab('cloud')}
+                    type="button"
+                  >
+                    <Server size={14} />
+                    Cloud
+                  </button>
+                </div>
+
+                <div className="card-stack">
+                  {infraTab === 'self-hosted' && (
+                    <>
+                      <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
+                        <Server size={18} className="panel-icon" />
+                        <h3 className="panel-title">Self-hosted Models</h3>
+                      </div>
+                      <MiniTable
+                        columns={['name', 'model_id', 'endpoint_url']}
+                        rows={dashboard.inferenceEndpoints.filter((e: any) => e.deployment_target === 'local')}
+                        emptyText="No local models registered."
+                      />
+                    </>
+                  )}
+
+                  {infraTab === 'cloud' && (
+                    <>
+                      <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
+                        <Server size={18} className="panel-icon" />
+                        <h3 className="panel-title">Cloud Instances</h3>
+                      </div>
+                      <div className="instance-list">
+                        {dashboard.instances.length === 0 ? <EmptyState text="No active cloud instances." /> : null}
+                        {dashboard.instances.map((instance, index) => {
+                          const instanceId = String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
+                          return (
+                            <div className="sub-card" key={instanceId} style={{ padding: '12px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                                <div>
+                                  <h4 style={{ fontSize: '0.9rem' }}>{String(instance.instance_name ?? instanceId)}</h4>
+                                  <p style={{ fontSize: '0.75rem', margin: 0 }}>{String(instance.provider_name)} · {String(instance.region)}</p>
+                                </div>
+                                <span className="status-pill" style={{ fontSize: '0.7rem', padding: '4px 8px' }}>
+                                  {formatValue(instance.instance_status ?? instance.status)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
               </aside>
 
-              <main className="settings-content">
+              <main className="glass-panel" style={{ padding: '20px' }}>
+                <div className="cc-toggle" style={{ marginBottom: '20px' }}>
+                  <button
+                    className={`cc-toggle-btn ${overviewTab === 'claude-code' ? 'active' : ''}`}
+                    onClick={() => setOverviewTab('claude-code')}
+                    type="button"
+                  >
+                    <Bot size={14} />
+                    Claude Code
+                  </button>
+                  <button
+                    className={`cc-toggle-btn ${overviewTab === 'opencode' ? 'active' : ''}`}
+                    onClick={() => setOverviewTab('opencode')}
+                    type="button"
+                  >
+                    <Blocks size={14} />
+                    OpenCode
+                  </button>
+                  <button
+                    className={`cc-toggle-btn ${overviewTab === 'openclaw' ? 'active' : ''}`}
+                    onClick={() => setOverviewTab('openclaw')}
+                    type="button"
+                  >
+                    <Blocks size={14} />
+                    OpenClaw
+                  </button>
+                </div>
+
                 <div className="card-stack">
                   {overviewTab === 'claude-code' && (
                     <ClaudeCodeSetupPanel
@@ -1176,7 +1425,7 @@ function App() {
               </main>
             </div>
 
-            <div className="section-grid dashboard-row compact-row" style={{ gridTemplateColumns: '1.6fr 1fr', marginTop: '0px' }}>
+            <div className="section-grid dashboard-row compact-row" style={{ gridTemplateColumns: '3fr 1fr', marginTop: '20px' }}>
               <HardwareWidget machine={dashboard.machineDetails} />
               <Panel title="Credits" icon={ShieldCheck}>
                 <DataList
@@ -1215,32 +1464,99 @@ function App() {
                     placeholder="Local vLLM server"
                   />
                 </label>
-                <label>
-                  <span>Endpoint URL</span>
-                  <input
-                    value={selfHostForm.endpoint_url}
-                    onChange={(event) => setSelfHostForm((current) => ({ ...current, endpoint_url: event.target.value }))}
-                    placeholder="https://api.oneinfer.ai/v1"
-                  />
-                </label>
-                <label>
-                  <span>Model ID</span>
-                  <input
-                    value={selfHostForm.model_id}
-                    onChange={(event) => setSelfHostForm((current) => ({ ...current, model_id: event.target.value }))}
-                    placeholder="meta-llama/Meta-Llama-3-8B-Instruct"
-                  />
-                </label>
-                <button className="primary-button" type="submit" disabled={busy === 'register-self-hosted'}>
-                  {busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-                  Register Endpoint
+
+                <div className="cc-toggle" style={{ marginBottom: '8px' }}>
+                  <button
+                    className={`cc-toggle-btn ${!selfHostForm.useHfUrl ? 'active' : ''}`}
+                    onClick={() => setSelfHostForm((c) => ({ ...c, useHfUrl: false }))}
+                    type="button"
+                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                  >
+                    Select Model
+                  </button>
+                  <button
+                    className={`cc-toggle-btn ${selfHostForm.useHfUrl ? 'active' : ''}`}
+                    onClick={() => setSelfHostForm((c) => ({ ...c, useHfUrl: true }))}
+                    type="button"
+                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                  >
+                    Hugging Face URL
+                  </button>
+                </div>
+
+                {!selfHostForm.useHfUrl ? (
+                  <label>
+                    <span>Select Model</span>
+                    <select
+                      value={selfHostForm.model_id}
+                      onChange={(event) => setSelfHostForm((current) => ({ ...current, model_id: event.target.value }))}
+                    >
+                      <option value="">Select a model...</option>
+                      {dashboard.models.map((model: any) => (
+                        <option key={model.model_id || model.id} value={model.model_id || model.id}>
+                          {model.model_name || model.displayName || model.model_id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <label>
+                    <span>Hugging Face URL</span>
+                    <input
+                      value={selfHostForm.hfUrl}
+                      onChange={(event) => setSelfHostForm((current) => ({ ...current, hfUrl: event.target.value }))}
+                      placeholder="https://huggingface.co/meta-llama/Meta-Llama-3-8B"
+                    />
+                  </label>
+                )}
+
+                {validationResult && (
+                  <div className={`banner ${validationResult.status === 'insufficient' ? 'error' : validationResult.status === 'warning' ? 'info' : 'success'}`} style={{ fontSize: '0.85rem', padding: '10px 14px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                      <Sparkles size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <span>{validationResult.message}</span>
+                    </div>
+                  </div>
+                )}
+
+                <button 
+                  className="primary-button" 
+                  type={hfModelMetadata ? "button" : "submit"} 
+                  disabled={busy === 'register-self-hosted'}
+                  onClick={hfModelMetadata ? () => setIsHfModelModalOpen(true) : undefined}
+                >
+                  {busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : (hfModelMetadata ? <Search size={16} /> : <Rocket size={16} />)}
+                  {hfModelMetadata ? 'View Analysis & Compatibility' : 'Register Endpoint'}
                 </button>
               </form>
             </Panel>
           </div>
         ) : null}
 
+
+        <Modal 
+          title="Model Analysis & Hardware Check" 
+          isOpen={isHfModelModalOpen && !!hfModelMetadata} 
+          onClose={() => setIsHfModelModalOpen(false)}
+        >
+          <div style={{ margin: '-24px' }}>
+            <HfModelDetailPanel 
+              model={hfModelMetadata} 
+              validation={validationResult}
+              machine={dashboard.machineDetails}
+              libraries={libraries}
+              busy={busy}
+              onInstall={handleInstallLibrary}
+              onRegister={() => handleRegisterSelfHosted()}
+            />
+
+          </div>
+        </Modal>
+
+
+
         {activeSection === 'instances' ? (
+
           <div className="section-grid two-col">
             <Panel title="Create Instance" icon={Rocket}>
               <form className="stack-form dense-grid" onSubmit={handleCreateInstance}>
@@ -1353,46 +1669,97 @@ function App() {
         ) : null}
 
         {activeSection === 'apiKeys' ? (
-          <div className="section-grid two-col">
-            <Panel title="Create API Key" icon={KeyRound}>
-              <form className="stack-form" onSubmit={handleCreateApiKey}>
-                <label>
-                  <span>Name</span>
-                  <input value={apiKeyName} onChange={(event) => setApiKeyName(event.target.value)} />
-                </label>
-                <label>
-                  <span>Environment</span>
-                  <select value={apiKeyEnvironment} onChange={(event) => setApiKeyEnvironment(event.target.value)}>
-                    <option value="production">production</option>
-                    <option value="sandbox">sandbox</option>
-                  </select>
-                </label>
-                <button className="primary-button" type="submit" disabled={busy === 'create-key'}>
-                  {busy === 'create-key' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-                  Create Key
-                </button>
-              </form>
-            </Panel>
+          <div className="card-stack" style={{ gap: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600 }}>API Keys</h2>
+              <button 
+                className="primary-button" 
+                onClick={() => setShowCreateKeyModal(true)}
+                style={{ padding: '8px 16px', fontSize: '0.9rem' }}
+              >
+                Create New API Key
+              </button>
+            </div>
 
-            <Panel title="Existing Keys" icon={ShieldCheck}>
-              <div className="card-stack">
-                {dashboard.apiKeys.length === 0 ? <EmptyState text="No API keys returned yet." /> : null}
-                {dashboard.apiKeys.map((apiKey, index) => {
-                  const name = String(apiKey.api_key_name ?? apiKey.id ?? `key-${index}`);
-                  return (
-                    <div className="sub-card" key={name}>
-                      <div>
-                        <h4>{name}</h4>
-                        <p>{formatValue(apiKey.environment)} · {formatValue(apiKey.prefix)}</p>
-                      </div>
-                      <button className="danger-button" type="button" onClick={() => handleDeleteApiKey(name)}>
-                        Delete
-                      </button>
-                    </div>
-                  );
-                })}
+            <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+              <div style={{ position: 'relative', flex: 1 }}>
+                <KeyRound size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+                <input 
+                  placeholder="Search API keys..." 
+                  style={{ width: '100%', padding: '10px 10px 10px 36px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', color: 'var(--text)' }}
+                />
               </div>
-            </Panel>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                <input type="checkbox" style={{ accentColor: 'var(--accent)' }} />
+                Show inactive keys
+              </label>
+            </div>
+
+            <div className="glass-panel" style={{ minHeight: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+              {dashboard.apiKeys.length === 0 ? (
+                <div style={{ maxWidth: '400px' }}>
+                  <p style={{ color: 'var(--muted)', marginBottom: '20px', fontSize: '1rem' }}>No API keys found. Create a new key to get started.</p>
+                  <button 
+                    className="primary-button"
+                    style={{ margin: '0 auto' }}
+                    onClick={() => setShowCreateKeyModal(true)}
+                  >
+                    Create New API Key
+                  </button>
+                </div>
+              ) : (
+                <div style={{ width: '100%' }} className="card-stack">
+                  {dashboard.apiKeys.map((apiKey, index) => {
+                    const name = String(apiKey.api_key_name ?? apiKey.id ?? `key-${index}`);
+                    return (
+                      <div className="sub-card" key={name} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <h4 style={{ margin: '0 0 4px 0' }}>{name}</h4>
+                          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--muted)' }}>{formatValue(apiKey.environment)} · {formatValue(apiKey.prefix)}</p>
+                        </div>
+                        <button className="danger-button" type="button" onClick={() => handleDeleteApiKey(name)}>
+                          Delete
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <Modal 
+              title="Create New API Key" 
+              isOpen={showCreateKeyModal} 
+              onClose={() => setShowCreateKeyModal(false)}
+            >
+              <form className="stack-form" onSubmit={async (e) => { e.preventDefault(); await handleCreateApiKey(e); setShowCreateKeyModal(false); }}>
+                <label>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '8px', display: 'block' }}>API Key Name</span>
+                  <input 
+                    value={apiKeyName} 
+                    onChange={(event) => setApiKeyName(event.target.value)} 
+                    placeholder="e.g. Production API Key"
+                    autoFocus
+                    style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '12px' }}
+                  />
+                  <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--muted)', opacity: 0.8 }}>
+                    Give your API key a name to help you identify what it's used for.
+                  </div>
+                </label>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '24px' }}>
+                  <button className="secondary-button" type="button" onClick={() => setShowCreateKeyModal(false)}>Cancel</button>
+                  <button 
+                    className="primary-button" 
+                    type="submit" 
+                    disabled={busy === 'create-key'}
+                    style={{ background: 'var(--accent)', color: '#081018', fontWeight: 700 }}
+                  >
+                    {busy === 'create-key' ? <LoaderCircle className="spin" size={16} /> : null}
+                    Create API Key
+                  </button>
+                </div>
+              </form>
+            </Modal>
           </div>
         ) : null}
 
@@ -1560,7 +1927,7 @@ function App() {
                 </div>
                 <div>
                   <h4>Inference Endpoints</h4>
-                  <MiniTable columns={['name', 'deployment_target', 'model_id', 'endpoint_url']} rows={dashboard.inferenceEndpoints} emptyText="No inference endpoints." />
+              <MiniTable columns={['name', 'deployment_target', 'model_id', 'endpoint_url']} rows={dashboard.inferenceEndpoints} emptyText="No inference endpoints." />
                 </div>
               </div>
             </Panel>
@@ -1568,138 +1935,312 @@ function App() {
         ) : null}
 
         {activeSection === 'bandwidth' ? (
-          <div className="section-grid two-col">
+          <div className="card-stack" style={{ gap: '24px' }}>
             <Panel title="Active Subscriptions" icon={Wifi}>
-              <div className="card-stack">
-                <EmptyState text="No bandwidth subscriptions found." />
+              <div style={{ marginBottom: '16px', color: 'var(--muted)', fontSize: '0.9rem' }}>
+                We are supporting models <a href="#" style={{ color: 'var(--accent)', textDecoration: 'none' }}>View Models</a>
+              </div>
+              <div className="card-stack" style={{ gap: '16px' }}>
+                {/* Starter Plan */}
+                {(() => {
+                  const currentPlan = getPlanName(dashboard.profile);
+                  const isStarter = currentPlan.toLowerCase() === 'starter';
+                  const isPro = currentPlan.toLowerCase() === 'pro';
+                  const isTeam = currentPlan.toLowerCase() === 'team';
+                  const isScale = currentPlan.toLowerCase() === 'scale';
+                  
+                  return (
+                    <>
+                      <div className="sub-card" style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '20px', border: isStarter ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.06)', background: isStarter ? 'rgba(116, 227, 197, 0.05)' : 'rgba(255,255,255,0.02)' }}>
+                        <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: isStarter ? 'var(--accent)' : 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isStarter ? '#081018' : 'var(--muted)' }}>
+                          <Zap size={28} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                            <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Starter</h3>
+                            {isStarter && <span style={{ fontSize: '0.65rem', background: 'rgba(116, 227, 197, 0.2)', color: 'var(--accent)', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, textTransform: 'uppercase' }}>Current</span>}
+                          </div>
+                          <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>₹499.00 <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
+                        </div>
+                        <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
+                          <div style={{ fontWeight: 600 }}>1 RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+                        </div>
+                        <button className="primary-button" disabled={isStarter} style={{ background: isStarter ? 'var(--accent)' : 'rgba(255,255,255,0.1)', color: isStarter ? '#081018' : 'var(--text)', border: 'none' }}>{isStarter ? 'Current Plan' : 'Upgrade'}</button>
+                      </div>
+
+                      <div className="sub-card" style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '20px', border: isPro ? '1px solid #71beff' : '1px solid rgba(255,255,255,0.06)', background: isPro ? 'rgba(113, 190, 255, 0.05)' : 'rgba(255,255,255,0.02)' }}>
+                        <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: isPro ? '#71beff' : 'rgba(113, 190, 255, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isPro ? '#081018' : '#71beff' }}>
+                          <Zap size={28} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                            <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Pro</h3>
+                            {isPro ? <span style={{ fontSize: '0.65rem', background: 'rgba(113, 190, 255, 0.2)', color: '#71beff', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, textTransform: 'uppercase' }}>Current</span> : <span style={{ fontSize: '0.65rem', background: 'rgba(113, 190, 255, 0.2)', color: '#71beff', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, textTransform: 'uppercase' }}>Popular</span>}
+                          </div>
+                          <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>₹1,999.00 <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
+                        </div>
+                        <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
+                          <div style={{ fontWeight: 600 }}>3 RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+                        </div>
+                        <button className="primary-button" disabled={isPro} style={{ background: isPro ? '#71beff' : 'rgba(255,255,255,0.1)', color: isPro ? '#081018' : 'var(--text)', border: 'none' }}>{isPro ? 'Current Plan' : 'Upgrade'}</button>
+                      </div>
+
+                      <div className="sub-card" style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '20px', border: isTeam ? '1px solid rgba(255,255,255,0.4)' : '1px solid rgba(255,255,255,0.06)', background: isTeam ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)' }}>
+                        <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: isTeam ? 'white' : 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isTeam ? '#081018' : 'var(--muted)' }}>
+                          <Zap size={28} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                            <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Team</h3>
+                            {isTeam && <span style={{ fontSize: '0.65rem', background: 'rgba(255,255,255,0.2)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, textTransform: 'uppercase' }}>Current</span>}
+                          </div>
+                          <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>₹3,999.00 <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
+                        </div>
+                        <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
+                          <div style={{ fontWeight: 600 }}>8 RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+                        </div>
+                        <button className="primary-button" disabled={isTeam} style={{ background: isTeam ? 'white' : 'rgba(255,255,255,0.1)', color: isTeam ? '#081018' : 'var(--text)', border: 'none' }}>{isTeam ? 'Current Plan' : 'Upgrade'}</button>
+                      </div>
+
+                      <div className="sub-card" style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '20px', border: isScale ? '1px solid rgba(255,255,255,0.4)' : '1px solid rgba(255,255,255,0.06)', background: isScale ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)' }}>
+                        <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: isScale ? 'white' : 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isScale ? '#081018' : 'var(--muted)' }}>
+                          <Zap size={28} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                            <h3 style={{ margin: 0, fontSize: '1.2rem' }}>Scale</h3>
+                            {isScale && <span style={{ fontSize: '0.65rem', background: 'rgba(255,255,255,0.2)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, textTransform: 'uppercase' }}>Current</span>}
+                          </div>
+                          <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>₹8,999.00 <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
+                        </div>
+                        <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
+                          <div style={{ fontWeight: 600 }}>26 RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+                        </div>
+                        <button className="primary-button" disabled={isScale} style={{ background: isScale ? 'white' : 'rgba(255,255,255,0.1)', color: isScale ? '#081018' : 'var(--text)', border: 'none' }}>{isScale ? 'Current Plan' : 'Upgrade'}</button>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </Panel>
 
-            <Panel title="Subscription Summary" icon={Wifi}>
-              <div className="stack-form">
-                <div className="form-hint">
-                  Bandwidth subscriptions control the egress and throughput limits associated with your OneInfer account. Manage plans and usage caps from this panel.
+            {/* Inference API Fallback */}
+            <div className="glass-panel" style={{ padding: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                <div style={{ width: '48px', height: '48px', borderRadius: '10px', background: 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>
+                  <Sparkles size={24} />
                 </div>
-                <DataList
-                  entries={[
-                    ['plan', String((dashboard.profile?.developer as any)?.plan_name ?? dashboard.profile?.plan_name ?? dashboard.profile?.plan ?? '—')],
-                    ['used', '—'],
-                                       ['renews', '—'],
-                  ]}
-                  emptyText="No subscription data available."
-                />
+                <div>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: '1.1rem' }}>Inference API Fallback</h3>
+                  <p style={{ margin: 0, color: 'var(--muted)', fontSize: '0.9rem' }}>
+                    When RPM limits are reached, fallback to Standard Inference API. <a href="#" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Uses standard credits.</a>
+                  </p>
+                </div>
               </div>
-            </Panel>
+              <label className="switch">
+                <input type="checkbox" defaultChecked />
+                <span className="slider round"></span>
+              </label>
+            </div>
           </div>
         ) : null}
 
         {activeSection === 'settings' ? (
-          <div className="settings-layout">
-            <aside className="settings-sidebar glass-panel">
-              <button
-                className={`settings-nav-btn ${settingsTab === 'claude-code' ? 'active' : ''}`}
-                onClick={() => setSettingsTab('claude-code')}
-                type="button"
-              >
-                <Bot size={18} />
-                Claude Code
+          <div className="settings-modern-layout">
+            <div className="settings-nav-tabs">
+              <button className={`settings-tab-btn ${settingsTab === 'account' ? 'active' : ''}`} onClick={() => setSettingsTab('account')}>
+                 Profile
               </button>
-              <button
-                className={`settings-nav-btn ${settingsTab === 'openclaw' ? 'active' : ''}`}
-                onClick={() => setSettingsTab('openclaw')}
-                type="button"
-              >
-                <Orbit size={18} />
-                OpenClaw
+              <button className={`settings-tab-btn ${settingsTab === 'security' ? 'active' : ''}`} onClick={() => setSettingsTab('security')}>
+                 Security
               </button>
-              <button
-                className={`settings-nav-btn ${settingsTab === 'opencode' ? 'active' : ''}`}
-                onClick={() => setSettingsTab('opencode')}
-                type="button"
-              >
-                <Blocks size={18} />
-                OpenCode
+              <button className={`settings-tab-btn ${settingsTab === 'notifications' ? 'active' : ''}`} onClick={() => setSettingsTab('notifications')}>
+                 Notifications
               </button>
-            </aside>
+            </div>
 
-            <main className="settings-content">
-              {settingsTab === 'claude-code' && (
-                <ClaudeCodeSetupPanel
-                  provider={claudeCodeProvider}
-                  onSetProvider={handleClaudeCodeProviderChange}
-                  busy={busy}
-                />
-              )}
-
-              {settingsTab === 'opencode' && (
-                <OpenCodeSetupPanel
-                  busy={busy}
-                  onEnable={handleEnableOpenCode}
-                />
-              )}
-
-              {settingsTab === 'openclaw' && (
-                <OpenClawSetupPanel
-                  busy={busy}
-                  onEnable={handleEnableOpenClaw}
-                />
-              )}
-
+            <div className="settings-main-card glass-panel">
               {settingsTab === 'account' && (
-                <div className="section-grid two-col">
-                  <Panel title="Developer Profile" icon={ShieldCheck}>
-                    <DataList
-                      entries={getDeveloperProfileEntries(dashboard.profile)}
-                      emptyText="Profile data not loaded."
-                    />
-                  </Panel>
-
-                  <Panel title="Session" icon={ShieldCheck}>
-                    <DataList
-                      entries={[
-                        ['email', session.email],
-                        ['developerId', session.developerId],
-                        ['token', `${session.accessToken.slice(0, 12)}...`],
-                      ]}
-                      emptyText="No session data."
-                    />
-                  </Panel>
-                </div>
-              )}
-
-              {settingsTab === 'updates' && (
-                <Panel title="App Updates" icon={Download}>
-                  <div className="stack-form">
-                    <DataList
-                      entries={[
-                        ['status', updateStatus.phase],
-                        ['version', updateStatus.version || appVersion || 'unknown'],
-                        ['download', updateStatus.progressPercent === null ? '—' : `${updateStatus.progressPercent}%`],
-                      ]}
-                      emptyText="No update status available."
-                    />
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={handleCheckForUpdates}
-                      disabled={busy === 'check-updates' || busy === 'install-update'}
-                    >
-                      {busy === 'check-updates' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                      Check for Updates
-                    </button>
-                    <button
-                      className="primary-button"
-                      type="button"
-                      onClick={handleInstallUpdate}
-                      disabled={updateStatus.phase !== 'downloaded' || busy === 'check-updates' || busy === 'install-update'}
-                    >
-                      {busy === 'install-update' ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={16} />}
-                      Restart to Install Update
+                <>
+                  <div className="settings-card-header">
+                    <div>
+                      <h2 style={{ fontSize: '1.8rem', margin: 0 }}>Profile Settings</h2>
+                      <p style={{ color: 'var(--muted)', margin: '4px 0 0 0' }}>Manage your personal information and account details</p>
+                    </div>
+                    <button className="primary-button ghost" style={{ borderRadius: '8px', border: '1px solid var(--accent)', color: 'var(--accent)', background: 'transparent' }}>
+                      <Edit size={14} /> Edit Profile
                     </button>
                   </div>
-                </Panel>
+
+                  <div className="profile-settings-grid">
+                    {(() => {
+                      const rawProfile = (dashboard.profile?.developer || dashboard.profile) as any;
+                      return (
+                        <>
+                          <div className="form-group">
+                            <label>First Name</label>
+                            <input value={rawProfile?.first_name || 'Arunkumar'} readOnly />
+                          </div>
+                          <div className="form-group">
+                            <label>Last Name</label>
+                            <input value={rawProfile?.last_name || 'soundararajan'} readOnly />
+                          </div>
+                          <div className="form-group full-width">
+                            <label>Email Address</label>
+                            <input value={rawProfile?.email || 'sarunkumar1990@gmail.com'} readOnly />
+                          </div>
+                          <div className="form-group">
+                            <label>Organization</label>
+                            <input value={rawProfile?.organization || 'testingorg'} readOnly />
+                          </div>
+                          <div className="form-group">
+                            <label>Organization Type</label>
+                            <input value={rawProfile?.organization_type || 'individual'} readOnly />
+                          </div>
+                          <div className="form-group">
+                            <label>Designation</label>
+                            <input value={rawProfile?.designation || 'developer'} readOnly />
+                          </div>
+                          <div className="form-group">
+                            <label>Date of Birth</label>
+                            <input value={rawProfile?.dob || 'Not provided'} readOnly />
+                          </div>
+                          <div className="form-group full-width" style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                            <label style={{ marginBottom: '8px' }}>Developer ID</label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <input 
+                                value={String(dashboard.profile?.developer_id || session.developerId)} 
+                                readOnly 
+                                style={{ flex: 1, border: 'none', background: 'transparent', padding: 0, fontSize: '0.9rem', color: 'var(--text)' }} 
+                              />
+                              <button className="ghost-button" style={{ fontSize: '0.7rem' }}>Copy</button>
+                            </div>
+                            <p style={{ margin: '8px 0 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>This ID cannot be changed</p>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </>
               )}
-            </main>
+
+              {settingsTab === 'security' && (
+                <>
+                  <div className="settings-card-header">
+                    <div>
+                      <h2 style={{ fontSize: '1.8rem', margin: 0 }}>Security Settings</h2>
+                      <p style={{ color: 'var(--muted)', margin: '4px 0 0 0' }}>Manage your account security and authentication</p>
+                    </div>
+                  </div>
+
+                  <div className="security-stack">
+                    <div className="status-card info" style={{ background: 'rgba(37, 99, 235, 0.05)', border: '1px solid rgba(37, 99, 235, 0.1)' }}>
+                      <div className="status-card-icon" style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#2563eb' }}>
+                        <ShieldCheck size={20} />
+                      </div>
+                      <div className="status-card-content">
+                        <h4 style={{ color: '#2563eb', marginBottom: '8px' }}>OTP-Based Authentication</h4>
+                        <p style={{ fontSize: '0.95rem', opacity: 0.8, lineHeight: 1.5 }}>Your account is secured with OTP (One-Time Password) authentication. No password is required for login.</p>
+                        
+                        <div className="how-it-works" style={{ marginTop: '16px', padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
+                          <p style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '12px' }}>How it works:</p>
+                          <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.9rem', color: 'var(--muted)', listStyle: 'disc' }}>
+                            <li style={{ marginBottom: '8px' }}>Enter your email address to login</li>
+                            <li style={{ marginBottom: '8px' }}>Receive a secure OTP code via email</li>
+                            <li style={{ marginBottom: '8px' }}>Enter the OTP to access your account</li>
+                            <li>No password needed - more secure and convenient</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="status-card success" style={{ background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)', marginTop: '24px' }}>
+                      <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+                        <Bell size={20} />
+                      </div>
+                      <div className="status-card-content">
+                        <h4 style={{ color: '#10b981', marginBottom: '8px' }}>Security Notifications</h4>
+                        <p style={{ fontSize: '0.95rem', opacity: 0.8 }}>Get notified about important security events on your account</p>
+                        
+                        <div className="checkbox-group" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          <label className="checkbox-label">
+                            <input type="checkbox" defaultChecked />
+                            <span>Email me when someone logs into my account</span>
+                          </label>
+                          <label className="checkbox-label">
+                            <input type="checkbox" defaultChecked />
+                            <span>Email me about API key changes</span>
+                          </label>
+                          <label className="checkbox-label">
+                            <input type="checkbox" defaultChecked />
+                            <span>Email me about billing changes</span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {settingsTab === 'notifications' && (
+                <>
+                  <div className="settings-card-header">
+                    <div>
+                      <h2 style={{ fontSize: '1.8rem', margin: 0 }}>Notification Preferences</h2>
+                      <p style={{ color: 'var(--muted)', margin: '4px 0 0 0' }}>Choose what notifications you want to receive and how</p>
+                    </div>
+                  </div>
+
+                  <div className="notifications-stack">
+                    <div className="preference-section" style={{ background: 'rgba(255,255,255,0.02)', padding: '24px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                      <h4 style={{ marginBottom: '20px', color: 'var(--accent)' }}>Email Notifications</h4>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {[
+                          { title: 'Credit Balance Alerts', desc: 'Get notified when your credit balance is low', checked: true },
+                          { title: 'Service Updates', desc: 'Get notified about new features and service updates', checked: true },
+                          { title: 'Weekly Usage Reports', desc: 'Get a weekly summary of your API usage', checked: false },
+                          { title: 'Marketing Communications', desc: 'Receive updates about new models and promotional offers', checked: false }
+                        ].map((pref, i) => (
+                          <div key={i} className="pref-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                            <div>
+                              <p style={{ fontWeight: 600, margin: '0 0 4px 0' }}>{pref.title}</p>
+                              <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: 0 }}>{pref.desc}</p>
+                            </div>
+                            <input type="checkbox" defaultChecked={pref.checked} style={{ width: '18px', height: '18px', accentColor: 'var(--accent)' }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="preference-section" style={{ background: 'rgba(255, 255, 0, 0.02)', padding: '24px', borderRadius: '12px', border: '1px solid rgba(255, 255, 0, 0.05)', marginTop: '24px' }}>
+                      <h4 style={{ marginBottom: '20px', color: '#fbbf24', textAlign: 'left' }}>Notification Frequency</h4>
+                      <div className="radio-group" style={{ display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'flex-start' }}>
+                        {[
+                          { label: 'Real-time (immediate notifications)', value: 'realtime', checked: true },
+                          { label: 'Daily digest (once per day)', value: 'daily', checked: false },
+                          { label: 'Weekly summary (once per week)', value: 'weekly', checked: false }
+                        ].map((freq, i) => (
+                          <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', width: 'auto' }}>
+                            <input type="radio" name="freq" defaultChecked={freq.checked} style={{ margin: 0, width: '18px', height: '18px', accentColor: '#fbbf24' }} />
+                            <span style={{ fontSize: '0.95rem', color: 'var(--text)', whiteSpace: 'nowrap' }}>{freq.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '32px' }}>
+                      <button className="primary-button" style={{ gap: '10px', padding: '12px 24px' }}>
+                        <Save size={18} /> Save Notification Settings
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         ) : null}
 
@@ -1952,4 +2493,277 @@ function OpenClawSetupPanel(props: {
   );
 }
 
+function Modal({ title, isOpen, onClose, children }: { title: string; isOpen: boolean; onClose: () => void; children: React.ReactNode }) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="ghost-button" onClick={onClose} style={{ padding: '8px' }}>
+            <X size={20} />
+          </button>
+        </div>
+        <div className="modal-body">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatNumber(num?: number): string {
+  if (num === undefined || num === null) return '—';
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return String(num);
+}
+
+
+function HfModelDetailPanel(props: {
+  model: HfModelInfo | null;
+  validation: ValidationResult | null;
+  machine: MachineDetailsItem | null;
+  libraries: { vllm: boolean; ollama: boolean };
+  busy: string | null;
+  onInstall: (name: 'vllm' | 'ollama') => Promise<void>;
+  onRegister: () => void;
+}) {
+  const { model, validation, machine, libraries, busy, onInstall, onRegister } = props;
+  const [localError, setLocalError] = React.useState<string | null>(null);
+  const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
+
+  if (!model) return null;
+
+  const totalSize = (model.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
+  const sizeGb = totalSize / (1024 ** 3);
+  const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
+  const effectiveMinVramGb = validation?.effectiveMinVramGb || sizeGb;
+
+  const isVllmBusy = busy === 'install-vllm';
+  const isOllamaBusy = busy === 'install-ollama';
+  const isRegisterBusy = busy === 'register-self-hosted';
+  const isAnyInstalling = isVllmBusy || isOllamaBusy;
+
+  const handleInstall = async (name: 'vllm' | 'ollama') => {
+    setLocalError(null);
+    setLocalSuccess(null);
+    try {
+      await onInstall(name);
+      setLocalSuccess(`${name === 'vllm' ? 'vLLM' : 'Ollama'} installed successfully!`);
+    } catch (err: any) {
+      setLocalError(err?.message || 'Installation failed');
+    }
+  };
+
+  const handleDeploy = async () => {
+    setLocalError(null);
+    setLocalSuccess(null);
+    try {
+      await onRegister();
+      setLocalSuccess('Model deployed successfully to your local machine!');
+    } catch (err: any) {
+      setLocalError(err?.message || 'Deployment failed');
+    }
+  };
+
+  return (
+    <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent', padding: '24px' }}>
+      {localError && (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="error" text={localError} />
+        </div>
+      )}
+      {localSuccess && (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="success" text={localSuccess} />
+        </div>
+      )}
+      {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess && (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${isVllmBusy ? 'vLLM' : 'Ollama'}... Please wait.`} />
+        </div>
+      )}
+
+
+
+      <div className="panel-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
+          <div>
+            <div className="eyebrow" style={{ color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+              <Layers size={14} /> {model.pipeline_tag || 'Model Architecture'}
+            </div>
+            <h2 style={{ fontSize: '1.75rem', margin: 0, fontWeight: 700 }}>{model.id}</h2>
+            <div style={{ display: 'flex', gap: '16px', marginTop: '8px', color: 'var(--muted)', fontSize: '0.85rem' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><User size={14} /> {model.author || 'community'}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Calendar size={14} /> Updated {model.lastModified ? new Date(model.lastModified).toLocaleDateString() : '—'}</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <div className="stat-badge">
+              <Heart size={14} /> {formatNumber(model.likes)}
+            </div>
+            <div className="stat-badge">
+              <Download size={14} /> {formatNumber(model.downloads)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="model-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', padding: '20px 0' }}>
+        <div className="model-info-column">
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Metadata</h4>
+          <div className="tag-cloud" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {model.tags?.slice(0, 12).map(tag => (
+              <span key={tag} className="tag-pill"><Tag size={12} /> {tag}</span>
+            ))}
+          </div>
+          
+          <div style={{ marginTop: '20px' }}>
+            <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>File Summary</h4>
+            <div className="data-list" style={{ gap: '8px' }}>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><FileText size={16} /> Model Weights</span>
+                <strong style={{ color: 'var(--text)' }}>{sizeGb.toFixed(2)} GB</strong>
+              </div>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={16} /> KV Cache (Est.)</span>
+                <strong style={{ color: 'var(--muted)' }}>+ {(sizeGb * 0.15).toFixed(2)} GB</strong>
+              </div>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(116, 227, 197, 0.05)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent)' }}><Server size={16} /> Total Req. VRAM</span>
+                <strong style={{ color: 'var(--accent)' }}>{effectiveMinVramGb.toFixed(2)} GB</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="hardware-check-column">
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Inference Readiness</h4>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Library Status */}
+            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Serving Libraries</span>
+                <Info size={14} style={{ opacity: 0.4 }} title="Local server software needed to run this model" />
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: libraries.vllm ? '#10b981' : '#ef4444', boxShadow: libraries.vllm ? '0 0 8px #10b981' : 'none' }} />
+                    vLLM (Recommended)
+                  </div>
+                  {!libraries.vllm ? (
+                    <button 
+                      className="ghost-button" 
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }} 
+                      onClick={() => handleInstall('vllm')}
+                      disabled={isVllmBusy}
+                    >
+                      {isVllmBusy ? <LoaderCircle className="spin" size={12} /> : 'Install'}
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> Installed
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: libraries.ollama ? '#10b981' : '#ef4444', boxShadow: libraries.ollama ? '0 0 8px #10b981' : 'none' }} />
+                    Ollama
+                  </div>
+                  {!libraries.ollama ? (
+                    <button 
+                      className="ghost-button" 
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }} 
+                      onClick={() => handleInstall('ollama')}
+                      disabled={isOllamaBusy}
+                    >
+                      {isOllamaBusy ? <LoaderCircle className="spin" size={12} /> : 'Install'}
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> Installed
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Hardware Analysis Card */}
+            {validation ? (
+              <div className={`analysis-card ${validation.status}`} style={{ 
+                padding: '16px', 
+                borderRadius: '12px', 
+                border: '1px solid',
+                background: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.05)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.05)' : 'rgba(239, 68, 68, 0.05)',
+                borderColor: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.2)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)'
+              }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                  <div style={{ 
+                    padding: '6px', 
+                    borderRadius: '6px', 
+                    background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444',
+                    color: '#fff'
+                  }}>
+                    {validation.status === 'supported' ? <CheckCircle2 size={16} /> : validation.status === 'warning' ? <AlertCircle size={16} /> : <X size={16} />}
+                  </div>
+                  <div>
+                    <h5 style={{ margin: '0 0 2px 0', fontSize: '0.95rem', color: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444' }}>
+                      {validation.status === 'supported' ? 'Hardware Ready' : validation.status === 'warning' ? 'Performance Alert' : 'Incompatible'}
+                    </h5>
+                    <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.9, lineHeight: 1.4 }}>{validation.message}</p>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
+                    <span style={{ color: 'var(--muted)' }}>VRAM Capacity Used</span>
+                    <span>{effectiveMinVramGb.toFixed(1)}GB / {totalVramGb.toFixed(1)}GB</span>
+                  </div>
+                  <div className="progress-bar-bg" style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                    <div className="progress-bar-fill" style={{ 
+                      height: '100%', 
+                      width: `${Math.min(100, (effectiveMinVramGb / totalVramGb) * 100)}%`,
+                      background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444'
+                    }} />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '24px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.1)' }}>
+                <Clock size={24} style={{ opacity: 0.2, marginBottom: '8px' }} />
+                <p style={{ margin: 0, color: 'var(--muted)', fontSize: '0.85rem' }}>Analyzing hardware...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+        <a href={`https://huggingface.co/${model.id}`} target="_blank" rel="noopener noreferrer" className="ghost-button" style={{ textDecoration: 'none', fontSize: '0.85rem' }}>
+          <ExternalLink size={14} /> Hub
+        </a>
+        <button 
+          className="primary-button" 
+          style={{ fontSize: '0.85rem', padding: '8px 16px' }}
+          onClick={handleDeploy}
+          disabled={isRegisterBusy}
+        >
+          {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
+          Deploy this Model
+        </button>
+      </div>
+
+    </section>
+  );
+}
+
 export default App;
+
+

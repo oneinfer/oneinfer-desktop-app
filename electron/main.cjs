@@ -500,6 +500,63 @@ async function ensureOpenCodeInstalled() {
   throw new Error(`OpenCode was not found and automatic installation failed.${detail} See ${OPENCODE_SETUP_DOCS_URL}`);
 }
 
+async function isLibraryInstalled(name) {
+  try {
+    if (name === 'vllm') {
+      // First try standard command
+      if (await commandExists('vllm')) return true;
+      // Then try python import
+      try {
+        await runCommand('python', ['-c', 'import vllm'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        // Fallback to pip check
+        try {
+          const { stdout } = await runCommand('pip', ['show', 'vllm'], { timeoutMs: 5000 });
+          return stdout.includes('Name: vllm');
+        } catch {
+          return false;
+        }
+      }
+    }
+    
+    if (name === 'ollama') {
+      if (await commandExists('ollama')) return true;
+      // Check default install path on Windows
+      if (process.platform === 'win32') {
+        const defaultPath = path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe');
+        return fs.existsSync(defaultPath);
+      }
+    }
+
+    return await commandExists(name);
+  } catch {
+    return false;
+  }
+}
+
+
+async function installLibrary(name) {
+  if (name === 'vllm') {
+    if (!await commandExists('pip')) {
+      throw new Error('pip is not installed. Please install Python and pip first.');
+    }
+    await runCommand('pip', ['install', 'vllm'], { timeoutMs: 15 * 60 * 1000 });
+    return 'installed';
+  }
+
+  if (name === 'ollama') {
+    if (process.platform === 'win32') {
+      throw new Error('Automatic installation of Ollama on Windows is not supported yet. Please download it from https://ollama.com/download/windows');
+    }
+    await runCommand('sh', ['-lc', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeoutMs: 15 * 60 * 1000 });
+    return 'installed';
+  }
+
+  throw new Error(`Automatic installation for "${name}" is not supported.`);
+}
+
+
 function getDefaultGitBashPath() {
   if (process.platform !== 'win32') {
     return null;
@@ -1801,6 +1858,8 @@ app.whenReady().then(() => {
   ipcMain.handle('app:enable-claude-code', async (_event, payload) => enableClaudeCode(payload));
   ipcMain.handle('app:enable-opencode', async (_event, payload) => enableOpenCode(payload));
   ipcMain.handle('app:enable-openclaw', async (_event, payload) => enableOpenClaw(payload));
+  ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
+  ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
 
   createWindow();
 
