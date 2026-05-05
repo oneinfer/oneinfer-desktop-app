@@ -367,13 +367,27 @@ function App() {
           return;
         }
       } else {
-        if (active) setHfModelMetadata(null);
         const catalogModel = dashboard.models.find((m: any) => (m.model_id || m.id) === targetModelId);
-        if (catalogModel) {
+        if (active && catalogModel) {
+          // Map catalog model to HfModelInfo shape so analysis works
+          const virtualMetadata: HfModelInfo = {
+            id: catalogModel.model_id || catalogModel.id,
+            author: catalogModel.author || 'OneInfer Catalog',
+            lastModified: catalogModel.updated_at || catalogModel.last_modified,
+            pipeline_tag: catalogModel.pipeline_tag || 'text-generation',
+            tags: catalogModel.tags || [],
+            downloads: catalogModel.downloads || 0,
+            likes: catalogModel.likes || 0,
+            siblings: [{ rpath: 'weights.bin', size: (catalogModel.model_size_gb || catalogModel.modelSizeGb || 0) * (1024 ** 3) }],
+          };
+          setHfModelMetadata(virtualMetadata);
+
           requirements = {
             minVramGb: Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0),
             modelSizeGb: Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0),
           };
+        } else if (active) {
+          setHfModelMetadata(null);
         }
       }
 
