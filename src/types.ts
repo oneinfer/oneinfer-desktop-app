@@ -176,3 +176,16 @@ export interface CreateInferenceFormState {
   temperature: number;
   max_tokens: number;
 }
+
+export interface HfModelInfo {
+  id: string;
+  author?: string;
+  lastModified?: string;
+  likes?: number;
+  downloads?: number;
+  tags?: string[];
+  pipeline_tag?: string;
+  siblings?: { rfilename: string; size?: number }[];
+  model_id?: string;
+  [key: string]: any;
+}

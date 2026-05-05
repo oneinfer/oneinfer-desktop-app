@@ -17,4 +17,6 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   enableClaudeCode: (payload) => ipcRenderer.invoke('app:enable-claude-code', payload),
   enableOpenCode: (payload) => ipcRenderer.invoke('app:enable-opencode', payload),
   enableOpenClaw: (payload) => ipcRenderer.invoke('app:enable-openclaw', payload),
+  checkLibrary: (name) => ipcRenderer.invoke('app:check-library', name),
+  installLibrary: (name) => ipcRenderer.invoke('app:install-library', name),
 });

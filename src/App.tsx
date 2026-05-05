@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import React, { useEffect, useState, type FormEvent } from 'react';
 import {
   AppWindowMac,
   Bell,
@@ -22,7 +22,21 @@ import {
   Sparkles,
   X,
   Zap,
+  FileText,
+  Heart,
+  Info,
+  Layers,
+  Calendar,
+  User,
+  Tag,
+  Monitor,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  ExternalLink,
+  Search
 } from 'lucide-react';
+
 import {
   attachEndpoint,
   createApiKey,
@@ -55,6 +69,7 @@ import type {
   DashboardState,
   DesktopSession,
   SectionKey,
+  HfModelInfo,
 } from './types';
 import oneInferLogo from './assets/oneinfer-logo.png';
 
@@ -297,6 +312,11 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<'claude-code' | 'opencode' | 'openclaw' | 'account' | 'updates'>('claude-code');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
+  const [libraries, setLibraries] = useState<{ vllm: boolean; ollama: boolean }>({ vllm: false, ollama: false });
+  const [isHfModelModalOpen, setIsHfModelModalOpen] = useState(false);
+
+
 
   useEffect(() => {
     let active = true;
@@ -321,19 +341,33 @@ function App() {
           if (parts.length >= 2) {
             const repoId = `${parts[0]}/${parts[1]}`;
             const info = await getHfModelInfo(repoId);
-            const totalSize = (info.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
-            const sizeGb = totalSize / (1024 ** 3);
+            if (active) {
+              setHfModelMetadata(info);
+            }
+
+            const totalSizeFromSiblings = (info.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
+            const totalSizeFromSafetensors = (info as any).safetensors?.total || 0;
+            const totalSize = totalSizeFromSiblings || totalSizeFromSafetensors;
+            
+            const sizeGb = totalSize > 0 ? totalSize / (1024 ** 3) : 0;
             requirements = {
-              minVramGb: Math.ceil(sizeGb * 1.2), // Assume 20% overhead
-              modelSizeGb: Math.ceil(sizeGb),
+              minVramGb: sizeGb > 0 ? Math.ceil(sizeGb * 1.15) + 2 : 4, // Fallback to 4GB if size unknown
+              modelSizeGb: sizeGb > 0 ? Math.ceil(sizeGb) : 2,
             };
+
+          } else {
+            if (active) setHfModelMetadata(null);
           }
         } catch (e) {
           // Fallback if not a valid URL yet
-          setValidationResult(null);
+          if (active) {
+            setValidationResult(null);
+            setHfModelMetadata(null);
+          }
           return;
         }
       } else {
+        if (active) setHfModelMetadata(null);
         const catalogModel = dashboard.models.find((m: any) => (m.model_id || m.id) === targetModelId);
         if (catalogModel) {
           requirements = {
@@ -352,6 +386,23 @@ function App() {
     runValidation();
     return () => { active = false; };
   }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models]);
+
+  useEffect(() => {
+    async function checkLibs() {
+      if (!window.desktopBridge) return;
+      try {
+        const vllm = await window.desktopBridge.checkLibrary('vllm');
+        const ollama = await window.desktopBridge.checkLibrary('ollama');
+        setLibraries({ vllm, ollama });
+      } catch (err) {
+        console.error('[libraries] check failed', err);
+      }
+    }
+    if (session) {
+      checkLibs();
+    }
+  }, [activeSection, session]);
+
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -799,8 +850,9 @@ function App() {
     }
   }
 
-  async function handleRegisterSelfHosted(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleRegisterSelfHosted(event?: FormEvent<HTMLFormElement>) {
+    if (event) event.preventDefault();
+
     if (!session) {
       return;
     }
@@ -1011,6 +1063,22 @@ function App() {
       setBusy(null);
     }
   }
+
+  async function handleInstallLibrary(name: 'vllm' | 'ollama') {
+    if (!window.desktopBridge) return;
+    setBusy(`install-${name}`);
+    try {
+      await window.desktopBridge.installLibrary(name);
+      setMessage({ tone: 'success', text: `${name} installed successfully.` });
+      const status = await window.desktopBridge.checkLibrary(name);
+      setLibraries(prev => ({ ...prev, [name]: status }));
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : `Failed to install ${name}.` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
 
   async function handleAttachEndpoint(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1437,16 +1505,44 @@ function App() {
                   </div>
                 )}
 
-                <button className="primary-button" type="submit" disabled={busy === 'register-self-hosted'}>
-                  {busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-                  Register Endpoint
+                <button 
+                  className="primary-button" 
+                  type={hfModelMetadata ? "button" : "submit"} 
+                  disabled={busy === 'register-self-hosted'}
+                  onClick={hfModelMetadata ? () => setIsHfModelModalOpen(true) : undefined}
+                >
+                  {busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : (hfModelMetadata ? <Search size={16} /> : <Rocket size={16} />)}
+                  {hfModelMetadata ? 'View Analysis & Compatibility' : 'Register Endpoint'}
                 </button>
               </form>
             </Panel>
           </div>
         ) : null}
 
+
+        <Modal 
+          title="Model Analysis & Hardware Check" 
+          isOpen={isHfModelModalOpen && !!hfModelMetadata} 
+          onClose={() => setIsHfModelModalOpen(false)}
+        >
+          <div style={{ margin: '-24px' }}>
+            <HfModelDetailPanel 
+              model={hfModelMetadata} 
+              validation={validationResult}
+              machine={dashboard.machineDetails}
+              libraries={libraries}
+              busy={busy}
+              onInstall={handleInstallLibrary}
+              onRegister={() => handleRegisterSelfHosted()}
+            />
+
+          </div>
+        </Modal>
+
+
+
         {activeSection === 'instances' ? (
+
           <div className="section-grid two-col">
             <Panel title="Create Instance" icon={Rocket}>
               <form className="stack-form dense-grid" onSubmit={handleCreateInstance}>
@@ -2403,4 +2499,257 @@ function Modal({ title, isOpen, onClose, children }: { title: string; isOpen: bo
   );
 }
 
+function formatNumber(num?: number): string {
+  if (num === undefined || num === null) return '—';
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return String(num);
+}
+
+
+function HfModelDetailPanel(props: {
+  model: HfModelInfo | null;
+  validation: ValidationResult | null;
+  machine: MachineDetailsItem | null;
+  libraries: { vllm: boolean; ollama: boolean };
+  busy: string | null;
+  onInstall: (name: 'vllm' | 'ollama') => Promise<void>;
+  onRegister: () => void;
+}) {
+  const { model, validation, machine, libraries, busy, onInstall, onRegister } = props;
+  const [localError, setLocalError] = React.useState<string | null>(null);
+  const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
+
+  if (!model) return null;
+
+  const totalSize = (model.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
+  const sizeGb = totalSize / (1024 ** 3);
+  const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
+  const effectiveMinVramGb = validation?.effectiveMinVramGb || sizeGb;
+
+  const isVllmBusy = busy === 'install-vllm';
+  const isOllamaBusy = busy === 'install-ollama';
+  const isRegisterBusy = busy === 'register-self-hosted';
+  const isAnyInstalling = isVllmBusy || isOllamaBusy;
+
+  const handleInstall = async (name: 'vllm' | 'ollama') => {
+    setLocalError(null);
+    setLocalSuccess(null);
+    try {
+      await onInstall(name);
+      setLocalSuccess(`${name === 'vllm' ? 'vLLM' : 'Ollama'} installed successfully!`);
+    } catch (err: any) {
+      setLocalError(err?.message || 'Installation failed');
+    }
+  };
+
+  const handleDeploy = async () => {
+    setLocalError(null);
+    setLocalSuccess(null);
+    try {
+      await onRegister();
+      setLocalSuccess('Model deployed successfully to your local machine!');
+    } catch (err: any) {
+      setLocalError(err?.message || 'Deployment failed');
+    }
+  };
+
+  return (
+    <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent', padding: '24px' }}>
+      {localError && (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="error" text={localError} />
+        </div>
+      )}
+      {localSuccess && (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="success" text={localSuccess} />
+        </div>
+      )}
+      {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess && (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${isVllmBusy ? 'vLLM' : 'Ollama'}... Please wait.`} />
+        </div>
+      )}
+
+
+
+      <div className="panel-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
+          <div>
+            <div className="eyebrow" style={{ color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+              <Layers size={14} /> {model.pipeline_tag || 'Model Architecture'}
+            </div>
+            <h2 style={{ fontSize: '1.75rem', margin: 0, fontWeight: 700 }}>{model.id}</h2>
+            <div style={{ display: 'flex', gap: '16px', marginTop: '8px', color: 'var(--muted)', fontSize: '0.85rem' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><User size={14} /> {model.author || 'community'}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Calendar size={14} /> Updated {model.lastModified ? new Date(model.lastModified).toLocaleDateString() : '—'}</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <div className="stat-badge">
+              <Heart size={14} /> {formatNumber(model.likes)}
+            </div>
+            <div className="stat-badge">
+              <Download size={14} /> {formatNumber(model.downloads)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="model-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', padding: '20px 0' }}>
+        <div className="model-info-column">
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Metadata</h4>
+          <div className="tag-cloud" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {model.tags?.slice(0, 12).map(tag => (
+              <span key={tag} className="tag-pill"><Tag size={12} /> {tag}</span>
+            ))}
+          </div>
+          
+          <div style={{ marginTop: '20px' }}>
+            <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>File Summary</h4>
+            <div className="data-list" style={{ gap: '8px' }}>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><FileText size={16} /> Model Weights</span>
+                <strong style={{ color: 'var(--text)' }}>{sizeGb.toFixed(2)} GB</strong>
+              </div>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={16} /> KV Cache (Est.)</span>
+                <strong style={{ color: 'var(--muted)' }}>+ {(sizeGb * 0.15).toFixed(2)} GB</strong>
+              </div>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(116, 227, 197, 0.05)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent)' }}><Server size={16} /> Total Req. VRAM</span>
+                <strong style={{ color: 'var(--accent)' }}>{effectiveMinVramGb.toFixed(2)} GB</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="hardware-check-column">
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Inference Readiness</h4>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Library Status */}
+            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Serving Libraries</span>
+                <Info size={14} style={{ opacity: 0.4 }} title="Local server software needed to run this model" />
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: libraries.vllm ? '#10b981' : '#ef4444', boxShadow: libraries.vllm ? '0 0 8px #10b981' : 'none' }} />
+                    vLLM (Recommended)
+                  </div>
+                  {!libraries.vllm ? (
+                    <button 
+                      className="ghost-button" 
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }} 
+                      onClick={() => handleInstall('vllm')}
+                      disabled={isVllmBusy}
+                    >
+                      {isVllmBusy ? <LoaderCircle className="spin" size={12} /> : 'Install'}
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> Installed
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: libraries.ollama ? '#10b981' : '#ef4444', boxShadow: libraries.ollama ? '0 0 8px #10b981' : 'none' }} />
+                    Ollama
+                  </div>
+                  {!libraries.ollama ? (
+                    <button 
+                      className="ghost-button" 
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }} 
+                      onClick={() => handleInstall('ollama')}
+                      disabled={isOllamaBusy}
+                    >
+                      {isOllamaBusy ? <LoaderCircle className="spin" size={12} /> : 'Install'}
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> Installed
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Hardware Analysis Card */}
+            {validation ? (
+              <div className={`analysis-card ${validation.status}`} style={{ 
+                padding: '16px', 
+                borderRadius: '12px', 
+                border: '1px solid',
+                background: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.05)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.05)' : 'rgba(239, 68, 68, 0.05)',
+                borderColor: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.2)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)'
+              }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                  <div style={{ 
+                    padding: '6px', 
+                    borderRadius: '6px', 
+                    background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444',
+                    color: '#fff'
+                  }}>
+                    {validation.status === 'supported' ? <CheckCircle2 size={16} /> : validation.status === 'warning' ? <AlertCircle size={16} /> : <X size={16} />}
+                  </div>
+                  <div>
+                    <h5 style={{ margin: '0 0 2px 0', fontSize: '0.95rem', color: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444' }}>
+                      {validation.status === 'supported' ? 'Hardware Ready' : validation.status === 'warning' ? 'Performance Alert' : 'Incompatible'}
+                    </h5>
+                    <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.9, lineHeight: 1.4 }}>{validation.message}</p>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
+                    <span style={{ color: 'var(--muted)' }}>VRAM Capacity Used</span>
+                    <span>{effectiveMinVramGb.toFixed(1)}GB / {totalVramGb.toFixed(1)}GB</span>
+                  </div>
+                  <div className="progress-bar-bg" style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                    <div className="progress-bar-fill" style={{ 
+                      height: '100%', 
+                      width: `${Math.min(100, (effectiveMinVramGb / totalVramGb) * 100)}%`,
+                      background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444'
+                    }} />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '24px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.1)' }}>
+                <Clock size={24} style={{ opacity: 0.2, marginBottom: '8px' }} />
+                <p style={{ margin: 0, color: 'var(--muted)', fontSize: '0.85rem' }}>Analyzing hardware...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+        <a href={`https://huggingface.co/${model.id}`} target="_blank" rel="noopener noreferrer" className="ghost-button" style={{ textDecoration: 'none', fontSize: '0.85rem' }}>
+          <ExternalLink size={14} /> Hub
+        </a>
+        <button 
+          className="primary-button" 
+          style={{ fontSize: '0.85rem', padding: '8px 16px' }}
+          onClick={handleDeploy}
+          disabled={isRegisterBusy}
+        >
+          {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
+          Deploy this Model
+        </button>
+      </div>
+
+    </section>
+  );
+}
+
 export default App;
+
+
