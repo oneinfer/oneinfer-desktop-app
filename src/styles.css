@@ -1232,6 +1232,31 @@ input:checked + .slider:before {
 /* ── Model Detail Panel ──────────────────────────────────────── */
 .model-detail-panel {
   border-left: 4px solid var(--accent) !important;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 24px;
+}
+
+.model-detail-header {
+  min-width: 0;
+}
+
+.model-detail-header > div {
+  min-width: 0;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.95fr);
+  gap: 24px;
+  min-width: 0;
+  padding: 20px 0;
+}
+
+.model-info-column,
+.hardware-check-column {
+  min-width: 0;
 }
 
 .stat-badge {
@@ -1257,7 +1282,9 @@ input:checked + .slider:before {
   border-radius: 8px;
   font-size: 0.75rem;
   color: var(--accent);
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .analysis-card {
@@ -1267,6 +1294,22 @@ input:checked + .slider:before {
 .analysis-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 1180px) {
+  .model-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .model-detail-panel {
+    padding: 16px;
+  }
+
+  .model-detail-header > div {
+    flex-direction: column;
+  }
 }
 
 @keyframes fadeIn {

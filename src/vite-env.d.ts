@@ -55,6 +55,37 @@ interface DesktopOpenClawResult {
   providerId: string;
 }
 
+interface DesktopHfDeploymentResult {
+  endpointUrl: string;
+  modelId: string;
+  pid: number | null;
+  runtime: 'vllm';
+}
+
+interface DesktopLocalModelMetrics {
+  endpointUrl: string;
+  healthy: boolean;
+  modelCount: number;
+  uptimeSeconds: number | null;
+  requestsRunning: number | null;
+  requestsWaiting: number | null;
+  requestSuccessTotal: number | null;
+  promptTokensTotal: number | null;
+  generationTokensTotal: number | null;
+  gpuCacheUsagePercent: number | null;
+  lastCheckedAt: string;
+  error?: string;
+}
+
+interface DesktopDeploymentProgress {
+  id: string;
+  stage: 'preparing' | 'starting' | 'loading' | 'health-check' | 'ready' | 'registering' | 'registered' | 'cancelled' | 'error';
+  message: string;
+  detail?: string;
+  level: 'info' | 'success' | 'error';
+  timestamp: number;
+}
+
 type DesktopUpdatePhase =
   | 'idle'
   | 'checking'
@@ -80,6 +111,7 @@ interface Window {
     checkForUpdates: () => Promise<DesktopUpdateStatus>;
     installUpdate: () => Promise<DesktopUpdateStatus>;
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
+    onDeploymentProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
     syncMachineDetails: (payload: { baseUrl: string; session: DesktopSession }) => Promise<DesktopMachineDetails>;
     enableClaudeCode: (payload: {
@@ -99,5 +131,18 @@ interface Window {
     }) => Promise<DesktopOpenClawResult>;
     checkLibrary: (name: 'vllm' | 'ollama') => Promise<boolean>;
     installLibrary: (name: 'vllm' | 'ollama') => Promise<void>;
+    deployHfModel: (payload: {
+      repoId: string;
+      port?: number;
+      runtime?: 'vllm';
+      healthTimeoutMs?: number;
+      progressId?: string;
+    }) => Promise<DesktopHfDeploymentResult>;
+    cancelHfDeployment: (payload: {
+      repoId: string;
+    }) => Promise<{ cancelled: boolean; message: string }>;
+    getLocalModelMetrics: (payload: {
+      endpointUrl: string;
+    }) => Promise<DesktopLocalModelMetrics>;
   };
 }

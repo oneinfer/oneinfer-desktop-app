@@ -220,3 +220,27 @@ export interface HfModelInfo {
   model_id?: string;
   [key: string]: any;
 }
+
+export interface LocalModelDeployment {
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  pid: number | null;
+  runtime: 'vllm';
+  deployedAt: string;
+}
+
+export interface LocalModelMetrics {
+  endpointUrl: string;
+  healthy: boolean;
+  modelCount: number;
+  uptimeSeconds: number | null;
+  requestsRunning: number | null;
+  requestsWaiting: number | null;
+  requestSuccessTotal: number | null;
+  promptTokensTotal: number | null;
+  generationTokensTotal: number | null;
+  gpuCacheUsagePercent: number | null;
+  lastCheckedAt: string;
+  error?: string;
+}
