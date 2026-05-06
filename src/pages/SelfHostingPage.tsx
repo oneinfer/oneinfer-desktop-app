@@ -80,12 +80,12 @@ export function SelfHostingPage(props: {
 
           <button
             className="primary-button"
-            type={props.hfModelMetadata ? 'button' : 'submit'}
-            disabled={props.busy === 'register-self-hosted'}
-            onClick={props.hfModelMetadata ? props.onOpenModelModal : undefined}
+            type="button"
+            disabled={props.busy === 'register-self-hosted' || !props.hfModelMetadata}
+            onClick={props.onOpenModelModal}
           >
             {props.busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : props.hfModelMetadata ? <Search size={16} /> : <Rocket size={16} />}
-            {props.hfModelMetadata ? 'View Analysis & Compatibility' : 'Register Endpoint'}
+            {props.hfModelMetadata ? 'View Analysis & Compatibilities' : 'View Analysis & Compatibilities'}
           </button>
         </form>
       </Panel>

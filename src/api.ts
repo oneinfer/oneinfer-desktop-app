@@ -1,7 +1,9 @@
 import type {
+  ActiveDeveloperPlanItem,
   ApiKeyItem,
   CreateInferenceFormState,
   CreateInstanceFormState,
+  DeveloperPlanItem,
   DesktopSession,
   EndpointItem,
   GpuSpecItem,
@@ -147,6 +149,111 @@ export function normalizeList<T extends AnyRecord>(value: unknown): T[] {
   return [];
 }
 
+function normalizeCurrency(value: unknown): 'INR' | 'USD' {
+  return String(value ?? '').toUpperCase() === 'INR' ? 'INR' : 'USD';
+}
+
+function getCountryId(): 'in' | 'usa' {
+  if (typeof window === 'undefined') {
+    return 'usa';
+  }
+
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale || '';
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  const languages = typeof navigator !== 'undefined'
+    ? [navigator.language, ...(navigator.languages || [])]
+    : [];
+
+  const hasIndiaLocale = [locale, ...languages].some((entry) => {
+    const parts = entry?.split('-');
+    return parts?.[1]?.toUpperCase() === 'IN';
+  });
+
+  return hasIndiaLocale || timezone === 'Asia/Kolkata' || timezone === 'Asia/Calcutta' ? 'in' : 'usa';
+}
+
+function normalizeApiKeyItem(item: ApiKeyItem): ApiKeyItem {
+  const lastUsedCandidate = item.last_used
+    ?? item.last_used_at
+    ?? item.lastUsed
+    ?? item.lastUsedAt;
+
+  return {
+    ...item,
+    api_key_name: String(item.api_key_name ?? item.name ?? item.id ?? ''),
+    prefix: String(
+      item.prefix
+      ?? item.api_key_prefix
+      ?? item.key_prefix
+      ?? item.apiKeyPrefix
+      ?? '',
+    ),
+    last_used:
+      typeof lastUsedCandidate === 'string'
+      || typeof lastUsedCandidate === 'number'
+      || lastUsedCandidate === null
+      || lastUsedCandidate === undefined
+        ? lastUsedCandidate ?? null
+        : null,
+  };
+}
+
+function normalizeDeveloperPlan(item: AnyRecord): DeveloperPlanItem {
+  return {
+    planId: String(item.plan_id ?? item.planId ?? ''),
+    planTier: String(item.plan_tier ?? item.planTier ?? ''),
+    pricing: Number(item.pricing ?? 0),
+    gst: Number(item.gst ?? 0),
+    paymentGatewayFee: Number(item.payment_gateway_fee ?? item.paymentGatewayFee ?? 0),
+    totalPrice: Number(item.total_price ?? item.totalPrice ?? 0),
+    currency: normalizeCurrency(item.currency),
+    ctaText: String(item.cta_text ?? item.ctaText ?? 'Subscribe'),
+    requestsPerMinute: Number((item.usage as AnyRecord | undefined)?.requests_per_minute ?? item.requests_per_minute ?? 0),
+  };
+}
+
+function normalizeActiveDeveloperPlan(item: AnyRecord): ActiveDeveloperPlanItem {
+  return {
+    planId: String(item.plan_id ?? item.planId ?? ''),
+    planTier: String(item.plan_tier ?? item.planTier ?? ''),
+    pricing: Number(item.pricing ?? 0),
+    gst: Number(item.gst ?? 0),
+    paymentGatewayFee: Number(item.payment_gateway_fee ?? item.paymentGatewayFee ?? 0),
+    totalPrice: Number(item.total_price ?? item.totalPrice ?? 0),
+    currency: normalizeCurrency(item.currency),
+    requestsPerMinute: Number(
+      (item.usage as AnyRecord | undefined)?.requests_per_minute
+      ?? (item.usage_limits as AnyRecord | undefined)?.requests_per_minute
+      ?? item.requests_per_minute
+      ?? 0,
+    ),
+    status: item.status ? String(item.status) : undefined,
+    allowInferenceFallback: Boolean(item.allow_inference_fallback ?? item.allowInferenceFallback),
+  };
+}
+
+function normalizeInstanceItem(item: InstanceItem): InstanceItem {
+  return {
+    ...item,
+    developer_id: typeof (item.developer_id ?? item.developerId) === 'string' ? String(item.developer_id ?? item.developerId) : undefined,
+    provider_name: String(item.provider_name ?? item.provider ?? ''),
+    instance_id: String(item.instance_id ?? item.unique_instance_id ?? item.id ?? ''),
+    instance_name: String(item.instance_name ?? item.name ?? item.id ?? ''),
+    image_url: typeof (item.image_url ?? item.imageUrl) === 'string' ? String(item.image_url ?? item.imageUrl) : undefined,
+    ram: typeof (item.ram ?? item.memory) === 'number' ? Number(item.ram ?? item.memory) : undefined,
+    gpu_num: typeof (item.gpu_num ?? item.gpuCount) === 'number' ? Number(item.gpu_num ?? item.gpuCount) : undefined,
+    disk_size: typeof (item.disk_size ?? item.diskSize) === 'number' ? Number(item.disk_size ?? item.diskSize) : undefined,
+    region: String(item.region ?? ''),
+    status: String(item.status ?? item.instance_status ?? ''),
+    instance_status: String(item.instance_status ?? item.status ?? ''),
+    ssh_command: typeof (item.ssh_command ?? item.sshCommand) === 'string' ? String(item.ssh_command ?? item.sshCommand) : undefined,
+    ssh_password: typeof (item.ssh_password ?? item.sshPassword) === 'string' ? String(item.ssh_password ?? item.sshPassword) : undefined,
+    ip_address: typeof (item.ip_address ?? item.public_ip ?? item.ipAddress) === 'string' ? String(item.ip_address ?? item.public_ip ?? item.ipAddress) : undefined,
+    gpu_name: typeof (item.gpu_name ?? item.gpu) === 'string' ? String(item.gpu_name ?? item.gpu) : undefined,
+    gpu_vram: typeof (item.gpu_vram ?? item.gpuVram) === 'number' ? Number(item.gpu_vram ?? item.gpuVram) : undefined,
+  };
+}
+
 export async function requestOtp(baseUrl: string, email: string): Promise<AnyRecord> {
   return request<AnyRecord>({
     baseUrl,
@@ -259,7 +366,7 @@ export async function getInstances(baseUrl: string, session: DesktopSession): Pr
     token: session.accessToken,
     query: { provider_name: 'all' },
   });
-  return normalizeList<InstanceItem>(data);
+  return normalizeList<InstanceItem>(data).map(normalizeInstanceItem);
 }
 
 export async function createInstance(
@@ -319,7 +426,38 @@ export async function listApiKeys(baseUrl: string, session: DesktopSession): Pro
     path: `/developer/${session.developerId}/get-api-keys`,
     token: session.accessToken,
   });
-  return normalizeList<ApiKeyItem>(data);
+  return normalizeList<ApiKeyItem>(data).map(normalizeApiKeyItem);
+}
+
+export async function getDeveloperPlans(baseUrl: string): Promise<DeveloperPlanItem[]> {
+  const data = await request<unknown>({
+    baseUrl,
+    path: '/developer/get-plans',
+    query: { country_id: getCountryId() },
+  });
+
+  return normalizeList<AnyRecord>(data).map(normalizeDeveloperPlan);
+}
+
+export async function getActiveDeveloperPlan(baseUrl: string, session: DesktopSession): Promise<ActiveDeveloperPlanItem | null> {
+  const data = await request<unknown>({
+    baseUrl,
+    path: `/developer/${session.developerId}/get-plan/active`,
+    token: session.accessToken,
+  });
+
+  const candidate = data && typeof data === 'object'
+    ? ((data as AnyRecord).active_plan && typeof (data as AnyRecord).active_plan === 'object'
+      ? (data as AnyRecord).active_plan as AnyRecord
+      : data as AnyRecord)
+    : null;
+
+  if (!candidate) {
+    return null;
+  }
+
+  const normalized = normalizeActiveDeveloperPlan(candidate);
+  return normalized.planId ? normalized : null;
 }
 
 export async function createApiKey(

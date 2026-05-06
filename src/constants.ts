@@ -30,6 +30,8 @@ export const defaultDashboardState: DashboardState = {
   providerInfo: {},
   gpuSpecs: [],
   models: [],
+  developerPlans: [],
+  activeDeveloperPlan: null,
 };
 
 export const defaultInstanceForm: CreateInstanceFormState = {

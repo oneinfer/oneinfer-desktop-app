@@ -9,7 +9,9 @@ import {
   createIntelligentEndpoint,
   deleteApiKey,
   deleteInstance,
+  getActiveDeveloperPlan,
   getCredits,
+  getDeveloperPlans,
   getGpuSpecs,
   getHfModelInfo,
   getInstances,
@@ -52,7 +54,6 @@ import type {
   HfModelInfo,
   SectionKey,
 } from './types';
-import { getPlanName } from './utils/format';
 
 function App() {
   const [booting, setBooting] = useState(true);
@@ -96,6 +97,7 @@ function App() {
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
+  const [showCreateInstanceModal, setShowCreateInstanceModal] = useState(false);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
   const [libraries, setLibraries] = useState<{ vllm: boolean; ollama: boolean }>({ vllm: false, ollama: false });
@@ -118,10 +120,18 @@ function App() {
 
       if (selfHostForm.useHfUrl) {
         try {
-          const url = new URL(targetModelId);
-          const parts = url.pathname.split('/').filter(Boolean);
-          if (parts.length >= 2) {
-            const repoId = `${parts[0]}/${parts[1]}`;
+          let repoId = targetModelId.trim();
+          if (repoId.startsWith('http://') || repoId.startsWith('https://')) {
+            const url = new URL(repoId);
+            const parts = url.pathname.split('/').filter(Boolean);
+            if (parts.length >= 2) {
+              repoId = `${parts[0]}/${parts[1]}`;
+            } else {
+              throw new Error('Invalid HF URL');
+            }
+          }
+
+          if (repoId && repoId.includes('/')) {
             const info = await getHfModelInfo(repoId) as HfModelInfo;
             if (active) {
               setHfModelMetadata(info);
@@ -328,6 +338,21 @@ function App() {
         if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Models catalog synced.' });
         }
+      }
+
+      if (section === 'bandwidth') {
+        const results = await Promise.allSettled([
+          getDeveloperPlans(currentBaseUrl),
+          getActiveDeveloperPlan(currentBaseUrl, currentSession),
+        ]);
+
+        setDashboard((current) => ({
+          ...current,
+          developerPlans: results[0].status === 'fulfilled' ? results[0].value : current.developerPlans,
+          activeDeveloperPlan: results[1].status === 'fulfilled' ? results[1].value : current.activeDeveloperPlan,
+        }));
+
+        announcePartialFailures('Bandwidth', results, shouldBeSilent);
       }
 
       setLoadedSections((current) => ({ ...current, [section]: true }));
@@ -901,29 +926,6 @@ function App() {
       ) : null}
 
       <main className="main-stage" style={{ padding: '20px' }}>
-        {activeSection !== 'apiKeys' && activeSection !== 'settings' && activeSection !== 'selfHosting' ? (
-          <section className="hero-panel hero-panel--single glass-panel" style={{ marginBottom: '24px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div className="eyebrow" style={{ color: 'var(--accent)', opacity: 0.9 }}>Account Subscription</div>
-                <h2 style={{ fontSize: '2.25rem', margin: '4px 0' }}>
-                  {(() => {
-                    const name = getPlanName(dashboard.profile);
-                    return name === 'No Active plan' ? name : `${name} Plan`;
-                  })()}
-                </h2>
-                <p style={{ color: 'var(--muted)', fontSize: '1rem' }}>OneInfer Developer Platform</p>
-              </div>
-              {dashboard.profile && getPlanName(dashboard.profile) !== 'No Active plan' ? (
-                <div className="plan-badge">
-                  <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>Current</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>Active</div>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
-
         {activeSection === 'overview' ? (
           <OverviewPage
             dashboard={dashboard}
@@ -958,7 +960,9 @@ function App() {
             dashboard={dashboard}
             instanceForm={instanceForm}
             busy={busy}
+            showCreateInstanceModal={showCreateInstanceModal}
             onFormChange={setInstanceForm}
+            onModalChange={setShowCreateInstanceModal}
             onCreate={handleCreateInstance}
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}

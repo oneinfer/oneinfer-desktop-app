@@ -1,18 +1,12 @@
 import { Sparkles, Wifi, Zap } from 'lucide-react';
 
 import { Panel } from '../components/Common';
-import type { DashboardState } from '../types';
-import { getPlanName } from '../utils/format';
-
-const plans = [
-  { name: 'Starter', price: '₹499.00', rpm: '1 RPM', accent: 'var(--accent)', badge: null },
-  { name: 'Pro', price: '₹1,999.00', rpm: '3 RPM', accent: '#71beff', badge: 'Popular' },
-  { name: 'Team', price: '₹3,999.00', rpm: '8 RPM', accent: 'white', badge: null },
-  { name: 'Scale', price: '₹8,999.00', rpm: '26 RPM', accent: 'white', badge: null },
-];
+import type { DashboardState, DeveloperPlanItem } from '../types';
 
 export function BandwidthPage(props: { dashboard: DashboardState }) {
-  const currentPlan = getPlanName(props.dashboard.profile).toLowerCase();
+  const plans = props.dashboard.developerPlans;
+  const activePlanId = props.dashboard.activeDeveloperPlan?.planId ?? null;
+  const allowInferenceFallback = props.dashboard.activeDeveloperPlan?.allowInferenceFallback;
 
   return (
     <div className="card-stack" style={{ gap: '24px' }}>
@@ -21,31 +15,13 @@ export function BandwidthPage(props: { dashboard: DashboardState }) {
           We are supporting models <a href="#" style={{ color: 'var(--accent)', textDecoration: 'none' }}>View Models</a>
         </div>
         <div className="card-stack" style={{ gap: '16px' }}>
-          {plans.map((plan) => {
-            const isCurrent = currentPlan === plan.name.toLowerCase();
-            const accent = isCurrent ? plan.accent : 'rgba(255,255,255,0.1)';
-            return (
-              <div key={plan.name} className="sub-card" style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '20px', border: isCurrent ? `1px solid ${plan.accent}` : '1px solid rgba(255,255,255,0.06)', background: isCurrent ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)' }}>
-                <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', color: isCurrent ? '#081018' : 'var(--muted)' }}>
-                  <Zap size={28} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                    <h3 style={{ margin: 0, fontSize: '1.2rem' }}>{plan.name}</h3>
-                    {isCurrent ? <PlanBadge text="Current" color={plan.accent} /> : plan.badge ? <PlanBadge text={plan.badge} color={plan.accent} /> : null}
-                  </div>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>{plan.price} <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
-                </div>
-                <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
-                  <div style={{ fontWeight: 600 }}>{plan.rpm} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
-                </div>
-                <button className="primary-button" disabled={isCurrent} style={{ background: isCurrent ? plan.accent : 'rgba(255,255,255,0.1)', color: isCurrent ? '#081018' : 'var(--text)', border: 'none' }} type="button">
-                  {isCurrent ? 'Current Plan' : 'Upgrade'}
-                </button>
-              </div>
-            );
-          })}
+          {plans.length === 0 ? (
+            <div className="sub-card" style={{ padding: '20px', border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)', color: 'var(--muted)' }}>
+              Loading subscription plans...
+            </div>
+          ) : plans.map((plan) => (
+            <PlanRow key={plan.planId} plan={plan} isCurrent={plan.planId === activePlanId} />
+          ))}
         </div>
       </Panel>
 
@@ -62,7 +38,7 @@ export function BandwidthPage(props: { dashboard: DashboardState }) {
           </div>
         </div>
         <label className="switch">
-          <input type="checkbox" defaultChecked />
+          <input type="checkbox" checked={Boolean(allowInferenceFallback)} readOnly />
           <span className="slider round"></span>
         </label>
       </div>
@@ -70,6 +46,59 @@ export function BandwidthPage(props: { dashboard: DashboardState }) {
   );
 }
 
+function PlanRow(props: { plan: DeveloperPlanItem; isCurrent: boolean }) {
+  const planName = normalizePlanName(props.plan.planTier);
+  const accent = props.isCurrent ? getPlanAccent(planName) : 'rgba(255,255,255,0.1)';
+
+  return (
+    <div className="sub-card" style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '20px', border: props.isCurrent ? `1px solid ${getPlanAccent(planName)}` : '1px solid rgba(255,255,255,0.06)', background: props.isCurrent ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)' }}>
+      <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', color: props.isCurrent ? '#081018' : 'var(--muted)' }}>
+        <Zap size={28} />
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+          <h3 style={{ margin: 0, fontSize: '1.2rem' }}>{planName}</h3>
+          {props.isCurrent ? <PlanBadge text="Current" color={getPlanAccent(planName)} /> : isPopularPlan(planName) ? <PlanBadge text="Popular" color={getPlanAccent(planName)} /> : null}
+        </div>
+        <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>{formatPlanPrice(props.plan.pricing, props.plan.currency)} <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
+      </div>
+      <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
+        <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
+        <div style={{ fontWeight: 600 }}>{props.plan.requestsPerMinute} RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+      </div>
+      <button className="primary-button" disabled={props.isCurrent} style={{ minWidth: '132px', background: props.isCurrent ? getPlanAccent(planName) : 'rgba(255,255,255,0.1)', color: props.isCurrent ? '#081018' : 'var(--text)', border: 'none' }} type="button">
+        {props.isCurrent ? 'Current Plan' : 'Upgrade'}
+      </button>
+    </div>
+  );
+}
+
 function PlanBadge(props: { text: string; color: string }) {
   return <span style={{ fontSize: '0.65rem', background: 'rgba(255,255,255,0.2)', color: props.color, padding: '2px 6px', borderRadius: '4px', fontWeight: 700, textTransform: 'uppercase' }}>{props.text}</span>;
+}
+
+function normalizePlanName(value: string): string {
+  return value.replace(/\s+plan$/i, '').trim() || 'Plan';
+}
+
+function getPlanAccent(value: string): string {
+  const normalized = value.toLowerCase();
+  if (normalized.includes('starter') || normalized.includes('lite')) return 'var(--accent)';
+  if (normalized.includes('pro')) return '#71beff';
+  return 'white';
+}
+
+function isPopularPlan(value: string): boolean {
+  return value.toLowerCase().includes('pro');
+}
+
+function formatPlanPrice(value: number, currency: string): string {
+  const normalizedCurrency = currency === 'INR' ? 'INR' : 'USD';
+  const locale = normalizedCurrency === 'INR' ? 'en-IN' : 'en-US';
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: normalizedCurrency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }

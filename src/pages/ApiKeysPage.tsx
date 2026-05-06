@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react';
-import { KeyRound, LoaderCircle } from 'lucide-react';
+import { LoaderCircle } from 'lucide-react';
 
 import { Modal } from '../components/Common';
 import type { DashboardState } from '../types';
@@ -24,12 +24,11 @@ export function ApiKeysPage(props: {
         </button>
       </header>
 
-      <div className="glass-panel mb-2 flex h-10 shrink-0 items-center justify-between gap-4 rounded-[0.875rem] px-4">
-        <div className="relative flex-1">
-          <KeyRound size="1rem" className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
-          <input className="h-[1.875rem] w-full rounded-lg border border-white/[0.06] bg-black/20 py-0 pl-9 pr-3 text-[var(--text)]" placeholder="Search API keys..." />
+      <div className="glass-panel mb-5 mt-4 flex shrink-0 flex-wrap items-center gap-4 rounded-[0.875rem] px-5 py-3">
+        <div className="relative min-w-0 flex-1">
+          <input className="h-11 w-full rounded-[0.5rem] border border-white/[0.06] bg-black/20 px-4 py-0 text-[0.9rem] text-[var(--text)] placeholder:text-[var(--muted)]" placeholder="Search API keys..." />
         </div>
-        <label className="flex h-[1.875rem] items-center gap-2 whitespace-nowrap text-[0.85rem] text-[var(--muted)]">
+        <label className="flex h-11 shrink-0 items-center gap-2 whitespace-nowrap text-[0.85rem] text-[var(--muted)]">
           <input className="accent-[var(--accent)]" type="checkbox" />
           Show inactive keys
         </label>
@@ -56,12 +55,14 @@ export function ApiKeysPage(props: {
               <tbody>
                 {props.dashboard.apiKeys.map((apiKey, index) => {
                   const name = String(apiKey.api_key_name ?? apiKey.id ?? `key-${index}`);
+                  const prefix = String(apiKey.prefix ?? apiKey.api_key_prefix ?? '-');
+                  const lastUsed = apiKey.last_used ?? apiKey.last_used_at;
                   return (
                     <tr key={name} className="border-t border-white/[0.04]">
                       <td className="px-4 py-6 font-semibold">{name}</td>
-                      <td className="px-4 py-6 font-mono text-[var(--accent)]">{apiKey.prefix || '-'}</td>
+                      <td className="px-4 py-6 font-mono text-[var(--accent)]">{prefix && prefix !== 'null' ? prefix : '-'}</td>
                       <td className="px-4 py-6 text-[0.85rem]">{apiKey.created_at ? new Date(apiKey.created_at).toLocaleDateString() : '-'}</td>
-                      <td className="px-4 py-6 text-[0.85rem] text-[var(--muted)]">{formatValue(apiKey.last_used) || 'Never used'}</td>
+                      <td className="px-4 py-6 text-[0.85rem] text-[var(--muted)]">{lastUsed ? formatValue(lastUsed) : 'Never used'}</td>
                       <td className="px-4 py-6"><span className="status-pill active">Active</span></td>
                       <td className="px-4 py-6 text-right">
                         <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem] !text-[#818cf8]" onClick={() => props.onDelete(name)} type="button">

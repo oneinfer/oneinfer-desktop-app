@@ -41,13 +41,25 @@ export function getPlanName(profile: DashboardState['profile']) {
     ? profile.developer as Record<string, unknown>
     : profile;
 
-  const rawName = rawProfile.plan_name ?? rawProfile.plan ?? (rawProfile as any).developer_plan ?? (rawProfile as any).subscription_tier;
+  const nestedSubscription = (rawProfile as any).subscription ?? (rawProfile as any).active_subscription ?? (rawProfile as any).current_subscription;
+  const rawName = rawProfile.plan_name
+    ?? rawProfile.plan
+    ?? (rawProfile as any).developer_plan
+    ?? (rawProfile as any).subscription_tier
+    ?? (rawProfile as any).current_plan
+    ?? (rawProfile as any).subscription_name
+    ?? (nestedSubscription && typeof nestedSubscription === 'object'
+      ? (nestedSubscription as any).plan_name
+        ?? (nestedSubscription as any).plan
+        ?? (nestedSubscription as any).name
+        ?? (nestedSubscription as any).tier
+      : undefined);
 
   if (!rawName || String(rawName).toLowerCase() === 'free') {
     return 'No Active plan';
   }
 
-  return String(rawName);
+  return String(rawName).replace(/\s+plan$/i, '').trim();
 }
 
 export function formatMachineCapacity(value?: number, unit = 'GB'): string {
