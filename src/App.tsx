@@ -375,7 +375,10 @@ function App() {
           profile: results[0].status === 'fulfilled' ? results[0].value : current.profile,
           credits: results[1].status === 'fulfilled' ? results[1].value : current.credits,
           inferenceEndpoints: results[2].status === 'fulfilled' ? results[2].value : current.inferenceEndpoints,
-          instances: results[3].status === 'fulfilled' ? results[3].value : current.instances,
+          instances: (results[3].status === 'fulfilled' ? results[3].value : current.instances).filter(i => {
+            const status = String(i.instance_status ?? i.status).toLowerCase();
+            return status !== 'deleted' && status !== 'terminated';
+          }),
         }));
 
         announcePartialFailures('Overview', results, shouldBeSilent);
@@ -942,7 +945,7 @@ function App() {
   async function handleCreateInstance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) {
-      return;
+      return false;
     }
 
     setBusy('create-instance');
@@ -950,8 +953,10 @@ function App() {
       await createInstance(settingsDraft.apiBaseUrl, session, instanceForm);
       setMessage({ tone: 'success', text: 'Instance creation request submitted.' });
       await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
+      return true;
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create instance.' });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -983,10 +988,15 @@ function App() {
     try {
       await deleteInstance(settingsDraft.apiBaseUrl, session, instanceId, provider);
       setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
-      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Delete instance failed.' });
+      const msg = error instanceof Error ? error.message : 'Delete instance failed.';
+      if (msg.toLowerCase().includes('no instance mapping found')) {
+        setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
+      } else {
+        setMessage({ tone: 'error', text: msg });
+      }
     } finally {
+      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
       setBusy(null);
     }
   }

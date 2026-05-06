@@ -121,10 +121,39 @@ async function request<T>(options: {
       throw new Error('Received the OneInfer website HTML instead of an API response. The app is now configured to use the API backend automatically; restart the app and try again.');
     }
 
-    const detail = extractResponseData(payload);
-    const message = typeof detail === 'string'
-      ? detail
-      : (detail as AnyRecord)?.message ?? (detail as AnyRecord)?.detail ?? response.statusText;
+    let rawPayload = payload;
+    if (typeof rawPayload === 'string' && rawPayload.trim().startsWith('{')) {
+      try {
+        rawPayload = JSON.parse(rawPayload);
+      } catch {}
+    }
+
+    let message: unknown;
+    if (typeof rawPayload === 'object' && rawPayload !== null) {
+      const typedPayload = rawPayload as AnyRecord;
+      const errorObj = typeof typedPayload.error === 'object' && typedPayload.error !== null ? (typedPayload.error as AnyRecord) : null;
+      const apiDetailsObj = typeof typedPayload.api_details === 'object' && typedPayload.api_details !== null ? (typedPayload.api_details as AnyRecord) : null;
+      
+      message = 
+        errorObj?.error_description ??
+        errorObj?.message ??
+        (typeof typedPayload.error === 'string' ? typedPayload.error : undefined) ??
+        apiDetailsObj?.api_message ??
+        typedPayload.message ??
+        typedPayload.detail ??
+        response.statusText;
+    } else {
+      message = rawPayload || response.statusText;
+    }
+
+    if (typeof message === 'object' && message !== null) {
+      try {
+        message = JSON.stringify(message);
+      } catch {
+        message = String(message);
+      }
+    }
+
     throw new Error(`${message} (URL: ${url})`);
   }
 
@@ -345,7 +374,12 @@ export async function getProviderInfo(baseUrl: string): Promise<ProviderInfoMap>
   });
 
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    return data as ProviderInfoMap;
+    const typedData = data as AnyRecord;
+    if (typedData.provider_info && typeof typedData.provider_info === 'object' && !Array.isArray(typedData.provider_info)) {
+      return typedData.provider_info as ProviderInfoMap;
+    }
+
+    return typedData as ProviderInfoMap;
   }
 
   return {};
