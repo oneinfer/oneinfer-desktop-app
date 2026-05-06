@@ -97,5 +97,7 @@ interface Window {
       apiBaseUrl?: string;
       session?: DesktopSession;
     }) => Promise<DesktopOpenClawResult>;
+    checkLibrary: (name: 'vllm' | 'ollama') => Promise<boolean>;
+    installLibrary: (name: 'vllm' | 'ollama') => Promise<void>;
   };
 }
