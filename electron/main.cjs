@@ -3,6 +3,7 @@ const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const si = require('systeminformation');
@@ -12,6 +13,8 @@ const appId = 'com.oneinfer.desktop';
 let mainWindow = null;
 let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
+const localModelDeployments = new Map();
+const localModelDeploymentsInFlight = new Map();
 const MACHINE_SYNC_DEBOUNCE_MS = 15000;
 let updaterConfigured = false;
 let updateState = {
@@ -32,6 +35,7 @@ if (process.platform === 'win32') {
   app.setAppUserModelId(appId);
 }
 
+app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 
 function broadcastUpdateState() {
@@ -49,6 +53,18 @@ function setUpdateState(patch) {
   };
 
   broadcastUpdateState();
+}
+
+function sendDeploymentProgress(progress) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('app:deployment-progress', {
+    level: 'info',
+    timestamp: Date.now(),
+    ...progress,
+  });
 }
 
 function configureAutoUpdater() {
@@ -554,6 +570,463 @@ async function installLibrary(name) {
   }
 
   throw new Error(`Automatic installation for "${name}" is not supported.`);
+}
+
+function normalizeHfRepoId(value) {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) {
+    throw new Error('Hugging Face model URL or repo id is required.');
+  }
+
+  let candidate = rawValue;
+  if (/^https?:\/\//i.test(candidate)) {
+    const parsedUrl = new URL(candidate);
+    const normalizedHost = parsedUrl.hostname.replace(/^www\./i, '').toLowerCase();
+    if (normalizedHost !== 'huggingface.co') {
+      throw new Error('Only huggingface.co model URLs are supported for local deployment.');
+    }
+
+    const parts = parsedUrl.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      throw new Error('Hugging Face URL must include an owner and model name.');
+    }
+
+    candidate = `${parts[0]}/${parts[1]}`;
+  }
+
+  const repoIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+  if (!repoIdPattern.test(candidate)) {
+    throw new Error('Hugging Face model must be in owner/model format.');
+  }
+
+  return candidate;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createCancellationError(repoId) {
+  const error = new Error(`Deployment cancelled for ${repoId}.`);
+  error.cancelled = true;
+  return error;
+}
+
+function assertDeploymentNotCancelled(repoId) {
+  const inFlight = localModelDeploymentsInFlight.get(repoId);
+  if (inFlight?.cancelled) {
+    throw createCancellationError(repoId);
+  }
+}
+
+function stopProcessTree(pid) {
+  if (!pid) {
+    return;
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return;
+    }
+
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // The process may already have exited.
+  }
+}
+
+function createEmptyLocalModelMetrics(endpointUrl, patch = {}) {
+  return {
+    endpointUrl,
+    healthy: false,
+    modelCount: 0,
+    uptimeSeconds: null,
+    requestsRunning: null,
+    requestsWaiting: null,
+    requestSuccessTotal: null,
+    promptTokensTotal: null,
+    generationTokensTotal: null,
+    gpuCacheUsagePercent: null,
+    lastCheckedAt: new Date().toISOString(),
+    ...patch,
+  };
+}
+
+function readPrometheusMetric(metricsText, metricNames) {
+  const names = Array.isArray(metricNames) ? metricNames : [metricNames];
+  const lines = String(metricsText || '').split(/\r?\n/);
+
+  for (const name of names) {
+    let total = 0;
+    let found = false;
+    for (const line of lines) {
+      if (!line || line.startsWith('#')) {
+        continue;
+      }
+
+      if (line.startsWith(`${name} `) || line.startsWith(`${name}{`)) {
+        const rawValue = line.trim().split(/\s+/).pop();
+        const numericValue = Number(rawValue);
+        if (Number.isFinite(numericValue)) {
+          total += numericValue;
+          found = true;
+        }
+      }
+    }
+
+    if (found) {
+      return total;
+    }
+  }
+
+  return null;
+}
+
+function getMetricsBaseUrl(endpointUrl) {
+  const parsedUrl = new URL(endpointUrl);
+  parsedUrl.pathname = parsedUrl.pathname.replace(/\/v1\/?$/i, '') || '/';
+  parsedUrl.search = '';
+  parsedUrl.hash = '';
+  return parsedUrl.toString().replace(/\/+$/, '');
+}
+
+async function fetchWithTimeout(url, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function isPortAvailable(port, host = '127.0.0.1') {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, host);
+  });
+}
+
+async function findAvailablePort(preferredPort = 8000) {
+  const numericPreferredPort = Number(preferredPort);
+  const startPort = Number.isInteger(numericPreferredPort) && numericPreferredPort > 0
+    ? numericPreferredPort
+    : 8000;
+
+  for (let port = startPort; port < startPort + 50; port += 1) {
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+
+  throw new Error(`No available local port found starting at ${startPort}.`);
+}
+
+async function waitForOpenAiEndpoint(endpointUrl, timeoutMs = 10 * 60 * 1000, onProgress = () => {}, shouldCancel = () => false) {
+  const startedAt = Date.now();
+  const modelsUrl = `${endpointUrl.replace(/\/+$/, '')}/models`;
+  let lastError = null;
+  let attempt = 0;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (shouldCancel()) {
+      throw createCancellationError(endpointUrl);
+    }
+
+    attempt += 1;
+    onProgress({
+      stage: 'health-check',
+      message: `Checking local server readiness (attempt ${attempt})...`,
+      detail: modelsUrl,
+    });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(modelsUrl, { signal: controller.signal });
+      if (response.ok) {
+        onProgress({
+          stage: 'ready',
+          message: 'Local model server is responding.',
+          detail: modelsUrl,
+          level: 'success',
+        });
+        return;
+      }
+      lastError = new Error(`Health check returned HTTP ${response.status}.`);
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    await wait(2500);
+  }
+
+  throw new Error(`Timed out waiting for local model server at ${modelsUrl}.${lastError?.message ? ` Last error: ${lastError.message}` : ''}`);
+}
+
+async function startVllmServer(repoId, port, onProgress = () => {}) {
+  let command = 'vllm';
+  let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
+
+  onProgress({
+    stage: 'preparing',
+    message: 'Checking vLLM installation...',
+    detail: 'Looking for vllm command or Python module.',
+  });
+
+  if (!await commandExists('vllm')) {
+    if (!await commandExists('python')) {
+      throw new Error('vLLM is not available and Python was not found. Install vLLM before deploying.');
+    }
+
+    try {
+      await runCommand('python', ['-c', 'import vllm'], { timeoutMs: 10000 });
+    } catch {
+      throw new Error('vLLM is not installed. Install vLLM from the analysis dialog before deploying.');
+    }
+
+    command = 'python';
+    args = ['-m', 'vllm.entrypoints.openai.api_server', '--model', repoId, '--host', '127.0.0.1', '--port', String(port)];
+  }
+
+  onProgress({
+    stage: 'starting',
+    message: `Starting vLLM for ${repoId}...`,
+    detail: `${command} ${args.join(' ')}`,
+  });
+
+  const child = spawn(command, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  const pipeOutput = (stream, level) => {
+    let buffer = '';
+    stream.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      lines
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-8)
+        .forEach((line) => {
+          onProgress({
+            stage: 'loading',
+            message: level === 'error' ? 'vLLM reported output.' : 'vLLM is loading the model...',
+            detail: line,
+            level,
+          });
+        });
+    });
+  };
+
+  pipeOutput(child.stdout, 'info');
+  pipeOutput(child.stderr, 'info');
+
+  child.once('error', (error) => {
+    onProgress({
+      stage: 'error',
+      message: 'Failed to start vLLM.',
+      detail: error.message,
+      level: 'error',
+    });
+  });
+
+  child.once('exit', (code, signal) => {
+    if (code !== null && code !== 0) {
+      onProgress({
+        stage: 'error',
+        message: `vLLM exited with code ${code}.`,
+        detail: signal ? `Signal: ${signal}` : undefined,
+        level: 'error',
+      });
+    }
+  });
+
+  child.unref();
+  return child;
+}
+
+async function deployHfModel(payload = {}) {
+  const repoId = normalizeHfRepoId(payload.repoId);
+  const runtime = payload.runtime || 'vllm';
+  const progressId = String(payload.progressId || `${repoId}-${Date.now()}`);
+  const progress = (patch) => sendDeploymentProgress({ id: progressId, ...patch });
+  const shouldCancel = () => Boolean(localModelDeploymentsInFlight.get(repoId)?.cancelled);
+
+  if (runtime !== 'vllm') {
+    throw new Error(`Unsupported local deployment runtime: ${runtime}`);
+  }
+
+  if (localModelDeploymentsInFlight.has(repoId)) {
+    throw new Error(`Deployment is already running for ${repoId}.`);
+  }
+
+  localModelDeploymentsInFlight.set(repoId, {
+    cancelled: false,
+    child: null,
+    endpointUrl: null,
+    progressId,
+    repoId,
+    startedAt: Date.now(),
+  });
+
+  progress({
+    stage: 'preparing',
+    message: `Preparing local deployment for ${repoId}.`,
+    detail: 'Runtime: vLLM',
+  });
+
+  const existingDeployment = localModelDeployments.get(repoId);
+  if (existingDeployment) {
+    try {
+      progress({
+        stage: 'health-check',
+        message: 'Found an existing local server. Verifying it is still healthy...',
+        detail: existingDeployment.endpointUrl,
+      });
+      await waitForOpenAiEndpoint(existingDeployment.endpointUrl, 15000, progress, shouldCancel);
+      localModelDeploymentsInFlight.delete(repoId);
+      return existingDeployment;
+    } catch {
+      progress({
+        stage: 'preparing',
+        message: 'Existing local server did not respond. Starting a fresh deployment...',
+      });
+      localModelDeployments.delete(repoId);
+    }
+  }
+
+  const port = await findAvailablePort(payload.port || 8000);
+  assertDeploymentNotCancelled(repoId);
+  const endpointUrl = `http://127.0.0.1:${port}/v1`;
+  const inFlight = localModelDeploymentsInFlight.get(repoId);
+  if (inFlight) {
+    inFlight.endpointUrl = endpointUrl;
+  }
+
+  progress({
+    stage: 'preparing',
+    message: `Reserved local port ${port}.`,
+    detail: endpointUrl,
+  });
+
+  const child = await startVllmServer(repoId, port, progress);
+  const activeDeployment = localModelDeploymentsInFlight.get(repoId);
+  if (activeDeployment) {
+    activeDeployment.child = child;
+  }
+
+  const deployment = {
+    endpointUrl,
+    modelId: repoId,
+    pid: child.pid || null,
+    runtime,
+    startedAt: Date.now(),
+  };
+
+  try {
+    await waitForOpenAiEndpoint(endpointUrl, payload.healthTimeoutMs || 2 * 60 * 1000, progress, shouldCancel);
+    localModelDeployments.set(repoId, deployment);
+    localModelDeploymentsInFlight.delete(repoId);
+    progress({
+      stage: 'ready',
+      message: `${repoId} is ready for OpenAI-compatible requests.`,
+      detail: endpointUrl,
+      level: 'success',
+    });
+    return deployment;
+  } catch (error) {
+    stopProcessTree(child.pid);
+    localModelDeploymentsInFlight.delete(repoId);
+
+    progress({
+      stage: 'error',
+      message: error?.cancelled ? 'Local deployment cancelled.' : 'Local deployment failed.',
+      detail: error instanceof Error ? error.message : String(error),
+      level: 'error',
+    });
+    throw error;
+  }
+}
+
+async function cancelHfDeployment(payload = {}) {
+  const repoId = normalizeHfRepoId(payload.repoId);
+  const inFlight = localModelDeploymentsInFlight.get(repoId);
+  if (!inFlight) {
+    return { cancelled: false, message: `No active deployment found for ${repoId}.` };
+  }
+
+  inFlight.cancelled = true;
+  stopProcessTree(inFlight.child?.pid);
+  localModelDeploymentsInFlight.delete(repoId);
+  sendDeploymentProgress({
+    id: inFlight.progressId,
+    stage: 'cancelled',
+    message: `Cancelled deployment for ${repoId}.`,
+    detail: inFlight.endpointUrl || undefined,
+    level: 'error',
+  });
+
+  return { cancelled: true, message: `Cancelled deployment for ${repoId}.` };
+}
+
+async function getLocalModelMetrics(payload = {}) {
+  const endpointUrl = String(payload.endpointUrl || '').trim();
+  if (!endpointUrl) {
+    throw new Error('Local endpoint URL is required.');
+  }
+
+  const metrics = createEmptyLocalModelMetrics(endpointUrl);
+  const modelsUrl = `${endpointUrl.replace(/\/+$/, '')}/models`;
+  const baseUrl = getMetricsBaseUrl(endpointUrl);
+  const metricsUrl = `${baseUrl}/metrics`;
+
+  try {
+    const modelsResponse = await fetchWithTimeout(modelsUrl, 5000);
+    metrics.healthy = modelsResponse.ok;
+    if (modelsResponse.ok) {
+      const payload = await modelsResponse.json().catch(() => null);
+      metrics.modelCount = Array.isArray(payload?.data) ? payload.data.length : 0;
+    }
+  } catch (error) {
+    metrics.error = error instanceof Error ? error.message : String(error);
+  }
+
+  try {
+    const metricsResponse = await fetchWithTimeout(metricsUrl, 5000);
+    if (metricsResponse.ok) {
+      const metricsText = await metricsResponse.text();
+      metrics.requestsRunning = readPrometheusMetric(metricsText, ['vllm:num_requests_running', 'vllm_num_requests_running']);
+      metrics.requestsWaiting = readPrometheusMetric(metricsText, ['vllm:num_requests_waiting', 'vllm_num_requests_waiting']);
+      metrics.requestSuccessTotal = readPrometheusMetric(metricsText, ['vllm:request_success_total', 'vllm_request_success_total']);
+      metrics.promptTokensTotal = readPrometheusMetric(metricsText, ['vllm:prompt_tokens_total', 'vllm_prompt_tokens_total']);
+      metrics.generationTokensTotal = readPrometheusMetric(metricsText, ['vllm:generation_tokens_total', 'vllm_generation_tokens_total']);
+
+      const gpuCacheUsage = readPrometheusMetric(metricsText, ['vllm:gpu_cache_usage_perc', 'vllm_gpu_cache_usage_perc']);
+      metrics.gpuCacheUsagePercent = gpuCacheUsage === null ? null : gpuCacheUsage * 100;
+    }
+  } catch (error) {
+    metrics.error = metrics.error || (error instanceof Error ? error.message : String(error));
+  }
+
+  const deployment = [...localModelDeployments.values()].find((item) => item.endpointUrl === endpointUrl);
+  if (deployment?.startedAt) {
+    metrics.uptimeSeconds = Math.max(0, Math.floor((Date.now() - deployment.startedAt) / 1000));
+  }
+
+  return metrics;
 }
 
 
@@ -1860,6 +2333,9 @@ app.whenReady().then(() => {
   ipcMain.handle('app:enable-openclaw', async (_event, payload) => enableOpenClaw(payload));
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
+  ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
+  ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
+  ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
 
   createWindow();
 

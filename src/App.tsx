@@ -9,7 +9,9 @@ import {
   createIntelligentEndpoint,
   deleteApiKey,
   deleteInstance,
+  getActiveDeveloperPlan,
   getCredits,
+  getDeveloperPlans,
   getGpuSpecs,
   getHfModelInfo,
   getInstances,
@@ -24,7 +26,7 @@ import {
   runInstanceAction,
 } from './api';
 import { AppLayout } from './components/AppLayout';
-import { Banner, Modal } from './components/Common';
+import { Banner } from './components/Common';
 import { HfModelDetailPanel } from './components/HfModelDetailPanel';
 import {
   createLoadedSections,
@@ -50,9 +52,25 @@ import type {
   DashboardState,
   DesktopSession,
   HfModelInfo,
+  LocalModelDeployment,
+  LocalModelMetrics,
   SectionKey,
 } from './types';
-import { getPlanName } from './utils/format';
+
+function normalizeHfRepoId(value: string): string {
+  const rawValue = value.trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
+    const url = new URL(rawValue);
+    const parts = url.pathname.split('/').filter(Boolean);
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+  }
+
+  return rawValue.includes('/') ? rawValue : '';
+}
 
 function App() {
   const [booting, setBooting] = useState(true);
@@ -77,7 +95,7 @@ function App() {
     name: '',
     model_id: '',
     endpoint_url: 'http://localhost:8000/v1',
-    useHfUrl: false,
+    useHfUrl: true,
     hfUrl: '',
   });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
@@ -96,10 +114,15 @@ function App() {
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
+  const [showCreateInstanceModal, setShowCreateInstanceModal] = useState(false);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
+  const [hfModelMetadataLoading, setHfModelMetadataLoading] = useState(false);
+  const [hfModelMetadataError, setHfModelMetadataError] = useState<string | null>(null);
   const [libraries, setLibraries] = useState<{ vllm: boolean; ollama: boolean }>({ vllm: false, ollama: false });
-  const [isHfModelModalOpen, setIsHfModelModalOpen] = useState(false);
+  const [deploymentProgress, setDeploymentProgress] = useState<DesktopDeploymentProgress[]>([]);
+  const [localDeployments, setLocalDeployments] = useState<LocalModelDeployment[]>([]);
+  const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
 
   useEffect(() => {
     let active = true;
@@ -111,17 +134,20 @@ function App() {
       if (!targetModelId) {
         setValidationResult(null);
         setHfModelMetadata(null);
+        setHfModelMetadataLoading(false);
+        setHfModelMetadataError(null);
         return;
       }
 
       let requirements = { minVramGb: 0, modelSizeGb: 0 };
+      setHfModelMetadataLoading(true);
+      setHfModelMetadataError(null);
 
       if (selfHostForm.useHfUrl) {
         try {
-          const url = new URL(targetModelId);
-          const parts = url.pathname.split('/').filter(Boolean);
-          if (parts.length >= 2) {
-            const repoId = `${parts[0]}/${parts[1]}`;
+          const repoId = normalizeHfRepoId(targetModelId);
+
+          if (repoId && repoId.includes('/')) {
             const info = await getHfModelInfo(repoId) as HfModelInfo;
             if (active) {
               setHfModelMetadata(info);
@@ -138,11 +164,14 @@ function App() {
             };
           } else if (active) {
             setHfModelMetadata(null);
+            setValidationResult(null);
+            setHfModelMetadataError('Enter a Hugging Face URL or repo id in owner/model format.');
           }
-        } catch {
+        } catch (error) {
           if (active) {
             setValidationResult(null);
             setHfModelMetadata(null);
+            setHfModelMetadataError(error instanceof Error ? error.message : 'Unable to fetch Hugging Face model metadata.');
           }
           return;
         }
@@ -167,15 +196,25 @@ function App() {
           };
         } else if (active) {
           setHfModelMetadata(null);
+          setValidationResult(null);
+          setHfModelMetadataError('Select a model to check local deployability.');
         }
       }
 
       if (active && (requirements.minVramGb > 0 || requirements.modelSizeGb > 0)) {
         setValidationResult(validateHardwareSupport(requirements, dashboard.machineDetails));
       }
+
+      if (active) {
+        setHfModelMetadataLoading(false);
+      }
     }
 
-    runValidation();
+    runValidation().finally(() => {
+      if (active) {
+        setHfModelMetadataLoading(false);
+      }
+    });
     return () => {
       active = false;
     };
@@ -197,6 +236,63 @@ function App() {
       checkLibs();
     }
   }, [activeSection, session]);
+
+  useEffect(() => {
+    if (!window.desktopBridge?.onDeploymentProgress) {
+      return undefined;
+    }
+
+    return window.desktopBridge.onDeploymentProgress((progress) => {
+      setDeploymentProgress((current) => [...current, progress].slice(-80));
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!window.desktopBridge?.getLocalModelMetrics || localDeployments.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    async function refreshMetrics() {
+      const results = await Promise.all(localDeployments.map(async (deployment) => {
+        try {
+          return await window.desktopBridge.getLocalModelMetrics({ endpointUrl: deployment.endpointUrl });
+        } catch (error) {
+          return {
+            endpointUrl: deployment.endpointUrl,
+            healthy: false,
+            modelCount: 0,
+            uptimeSeconds: null,
+            requestsRunning: null,
+            requestsWaiting: null,
+            requestSuccessTotal: null,
+            promptTokensTotal: null,
+            generationTokensTotal: null,
+            gpuCacheUsagePercent: null,
+            lastCheckedAt: new Date().toISOString(),
+            error: error instanceof Error ? error.message : 'Failed to load local model metrics.',
+          } satisfies LocalModelMetrics;
+        }
+      }));
+
+      if (!cancelled) {
+        setLocalModelMetrics((current) => {
+          const next = { ...current };
+          results.forEach((metrics) => {
+            next[metrics.endpointUrl] = metrics;
+          });
+          return next;
+        });
+      }
+    }
+
+    refreshMetrics();
+    const intervalId = window.setInterval(refreshMetrics, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [localDeployments]);
 
   async function refreshMachineDetails(currentSession: DesktopSession, currentBaseUrl: string) {
     const machineDetails = await syncLocalMachineProfile(currentBaseUrl, currentSession);
@@ -272,6 +368,8 @@ function App() {
           getCredits(currentBaseUrl, currentSession),
           listInferenceEndpoints(currentBaseUrl, currentSession),
           getInstances(currentBaseUrl, currentSession),
+          getDeveloperPlans(currentBaseUrl),
+          getActiveDeveloperPlan(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
@@ -279,7 +377,12 @@ function App() {
           profile: results[0].status === 'fulfilled' ? results[0].value : current.profile,
           credits: results[1].status === 'fulfilled' ? results[1].value : current.credits,
           inferenceEndpoints: results[2].status === 'fulfilled' ? results[2].value : current.inferenceEndpoints,
-          instances: results[3].status === 'fulfilled' ? results[3].value : current.instances,
+          instances: (results[3].status === 'fulfilled' ? results[3].value : current.instances).filter(i => {
+            const status = String(i.instance_status ?? i.status).toLowerCase();
+            return status !== 'deleted' && status !== 'terminated';
+          }),
+          developerPlans: results[4].status === 'fulfilled' ? results[4].value : current.developerPlans,
+          activeDeveloperPlan: results[5].status === 'fulfilled' ? results[5].value : current.activeDeveloperPlan,
         }));
 
         announcePartialFailures('Overview', results, shouldBeSilent);
@@ -328,6 +431,21 @@ function App() {
         if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Models catalog synced.' });
         }
+      }
+
+      if (section === 'bandwidth') {
+        const results = await Promise.allSettled([
+          getDeveloperPlans(currentBaseUrl),
+          getActiveDeveloperPlan(currentBaseUrl, currentSession),
+        ]);
+
+        setDashboard((current) => ({
+          ...current,
+          developerPlans: results[0].status === 'fulfilled' ? results[0].value : current.developerPlans,
+          activeDeveloperPlan: results[1].status === 'fulfilled' ? results[1].value : current.activeDeveloperPlan,
+        }));
+
+        announcePartialFailures('Bandwidth', results, shouldBeSilent);
       }
 
       setLoadedSections((current) => ({ ...current, [section]: true }));
@@ -613,9 +731,14 @@ function App() {
         ? dashboard.machineDetails.hostname
         : '';
 
-    const modelId = selfHostForm.useHfUrl ? selfHostForm.hfUrl : selfHostForm.model_id;
+    const modelId = selfHostForm.useHfUrl ? normalizeHfRepoId(selfHostForm.hfUrl) : selfHostForm.model_id;
     if (!modelId) {
       setMessage({ tone: 'error', text: selfHostForm.useHfUrl ? 'Hugging Face URL is required.' : 'Please select a model.' });
+      return;
+    }
+
+    if (!selfHostForm.endpoint_url.trim()) {
+      setMessage({ tone: 'error', text: 'Local endpoint URL is required.' });
       return;
     }
 
@@ -626,7 +749,7 @@ function App() {
         provider: 'openai',
         model_id: modelId,
         deployment_target: 'local',
-        endpoint_url: selfHostForm.endpoint_url,
+        endpoint_url: selfHostForm.endpoint_url.trim(),
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
         top_p: 0.9,
@@ -639,6 +762,159 @@ function App() {
       throw error;
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function handleDeploySelfHostedModel() {
+    if (!session) {
+      return false;
+    }
+
+    if (!selfHostForm.useHfUrl) {
+      await handleRegisterSelfHosted();
+      return true;
+    }
+
+    if (!window.desktopBridge?.deployHfModel) {
+      setMessage({ tone: 'error', text: 'Local model deployment is not available in this app build.' });
+      return false;
+    }
+
+    const repoId = normalizeHfRepoId(selfHostForm.hfUrl);
+    if (!repoId) {
+      setMessage({ tone: 'error', text: 'Enter a valid Hugging Face model URL or owner/model id.' });
+      return false;
+    }
+
+    if (validationResult?.status === 'insufficient') {
+      setMessage({ tone: 'error', text: 'This local GPU does not have enough VRAM for the selected model.' });
+      return false;
+    }
+
+    if (!libraries.vllm) {
+      setMessage({ tone: 'error', text: 'vLLM must be installed before deploying a Hugging Face model locally.' });
+      return false;
+    }
+
+    const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
+    const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
+      ? dashboard.machineDetails.machineName
+      : typeof dashboard.machineDetails?.hostname === 'string'
+        ? dashboard.machineDetails.hostname
+        : '';
+
+    setBusy('register-self-hosted');
+    try {
+      const progressId = `${repoId}-${Date.now()}`;
+      setDeploymentProgress([{
+        id: progressId,
+        stage: 'preparing',
+        message: `Preparing to deploy ${repoId}.`,
+        detail: 'Checking runtime, choosing a port, then starting vLLM.',
+        level: 'info',
+        timestamp: Date.now(),
+      }]);
+      setMessage({ tone: 'info', text: `Starting ${repoId} with vLLM on your local GPU...` });
+      const deployment = await window.desktopBridge.deployHfModel({
+        repoId,
+        runtime: 'vllm',
+        progressId,
+      });
+
+      setSelfHostForm((current) => ({
+        ...current,
+        endpoint_url: deployment.endpointUrl,
+      }));
+      setLocalDeployments((current) => {
+        const nextDeployment: LocalModelDeployment = {
+          endpointUrl: deployment.endpointUrl,
+          modelId: deployment.modelId,
+          name: selfHostForm.name.trim() || repoId,
+          pid: deployment.pid,
+          runtime: deployment.runtime,
+          deployedAt: new Date().toISOString(),
+        };
+
+        return [
+          nextDeployment,
+          ...current.filter((item) => item.endpointUrl !== deployment.endpointUrl && item.modelId !== deployment.modelId),
+        ];
+      });
+
+      const registeringProgress: DesktopDeploymentProgress = {
+        id: progressId,
+        stage: 'registering',
+        message: 'Registering verified local endpoint with OneInfer...',
+        detail: deployment.endpointUrl,
+        level: 'info',
+        timestamp: Date.now(),
+      };
+      setDeploymentProgress((current) => [...current, registeringProgress].slice(-80));
+
+      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+        name: selfHostForm.name.trim() || repoId,
+        provider: 'openai',
+        model_id: deployment.modelId,
+        deployment_target: 'local',
+        endpoint_url: deployment.endpointUrl,
+        machine_id: detectedMachineId,
+        machine_name: detectedMachineName,
+        top_p: 0.9,
+        temperature: 0.7,
+        max_tokens: 4096,
+      });
+
+      const registeredProgress: DesktopDeploymentProgress = {
+        id: progressId,
+        stage: 'registered',
+        message: 'Local endpoint registered successfully.',
+        detail: deployment.endpointUrl,
+        level: 'success',
+        timestamp: Date.now(),
+      };
+      setDeploymentProgress((current) => [...current, registeredProgress].slice(-80));
+      setMessage({ tone: 'success', text: `Deployed ${deployment.modelId} locally and registered ${deployment.endpointUrl}.` });
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
+      return true;
+    } catch (error) {
+      const errorProgress: DesktopDeploymentProgress = {
+        id: `${repoId}-${Date.now()}`,
+        stage: 'error',
+        message: 'Deployment flow stopped.',
+        detail: error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.',
+        level: 'error',
+        timestamp: Date.now(),
+      };
+      setDeploymentProgress((current) => [...current, errorProgress].slice(-80));
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.' });
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCancelSelfHostedDeployment() {
+    const repoId = normalizeHfRepoId(selfHostForm.hfUrl);
+    if (!repoId) {
+      setMessage({ tone: 'error', text: 'No Hugging Face deployment is active.' });
+      return false;
+    }
+
+    if (!window.desktopBridge?.cancelHfDeployment) {
+      setMessage({ tone: 'error', text: 'Deployment cancellation is not available in this app build.' });
+      return false;
+    }
+
+    try {
+      const result = await window.desktopBridge.cancelHfDeployment({ repoId });
+      setMessage({ tone: result.cancelled ? 'info' : 'error', text: result.message });
+      if (result.cancelled) {
+        setBusy(null);
+      }
+      return result.cancelled;
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to cancel deployment.' });
+      return false;
     }
   }
 
@@ -673,7 +949,7 @@ function App() {
   async function handleCreateInstance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) {
-      return;
+      return false;
     }
 
     setBusy('create-instance');
@@ -681,8 +957,10 @@ function App() {
       await createInstance(settingsDraft.apiBaseUrl, session, instanceForm);
       setMessage({ tone: 'success', text: 'Instance creation request submitted.' });
       await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
+      return true;
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create instance.' });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -714,10 +992,15 @@ function App() {
     try {
       await deleteInstance(settingsDraft.apiBaseUrl, session, instanceId, provider);
       setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
-      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Delete instance failed.' });
+      const msg = error instanceof Error ? error.message : 'Delete instance failed.';
+      if (msg.toLowerCase().includes('no instance mapping found')) {
+        setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
+      } else {
+        setMessage({ tone: 'error', text: msg });
+      }
     } finally {
+      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
       setBusy(null);
     }
   }
@@ -901,29 +1184,6 @@ function App() {
       ) : null}
 
       <main className="main-stage" style={{ padding: '20px' }}>
-        {activeSection !== 'apiKeys' && activeSection !== 'settings' && activeSection !== 'selfHosting' ? (
-          <section className="hero-panel hero-panel--single glass-panel" style={{ marginBottom: '24px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div className="eyebrow" style={{ color: 'var(--accent)', opacity: 0.9 }}>Account Subscription</div>
-                <h2 style={{ fontSize: '2.25rem', margin: '4px 0' }}>
-                  {(() => {
-                    const name = getPlanName(dashboard.profile);
-                    return name === 'No Active plan' ? name : `${name} Plan`;
-                  })()}
-                </h2>
-                <p style={{ color: 'var(--muted)', fontSize: '1rem' }}>OneInfer Developer Platform</p>
-              </div>
-              {dashboard.profile && getPlanName(dashboard.profile) !== 'No Active plan' ? (
-                <div className="plan-badge">
-                  <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>Current</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 800 }}>Active</div>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
-
         {activeSection === 'overview' ? (
           <OverviewPage
             dashboard={dashboard}
@@ -931,6 +1191,8 @@ function App() {
             infraTab={infraTab}
             overviewTab={overviewTab}
             claudeCodeProvider={claudeCodeProvider}
+            localDeployments={localDeployments}
+            localModelMetrics={localModelMetrics}
             onInfraTabChange={setInfraTab}
             onOverviewTabChange={setOverviewTab}
             onClaudeProviderChange={handleClaudeCodeProviderChange}
@@ -946,10 +1208,26 @@ function App() {
             selfHostForm={selfHostForm}
             validationResult={validationResult}
             hfModelMetadata={hfModelMetadata}
+            hfModelMetadataLoading={hfModelMetadataLoading}
+            hfModelMetadataError={hfModelMetadataError}
+            libraries={libraries}
             busy={busy}
+            analysisPanel={(
+              <HfModelDetailPanel
+                model={hfModelMetadata}
+                validation={validationResult}
+                machine={dashboard.machineDetails}
+                libraries={libraries}
+                busy={busy}
+                message={message}
+                deploymentProgress={deploymentProgress}
+                onInstall={handleInstallLibrary}
+                onRegister={handleDeploySelfHostedModel}
+                onCancelDeploy={handleCancelSelfHostedDeployment}
+              />
+            )}
             onFormChange={setSelfHostForm}
             onSubmit={handleRegisterSelfHosted}
-            onOpenModelModal={() => setIsHfModelModalOpen(true)}
           />
         ) : null}
 
@@ -958,7 +1236,9 @@ function App() {
             dashboard={dashboard}
             instanceForm={instanceForm}
             busy={busy}
+            showCreateInstanceModal={showCreateInstanceModal}
             onFormChange={setInstanceForm}
+            onModalChange={setShowCreateInstanceModal}
             onCreate={handleCreateInstance}
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}
@@ -977,21 +1257,6 @@ function App() {
             onDelete={handleDeleteApiKey}
           />
         ) : null}
-
-        <Modal title="Model Analysis & Hardware Check" isOpen={isHfModelModalOpen && !!hfModelMetadata} onClose={() => setIsHfModelModalOpen(false)}>
-          <div style={{ margin: '-24px' }}>
-            <HfModelDetailPanel
-              model={hfModelMetadata}
-              validation={validationResult}
-              machine={dashboard.machineDetails}
-              libraries={libraries}
-              busy={busy}
-              message={message}
-              onInstall={handleInstallLibrary}
-              onRegister={() => handleRegisterSelfHosted()}
-            />
-          </div>
-        </Modal>
 
         {activeSection === 'routing' ? (
           <RoutingPage

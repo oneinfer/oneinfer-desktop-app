@@ -31,10 +31,12 @@ export function HfModelDetailPanel(props: {
   libraries: { vllm: boolean; ollama: boolean };
   busy: string | null;
   message: { tone: 'info' | 'success' | 'error'; text: string } | null;
+  deploymentProgress: DesktopDeploymentProgress[];
   onInstall: (name: 'vllm' | 'ollama') => Promise<void>;
-  onRegister: () => void;
+  onRegister: () => Promise<boolean | void> | boolean | void;
+  onCancelDeploy: () => Promise<boolean | void> | boolean | void;
 }) {
-  const { model, validation, machine, libraries, busy, onInstall, onRegister } = props;
+  const { model, validation, machine, libraries, busy, onInstall, onRegister, onCancelDeploy } = props;
   const [localError, setLocalError] = React.useState<string | null>(null);
   const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
 
@@ -50,6 +52,7 @@ export function HfModelDetailPanel(props: {
   const isRegisterBusy = busy === 'register-self-hosted';
   const isAnyInstalling = isVllmBusy || isOllamaBusy;
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
+  const canDeploy = libraries.vllm && validation?.status !== 'insufficient';
 
   const handleInstall = async (name: 'vllm' | 'ollama') => {
     setLocalError(null);
@@ -66,15 +69,27 @@ export function HfModelDetailPanel(props: {
     setLocalError(null);
     setLocalSuccess(null);
     try {
-      await onRegister();
+      const deployed = await onRegister();
+      if (deployed === false) {
+        return;
+      }
       setLocalSuccess('Model deployed successfully to your local machine.');
     } catch (error: any) {
       setLocalError(error?.message || 'Deployment failed');
     }
   };
 
+  const handleCancelDeploy = async () => {
+    setLocalError(null);
+    setLocalSuccess(null);
+    const cancelled = await onCancelDeploy();
+    if (cancelled) {
+      setLocalSuccess('Deployment cancelled.');
+    }
+  };
+
   return (
-    <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent', padding: '24px' }}>
+    <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent' }}>
       {props.message ? <div style={{ marginBottom: '12px' }}><Banner tone={props.message.tone} text={props.message.text} /></div> : null}
       {localError ? <div style={{ marginBottom: '12px' }}><Banner tone="error" text={localError} /></div> : null}
       {localSuccess ? <div style={{ marginBottom: '12px' }}><Banner tone="success" text={localSuccess} /></div> : null}
@@ -83,27 +98,30 @@ export function HfModelDetailPanel(props: {
           <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${isVllmBusy ? 'vLLM' : 'Ollama'}... Please wait.`} />
         </div>
       ) : null}
+      {props.deploymentProgress.length > 0 ? (
+        <DeploymentProgressLog items={props.deploymentProgress} />
+      ) : null}
 
-      <div className="panel-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%' }}>
-          <div>
+      <div className="panel-header model-detail-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '16px' }}>
+          <div style={{ minWidth: 0 }}>
             <div className="eyebrow" style={{ color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
               <Layers size={14} /> {model.pipeline_tag || 'Model Architecture'}
             </div>
-            <h2 style={{ fontSize: '1.75rem', margin: 0, fontWeight: 700 }}>{model.id}</h2>
+            <h2 style={{ fontSize: '1.75rem', margin: 0, fontWeight: 700, overflowWrap: 'anywhere' }}>{model.id}</h2>
             <div style={{ display: 'flex', gap: '16px', marginTop: '8px', color: 'var(--muted)', fontSize: '0.85rem' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><User size={14} /> {model.author || 'community'}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Calendar size={14} /> Updated {model.lastModified ? new Date(model.lastModified).toLocaleDateString() : '-'}</span>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <div className="stat-badge"><Heart size={14} /> {formatNumber(model.likes)}</div>
             <div className="stat-badge"><Download size={14} /> {formatNumber(model.downloads)}</div>
           </div>
         </div>
       </div>
 
-      <div className="model-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', padding: '20px 0' }}>
+      <div className="model-grid">
         <div className="model-info-column">
           <h4 style={{ fontSize: '0.9rem', color: 'var(--muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Metadata</h4>
           <div className="tag-cloud" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -184,12 +202,46 @@ export function HfModelDetailPanel(props: {
         <a href={`https://huggingface.co/${model.id}`} target="_blank" rel="noopener noreferrer" className="ghost-button" style={{ textDecoration: 'none', fontSize: '0.85rem' }}>
           <ExternalLink size={14} /> Hub
         </a>
-        <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy} type="button">
+        {isRegisterBusy ? (
+          <button className="danger-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleCancelDeploy} type="button">
+            Cancel Deployment
+          </button>
+        ) : null}
+        <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canDeploy} type="button">
           {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
-          Deploy this Model
+          {libraries.vllm ? 'Deploy with vLLM' : 'Install vLLM to Deploy'}
         </button>
       </div>
     </section>
+  );
+}
+
+function DeploymentProgressLog(props: { items: DesktopDeploymentProgress[] }) {
+  const latest = props.items[props.items.length - 1];
+
+  return (
+    <div style={{ marginBottom: '20px', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.22)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', marginBottom: '10px' }}>
+        <div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Hosting Progress</div>
+          <div style={{ fontSize: '0.9rem', fontWeight: 700 }}>{latest?.message || 'Preparing deployment...'}</div>
+        </div>
+        <span className={`status-pill ${latest?.level === 'error' ? 'error' : latest?.level === 'success' ? 'active' : ''}`} style={{ whiteSpace: 'nowrap' }}>
+          {latest?.stage || 'preparing'}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gap: '6px', maxHeight: '11rem', overflowY: 'auto', paddingRight: '4px' }}>
+        {props.items.slice(-12).map((item, index) => (
+          <div key={`${item.timestamp}-${index}`} style={{ display: 'grid', gridTemplateColumns: '5.5rem 1fr', gap: '8px', fontSize: '0.75rem', lineHeight: 1.35 }}>
+            <span style={{ color: item.level === 'error' ? 'var(--danger)' : item.level === 'success' ? 'var(--accent)' : 'var(--muted)', textTransform: 'uppercase' }}>{item.stage}</span>
+            <span>
+              <strong style={{ color: 'var(--text)', fontWeight: 600 }}>{item.message}</strong>
+              {item.detail ? <span style={{ display: 'block', color: 'var(--muted)', marginTop: '2px', fontFamily: 'monospace', wordBreak: 'break-word' }}>{item.detail}</span> : null}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

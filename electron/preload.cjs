@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('desktopBridge', {
     ipcRenderer.on('app:update-status', handler);
     return () => ipcRenderer.removeListener('app:update-status', handler);
   },
+  onDeploymentProgress: (listener) => {
+    const handler = (_event, progress) => listener(progress);
+    ipcRenderer.on('app:deployment-progress', handler);
+    return () => ipcRenderer.removeListener('app:deployment-progress', handler);
+  },
   getMachineDetails: () => ipcRenderer.invoke('app:get-machine-details'),
   syncMachineDetails: (payload) => ipcRenderer.invoke('app:sync-machine-details', payload),
   enableClaudeCode: (payload) => ipcRenderer.invoke('app:enable-claude-code', payload),
@@ -19,4 +24,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   enableOpenClaw: (payload) => ipcRenderer.invoke('app:enable-openclaw', payload),
   checkLibrary: (name) => ipcRenderer.invoke('app:check-library', name),
   installLibrary: (name) => ipcRenderer.invoke('app:install-library', name),
+  deployHfModel: (payload) => ipcRenderer.invoke('app:deploy-hf-model', payload),
+  cancelHfDeployment: (payload) => ipcRenderer.invoke('app:cancel-hf-deployment', payload),
+  getLocalModelMetrics: (payload) => ipcRenderer.invoke('app:get-local-model-metrics', payload),
 });

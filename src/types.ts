@@ -92,9 +92,13 @@ export interface MachineDetailsItem {
 
 export interface ApiKeyItem {
   api_key_name?: string;
+  name?: string;
   prefix?: string;
+  api_key_prefix?: string;
   environment?: string;
   created_at?: string;
+  last_used?: string | number | null;
+  last_used_at?: string | null;
   id?: string;
   [key: string]: unknown;
 }
@@ -140,6 +144,33 @@ export interface GpuSpecItem {
 
 export type ProviderInfoMap = Record<string, Record<string, unknown>>;
 
+export interface DeveloperPlanItem {
+  planId: string;
+  planTier: string;
+  pricing: number;
+  gst: number;
+  paymentGatewayFee: number;
+  totalPrice: number;
+  currency: string;
+  ctaText: string;
+  requestsPerMinute: number;
+  concurrency: number;
+}
+
+export interface ActiveDeveloperPlanItem {
+  planId: string;
+  planTier: string;
+  pricing: number;
+  gst: number;
+  paymentGatewayFee: number;
+  totalPrice: number;
+  currency: string;
+  requestsPerMinute: number;
+  concurrency: number;
+  status?: string;
+  allowInferenceFallback?: boolean;
+}
+
 export interface DashboardState {
   profile: Record<string, unknown> | null;
   credits: Record<string, unknown> | null;
@@ -151,6 +182,8 @@ export interface DashboardState {
   providerInfo: ProviderInfoMap;
   gpuSpecs: GpuSpecItem[];
   models: any[];
+  developerPlans: DeveloperPlanItem[];
+  activeDeveloperPlan: ActiveDeveloperPlanItem | null;
 }
 
 export interface CreateInstanceFormState {
@@ -188,4 +221,28 @@ export interface HfModelInfo {
   siblings?: { rfilename: string; size?: number }[];
   model_id?: string;
   [key: string]: any;
-}
+}
+
+export interface LocalModelDeployment {
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  pid: number | null;
+  runtime: 'vllm';
+  deployedAt: string;
+}
+
+export interface LocalModelMetrics {
+  endpointUrl: string;
+  healthy: boolean;
+  modelCount: number;
+  uptimeSeconds: number | null;
+  requestsRunning: number | null;
+  requestsWaiting: number | null;
+  requestSuccessTotal: number | null;
+  promptTokensTotal: number | null;
+  generationTokensTotal: number | null;
+  gpuCacheUsagePercent: number | null;
+  lastCheckedAt: string;
+  error?: string;
+}

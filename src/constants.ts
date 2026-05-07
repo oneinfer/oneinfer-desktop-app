@@ -30,11 +30,13 @@ export const defaultDashboardState: DashboardState = {
   providerInfo: {},
   gpuSpecs: [],
   models: [],
+  developerPlans: [],
+  activeDeveloperPlan: null,
 };
 
 export const defaultInstanceForm: CreateInstanceFormState = {
   provider_name: 'runpod',
-  instance_name: 'oneinfer-studio',
+  instance_name: '',
   gpu_id: '',
   gpu_num: 1,
   disk_size: 80,
