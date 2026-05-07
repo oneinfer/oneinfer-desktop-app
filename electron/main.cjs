@@ -774,6 +774,14 @@ async function waitForOpenAiEndpoint(endpointUrl, timeoutMs = 10 * 60 * 1000, on
   throw new Error(`Timed out waiting for local model server at ${modelsUrl}.${lastError?.message ? ` Last error: ${lastError.message}` : ''}`);
 }
 
+function getVllmLogPath(repoId) {
+  const safeId = repoId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logsDir = path.join(app.getPath('userData'), 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  return path.join(logsDir, `vllm-${safeId}-${timestamp}.log`);
+}
+
 async function startVllmServer(repoId, port, onProgress = () => {}) {
   let command = 'vllm';
   let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
@@ -799,10 +807,20 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
     args = ['-m', 'vllm.entrypoints.openai.api_server', '--model', repoId, '--host', '127.0.0.1', '--port', String(port)];
   }
 
+  const logPath = getVllmLogPath(repoId);
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+  function writeLog(line) {
+    const ts = new Date().toISOString();
+    logStream.write(`[${ts}] ${line}\n`);
+  }
+
+  writeLog(`Starting vLLM: ${command} ${args.join(' ')}`);
+
   onProgress({
     stage: 'starting',
     message: `Starting vLLM for ${repoId}...`,
-    detail: `${command} ${args.join(' ')}`,
+    detail: `Logs: ${logPath}`,
   });
 
   const child = spawn(command, args, {
@@ -816,6 +834,12 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
       buffer += chunk.toString();
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || '';
+      lines
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .forEach((line) => {
+          writeLog(line);
+        });
       lines
         .map((line) => line.trim())
         .filter(Boolean)
@@ -835,6 +859,8 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
   pipeOutput(child.stderr, 'info');
 
   child.once('error', (error) => {
+    writeLog(`ERROR: ${error.message}`);
+    logStream.end();
     onProgress({
       stage: 'error',
       message: 'Failed to start vLLM.',
@@ -844,10 +870,12 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
   });
 
   child.once('exit', (code, signal) => {
+    writeLog(`Process exited — code: ${code}, signal: ${signal}`);
+    logStream.end();
     if (code !== null && code !== 0) {
       onProgress({
         stage: 'error',
-        message: `vLLM exited with code ${code}.`,
+        message: `vLLM exited with code ${code}. Logs saved to: ${logPath}`,
         detail: signal ? `Signal: ${signal}` : undefined,
         level: 'error',
       });
