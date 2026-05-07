@@ -154,6 +154,7 @@ export interface DeveloperPlanItem {
   currency: string;
   ctaText: string;
   requestsPerMinute: number;
+  concurrency: number;
 }
 
 export interface ActiveDeveloperPlanItem {
@@ -165,6 +166,7 @@ export interface ActiveDeveloperPlanItem {
   totalPrice: number;
   currency: string;
   requestsPerMinute: number;
+  concurrency: number;
   status?: string;
   allowInferenceFallback?: boolean;
 }

@@ -238,6 +238,7 @@ function normalizeDeveloperPlan(item: AnyRecord): DeveloperPlanItem {
     currency: normalizeCurrency(item.currency),
     ctaText: String(item.cta_text ?? item.ctaText ?? 'Subscribe'),
     requestsPerMinute: Number((item.usage as AnyRecord | undefined)?.requests_per_minute ?? item.requests_per_minute ?? 0),
+    concurrency: Number((item.usage as AnyRecord | undefined)?.concurrency ?? item.concurrency ?? 0),
   };
 }
 
@@ -254,6 +255,12 @@ function normalizeActiveDeveloperPlan(item: AnyRecord): ActiveDeveloperPlanItem 
       (item.usage as AnyRecord | undefined)?.requests_per_minute
       ?? (item.usage_limits as AnyRecord | undefined)?.requests_per_minute
       ?? item.requests_per_minute
+      ?? 0,
+    ),
+    concurrency: Number(
+      (item.usage as AnyRecord | undefined)?.concurrency
+      ?? (item.usage_limits as AnyRecord | undefined)?.concurrency
+      ?? item.concurrency
       ?? 0,
     ),
     status: item.status ? String(item.status) : undefined,

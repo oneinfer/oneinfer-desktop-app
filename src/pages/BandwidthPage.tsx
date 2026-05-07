@@ -46,7 +46,7 @@ export function BandwidthPage(props: { dashboard: DashboardState }) {
   );
 }
 
-function PlanRow(props: { plan: DeveloperPlanItem; isCurrent: boolean }) {
+export function PlanRow(props: { plan: DeveloperPlanItem; isCurrent: boolean }) {
   const planName = normalizePlanName(props.plan.planTier);
   const accent = props.isCurrent ? getPlanAccent(planName) : 'rgba(255,255,255,0.1)';
 
@@ -62,9 +62,17 @@ function PlanRow(props: { plan: DeveloperPlanItem; isCurrent: boolean }) {
         </div>
         <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>{formatPlanPrice(props.plan.pricing, props.plan.currency)} <span style={{ fontSize: '0.9rem', color: 'var(--muted)', fontWeight: 400 }}>/mo</span></div>
       </div>
-      <div style={{ flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px' }}>
-        <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
-        <div style={{ fontWeight: 600 }}>{props.plan.requestsPerMinute} RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+      <div style={{ flex: 1.5, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '24px', display: 'flex', gap: '32px' }}>
+        <div>
+          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Bandwidth</div>
+          <div style={{ fontWeight: 600 }}>{props.plan.requestsPerMinute} RPM <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Guaranteed</span></div>
+        </div>
+        {props.plan.concurrency > 0 && (
+          <div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Concurrency</div>
+            <div style={{ fontWeight: 600 }}>{props.plan.concurrency} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Threads</span></div>
+          </div>
+        )}
       </div>
       <button className="primary-button" disabled={props.isCurrent} style={{ minWidth: '132px', background: props.isCurrent ? getPlanAccent(planName) : 'rgba(255,255,255,0.1)', color: props.isCurrent ? '#081018' : 'var(--text)', border: 'none' }} type="button">
         {props.isCurrent ? 'Current Plan' : 'Upgrade'}

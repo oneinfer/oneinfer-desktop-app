@@ -5,6 +5,7 @@ import { HardwareWidget } from '../components/HardwareWidget';
 import { ClaudeCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
 import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey } from '../types';
 import { formatValue, getBalance } from '../utils/format';
+import { PlanRow } from './BandwidthPage';
 
 export function OverviewPage(props: {
   dashboard: DashboardState;
@@ -33,9 +34,18 @@ export function OverviewPage(props: {
       deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? new Date().toISOString()),
     })).filter((deployment) => deployment.endpointUrl);
 
+  const activePlanId = props.dashboard.activeDeveloperPlan?.planId ?? null;
+  const activePlan = props.dashboard.developerPlans?.find((p) => p.planId === activePlanId);
+
   return (
     <>
-      <div className="settings-layout">
+      {activePlan ? (
+        <div style={{ marginBottom: '20px' }}>
+          <PlanRow plan={activePlan} isCurrent={true} />
+        </div>
+      ) : null}
+
+      <div className="settings-layout" style={{ gridTemplateColumns: '1fr' }}>
         <aside className="glass-panel" style={{ padding: '20px' }}>
           <div className="cc-toggle" style={{ marginBottom: '20px' }}>
             <button className={`cc-toggle-btn ${props.infraTab === 'self-hosted' ? 'active' : ''}`} onClick={() => props.onInfraTabChange('self-hosted')} type="button">
@@ -140,7 +150,7 @@ export function OverviewPage(props: {
 
       <div className="section-grid dashboard-row compact-row" style={{ gridTemplateColumns: '3fr 1fr', marginTop: '20px' }}>
         <HardwareWidget machine={props.dashboard.machineDetails} />
-        <Panel title="Credits" icon={ShieldCheck}>
+        <Panel title="Credits" icon={ShieldCheck} style={{ height: '145px' }}>
           <div style={{ padding: '8px 4px' }}>
             {props.dashboard.credits ? (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>

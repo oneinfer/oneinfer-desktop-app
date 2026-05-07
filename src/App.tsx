@@ -368,6 +368,8 @@ function App() {
           getCredits(currentBaseUrl, currentSession),
           listInferenceEndpoints(currentBaseUrl, currentSession),
           getInstances(currentBaseUrl, currentSession),
+          getDeveloperPlans(currentBaseUrl),
+          getActiveDeveloperPlan(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
@@ -379,6 +381,8 @@ function App() {
             const status = String(i.instance_status ?? i.status).toLowerCase();
             return status !== 'deleted' && status !== 'terminated';
           }),
+          developerPlans: results[4].status === 'fulfilled' ? results[4].value : current.developerPlans,
+          activeDeveloperPlan: results[5].status === 'fulfilled' ? results[5].value : current.activeDeveloperPlan,
         }));
 
         announcePartialFailures('Overview', results, shouldBeSilent);
