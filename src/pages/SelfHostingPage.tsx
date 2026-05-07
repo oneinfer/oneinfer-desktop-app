@@ -135,6 +135,7 @@ export function SelfHostingPage(props: {
               type="button"
               disabled={props.busy === 'register-self-hosted' || props.hfModelMetadataLoading || !props.hfModelMetadata}
               onClick={() => {
+                props.onSubmit();
                 if (canShowAnalysis) {
                   document.getElementById('self-hosting-analysis')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }
