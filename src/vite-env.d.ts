@@ -48,6 +48,16 @@ interface DesktopOpenCodeResult {
   providerId: string;
 }
 
+interface DesktopKiloCodeResult {
+  alreadyConfigured: boolean;
+  apiBaseUrl: string;
+  apiKeyName: string | null;
+  configPath: string;
+  model: string;
+  kilocodeInstallState: 'already-installed' | 'installed';
+  providerId: string;
+}
+
 interface DesktopOpenClawResult {
   alreadyConfigured: boolean;
   apiKeyName: string | null;
@@ -125,6 +135,11 @@ interface Window {
       session?: DesktopSession;
       modelId?: string;
     }) => Promise<DesktopOpenCodeResult>;
+    enableKiloCode: (payload: {
+      apiBaseUrl?: string;
+      session?: DesktopSession;
+      modelId?: string;
+    }) => Promise<DesktopKiloCodeResult>;
     enableOpenClaw: (payload: {
       apiBaseUrl?: string;
       session?: DesktopSession;

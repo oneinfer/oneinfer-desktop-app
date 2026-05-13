@@ -2,7 +2,7 @@ import { Blocks, Bot, Copy, Server, ShieldCheck, Terminal, Zap } from 'lucide-re
 
 import { EmptyState, MiniTable, Panel } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
-import { ClaudeCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
+import { ClaudeCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
 import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey } from '../types';
 import { formatValue, getBalance } from '../utils/format';
 import { PlanRow } from './BandwidthPage';
@@ -11,14 +11,15 @@ export function OverviewPage(props: {
   dashboard: DashboardState;
   busy: string | null;
   infraTab: 'self-hosted' | 'cloud';
-  overviewTab: 'claude-code' | 'opencode' | 'openclaw';
+  overviewTab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw';
   claudeCodeProvider: 'oneinfer' | 'anthropic';
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onInfraTabChange: (tab: 'self-hosted' | 'cloud') => void;
-  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'openclaw') => void;
+  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw') => void;
   onClaudeProviderChange: (provider: 'oneinfer' | 'anthropic') => void;
   onEnableOpenCode: () => void;
+  onEnableKiloCode: () => void;
   onEnableOpenClaw: () => void;
   onSectionChange: (section: SectionKey) => void;
 }) {
@@ -115,6 +116,10 @@ export function OverviewPage(props: {
               <Blocks size={14} />
               OpenCode
             </button>
+            <button className={`cc-toggle-btn ${props.overviewTab === 'kilocode' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('kilocode')} type="button">
+              <Blocks size={14} />
+              Kilo Code
+            </button>
             <button className={`cc-toggle-btn ${props.overviewTab === 'openclaw' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('openclaw')} type="button">
               <Blocks size={14} />
               OpenClaw
@@ -143,6 +148,7 @@ export function OverviewPage(props: {
 
             {props.overviewTab === 'claude-code' ? <ClaudeCodeSetupPanel provider={props.claudeCodeProvider} onSetProvider={props.onClaudeProviderChange} busy={props.busy} /> : null}
             {props.overviewTab === 'opencode' ? <OpenCodeSetupPanel busy={props.busy} onEnable={props.onEnableOpenCode} /> : null}
+            {props.overviewTab === 'kilocode' ? <KiloCodeSetupPanel busy={props.busy} onEnable={props.onEnableKiloCode} /> : null}
             {props.overviewTab === 'openclaw' ? <OpenClawSetupPanel busy={props.busy} onEnable={props.onEnableOpenClaw} /> : null}
           </div>
         </main>

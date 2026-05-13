@@ -110,7 +110,7 @@ function App() {
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
-  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'openclaw'>('claude-code');
+  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw'>('claude-code');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
@@ -717,6 +717,36 @@ function App() {
     }
   }
 
+  async function handleEnableKiloCode() {
+    if (!session || !window.desktopBridge?.enableKiloCode) {
+      return;
+    }
+
+    setBusy('configure-kilocode');
+    setMessage(null);
+
+    try {
+      const result = await window.desktopBridge.enableKiloCode({
+        apiBaseUrl: settingsDraft.apiBaseUrl,
+        session,
+      });
+      const installMessage = result.kilocodeInstallState === 'installed'
+        ? ' Kilo Code was installed first for this operating system.'
+        : '';
+
+      setMessage({
+        tone: 'success',
+        text: result.alreadyConfigured
+          ? `Kilo Code is already enabled globally for OneInfer. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`
+          : `Kilo Code enabled globally via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Config: ${result.configPath}. Base URL: ${result.apiBaseUrl}. Model: ${result.model}.${installMessage}`,
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Kilo Code.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleRegisterSelfHosted(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
 
@@ -1197,6 +1227,7 @@ function App() {
             onOverviewTabChange={setOverviewTab}
             onClaudeProviderChange={handleClaudeCodeProviderChange}
             onEnableOpenCode={handleEnableOpenCode}
+            onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
             onSectionChange={setActiveSection}
           />
