@@ -2,13 +2,13 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { LoaderCircle } from 'lucide-react';
 
 import {
-  attachEndpoint,
   createApiKey,
   createInferenceEndpoint,
   createInstance,
   createIntelligentEndpoint,
   deleteApiKey,
   deleteInstance,
+  deleteIntelligentEndpoint,
   getActiveDeveloperPlan,
   getCredits,
   getDeveloperPlans,
@@ -32,7 +32,6 @@ import {
   createLoadedSections,
   defaultClaudeCodeProvider,
   defaultDashboardState,
-  defaultInferenceForm,
   defaultInstanceForm,
   defaultSettings,
 } from './constants';
@@ -43,11 +42,10 @@ import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
 import { InstancesPage } from './pages/InstancesPage';
 import { OverviewPage } from './pages/OverviewPage';
-import { RoutingPage } from './pages/RoutingPage';
+import { RoutingPage, type CreateRoutePayload } from './pages/RoutingPage';
 import { SelfHostingPage, type SelfHostFormState } from './pages/SelfHostingPage';
 import { SettingsPage, type SettingsTab } from './pages/SettingsPage';
 import type {
-  CreateInferenceFormState,
   CreateInstanceFormState,
   DashboardState,
   DesktopSession,
@@ -102,12 +100,6 @@ function App() {
   const [apiKeyName, setApiKeyName] = useState('');
   const [apiKeyEnvironment] = useState('production');
   const [intelligentEndpointName, setIntelligentEndpointName] = useState('');
-  const [inferenceForm, setInferenceForm] = useState<CreateInferenceFormState>(defaultInferenceForm);
-  const [attachForm, setAttachForm] = useState({
-    intelligentEndpointId: '',
-    endpointType: 'inference_api',
-    endpointId: '',
-  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
   const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'openclaw'>('claude-code');
@@ -414,12 +406,14 @@ function App() {
         const results = await Promise.allSettled([
           listIntelligentEndpoints(currentBaseUrl, currentSession),
           listInferenceEndpoints(currentBaseUrl, currentSession),
+          listModels(currentBaseUrl),
         ]);
 
         setDashboard((current) => ({
           ...current,
           intelligentEndpoints: results[0].status === 'fulfilled' ? results[0].value : current.intelligentEndpoints,
           inferenceEndpoints: results[1].status === 'fulfilled' ? results[1].value : current.inferenceEndpoints,
+          models: results[2].status === 'fulfilled' ? results[2].value : current.models,
         }));
 
         announcePartialFailures('Routing', results, shouldBeSilent);
@@ -1041,60 +1035,96 @@ function App() {
     }
   }
 
-  async function handleCreateIntelligentEndpoint(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleCreateRoute(payload: CreateRoutePayload) {
     if (!session) {
-      return;
+      return false;
+    }
+
+    const routeName = payload.name.trim();
+    if (!routeName) {
+      setMessage({ tone: 'error', text: 'Route name is required.' });
+      return false;
+    }
+
+    if (payload.attachedEndpointIds.length === 0) {
+      setMessage({ tone: 'error', text: 'Select at least one endpoint for this route.' });
+      return false;
     }
 
     setBusy('create-intelligent-endpoint');
     try {
-      await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, intelligentEndpointName);
-      setMessage({ tone: 'success', text: 'Intelligent endpoint created.' });
+      await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
+        name: routeName,
+        routing_config: {
+          routing_algorithm: payload.routingAlgorithm,
+          input_modality: payload.inputModality,
+          candidate_models: payload.modelId ? [payload.modelId] : [],
+          description: payload.description.trim() || undefined,
+        },
+        ...(payload.attachedEndpointIds.length > 0
+          ? {
+              attached_endpoints: {
+                inference_api: payload.attachedEndpointIds.map((endpointId) => (
+                  buildAttachedInferenceEndpointPayload(
+                    endpointId,
+                    routeName,
+                    payload.inputModality,
+                    payload.modelId,
+                    dashboard.inferenceEndpoints,
+                    dashboard.models,
+                  )
+                )),
+              },
+            }
+          : {}),
+      });
+
+      setMessage({
+        tone: 'success',
+        text: payload.attachedEndpointIds.length > 0 ? 'Route created with route config and inference endpoints attached.' : 'Route created with route config.',
+      });
       setIntelligentEndpointName('');
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
+      return true;
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create intelligent endpoint.' });
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create route.' });
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
-  async function handleCreateInferenceEndpoint(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleDeleteRoute(routeId: string, routeName: string) {
     if (!session) {
       return;
     }
 
-    const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
-    const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
-      ? dashboard.machineDetails.machineName
-      : typeof dashboard.machineDetails?.hostname === 'string'
-        ? dashboard.machineDetails.hostname
-        : '';
-
-    const payload: CreateInferenceFormState = {
-      ...inferenceForm,
-      endpoint_url: inferenceForm.deployment_target === 'local' ? inferenceForm.endpoint_url.trim() : '',
-      machine_id: inferenceForm.deployment_target === 'local' ? (inferenceForm.machine_id.trim() || detectedMachineId) : '',
-      machine_name: inferenceForm.deployment_target === 'local' ? (inferenceForm.machine_name.trim() || detectedMachineName) : '',
-    };
-
-    if (payload.deployment_target === 'local' && !payload.endpoint_url) {
-      setMessage({ tone: 'error', text: 'Local deployment URL is required.' });
+    const confirmed = window.confirm(`Delete route "${routeName}"?`);
+    if (!confirmed) {
       return;
     }
 
-    setBusy('create-inference-endpoint');
+    setBusy(`delete-route:${routeId}`);
     try {
-      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, payload);
-      setMessage({ tone: 'success', text: payload.deployment_target === 'local' ? 'Local inference endpoint registered.' : 'Inference API endpoint created.' });
+      await deleteIntelligentEndpoint(settingsDraft.apiBaseUrl, session, routeId);
+      setMessage({ tone: 'success', text: 'Route deleted.' });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create inference endpoint.' });
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to delete route.' });
     } finally {
       setBusy(null);
     }
+  }
+
+  function handleCopyRoute(routeId: string) {
+    if (!session) {
+      return;
+    }
+
+    const normalizedBaseUrl = settingsDraft.apiBaseUrl.replace(/\/+$/, '');
+    const routeUrl = `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
+    navigator.clipboard?.writeText(routeUrl);
+    setMessage({ tone: 'success', text: 'Route URL copied.' });
   }
 
   async function handleInstallLibrary(name: 'vllm' | 'ollama') {
@@ -1108,30 +1138,6 @@ function App() {
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : `Failed to install ${name}.` });
       throw error;
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleAttachEndpoint(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) {
-      return;
-    }
-
-    setBusy('attach-endpoint');
-    try {
-      await attachEndpoint(
-        settingsDraft.apiBaseUrl,
-        session,
-        attachForm.intelligentEndpointId,
-        attachForm.endpointType,
-        attachForm.endpointId,
-      );
-      setMessage({ tone: 'success', text: 'Endpoint attached to routing policy.' });
-      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
-    } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Attach endpoint failed.' });
     } finally {
       setBusy(null);
     }
@@ -1262,15 +1268,11 @@ function App() {
           <RoutingPage
             dashboard={dashboard}
             intelligentEndpointName={intelligentEndpointName}
-            inferenceForm={inferenceForm}
-            attachForm={attachForm}
             busy={busy}
             onIntelligentEndpointNameChange={setIntelligentEndpointName}
-            onInferenceFormChange={setInferenceForm}
-            onAttachFormChange={setAttachForm}
-            onCreateIntelligentEndpoint={handleCreateIntelligentEndpoint}
-            onCreateInferenceEndpoint={handleCreateInferenceEndpoint}
-            onAttachEndpoint={handleAttachEndpoint}
+            onCreateRoute={handleCreateRoute}
+            onCopyRoute={handleCopyRoute}
+            onDeleteRoute={handleDeleteRoute}
           />
         ) : null}
 
@@ -1294,6 +1296,47 @@ function App() {
       </main>
     </AppLayout>
   );
+}
+
+function buildAttachedInferenceEndpointPayload(
+  endpointId: string,
+  routeName: string,
+  inputModality: string,
+  modelId: string,
+  inferenceEndpoints: EndpointItem[],
+  models: Record<string, unknown>[],
+) {
+  const endpoint = inferenceEndpoints.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
+  });
+  const model = models.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
+  });
+  const endpointRecord = (endpoint ?? {}) as Record<string, unknown>;
+  const modelRecord = (model ?? {}) as Record<string, unknown>;
+  const outputModalities = Array.isArray(modelRecord.outputModalities)
+    ? modelRecord.outputModalities
+    : Array.isArray(modelRecord.output_modalities)
+      ? modelRecord.output_modalities
+      : [];
+
+  return {
+    endpoint_id: endpointId,
+    endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
+    input_modality: inputModality,
+    output_modality: String(outputModalities[0] ?? 'text'),
+  };
+}
+
+function getAttachedInferenceEndpointName(endpoint: Record<string, unknown>, fallbackName: string): string {
+  const explicitName = endpoint.endpoint_name ?? endpoint.name;
+  if (explicitName) {
+    return String(explicitName);
+  }
+
+  return fallbackName;
 }
 
 export default App;

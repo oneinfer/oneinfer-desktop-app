@@ -1,8 +1,7 @@
-import { Blocks, Bot, Copy, Server, ShieldCheck, Terminal, Zap } from 'lucide-react';
+import { Blocks, Bot, Copy, LoaderCircle, Orbit, Server, ShieldCheck, Sparkles, Terminal, Zap } from 'lucide-react';
 
 import { EmptyState, MiniTable, Panel } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
-import { ClaudeCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
 import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey } from '../types';
 import { formatValue, getBalance } from '../utils/format';
 import { PlanRow } from './BandwidthPage';
@@ -22,6 +21,10 @@ export function OverviewPage(props: {
   onEnableOpenClaw: () => void;
   onSectionChange: (section: SectionKey) => void;
 }) {
+  const isClaudeOneInfer = props.claudeCodeProvider === 'oneinfer';
+  const isClaudeBusy = props.busy === 'configure-claude-code';
+  const isOpenCodeBusy = props.busy === 'configure-opencode';
+  const isOpenClawBusy = props.busy === 'configure-openclaw';
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => String(endpoint.deployment_target).toLowerCase() === 'local');
   const visibleLocalDeployments = props.localDeployments.length > 0
     ? props.localDeployments
@@ -45,7 +48,7 @@ export function OverviewPage(props: {
         </div>
       ) : null}
 
-      <div className="settings-layout" style={{ gridTemplateColumns: '1fr' }}>
+      <div className="overview-two-column">
         <aside className="glass-panel" style={{ padding: '20px' }}>
           <div className="cc-toggle" style={{ marginBottom: '20px' }}>
             <button className={`cc-toggle-btn ${props.infraTab === 'self-hosted' ? 'active' : ''}`} onClick={() => props.onInfraTabChange('self-hosted')} type="button">
@@ -106,19 +109,54 @@ export function OverviewPage(props: {
         </aside>
 
         <main className="glass-panel" style={{ padding: '20px' }}>
-          <div className="cc-toggle" style={{ marginBottom: '20px' }}>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'claude-code' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('claude-code')} type="button">
-              <Bot size={14} />
-              Claude Code
-            </button>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'opencode' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('opencode')} type="button">
-              <Blocks size={14} />
-              OpenCode
-            </button>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'openclaw' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('openclaw')} type="button">
-              <Blocks size={14} />
-              OpenClaw
-            </button>
+          <div className="settings-list overview-tab-list">
+            <div className="settings-list-item settings-list-card active">
+              <span className="settings-list-icon"><Bot size={16} /></span>
+              <span className="settings-list-copy">
+                <strong>Claude Code</strong>
+                <span>Configure your Claude Code provider.</span>
+              </span>
+              <div className="settings-list-actions">
+                <button
+                  className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
+                  disabled={isClaudeBusy}
+                  onClick={() => props.onClaudeProviderChange('oneinfer')}
+                  type="button"
+                >
+                  {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
+                  OneInfer
+                </button>
+                <button
+                  className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
+                  disabled={isClaudeBusy}
+                  onClick={() => props.onClaudeProviderChange('anthropic')}
+                  type="button"
+                >
+                  {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+                  Anthropic
+                </button>
+              </div>
+            </div>
+            <div className="settings-list-item settings-list-card">
+              <span className="settings-list-icon"><Blocks size={16} /></span>
+              <span className="settings-list-copy">
+                <strong>OpenCode</strong>
+                <span>Enable a global OneInfer-backed config.</span>
+              </span>
+              <button className="settings-list-status settings-action-button" disabled={isOpenCodeBusy} onClick={props.onEnableOpenCode} type="button">
+                {isOpenCodeBusy ? 'Enabling...' : 'Enable'}
+              </button>
+            </div>
+            <div className="settings-list-item settings-list-card">
+              <span className="settings-list-icon"><Blocks size={16} /></span>
+              <span className="settings-list-copy">
+                <strong>OpenClaw</strong>
+                <span>Enable OpenClaw for this user account.</span>
+              </span>
+              <button className="settings-list-status settings-action-button" disabled={isOpenClawBusy} onClick={props.onEnableOpenClaw} type="button">
+                {isOpenClawBusy ? 'Enabling...' : 'Enable'}
+              </button>
+            </div>
           </div>
 
           <div className="card-stack">
@@ -141,9 +179,6 @@ export function OverviewPage(props: {
               </div>
             )}
 
-            {props.overviewTab === 'claude-code' ? <ClaudeCodeSetupPanel provider={props.claudeCodeProvider} onSetProvider={props.onClaudeProviderChange} busy={props.busy} /> : null}
-            {props.overviewTab === 'opencode' ? <OpenCodeSetupPanel busy={props.busy} onEnable={props.onEnableOpenCode} /> : null}
-            {props.overviewTab === 'openclaw' ? <OpenClawSetupPanel busy={props.busy} onEnable={props.onEnableOpenClaw} /> : null}
           </div>
         </main>
       </div>

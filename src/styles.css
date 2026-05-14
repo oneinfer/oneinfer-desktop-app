@@ -203,6 +203,100 @@ label span,
   color: var(--muted);
 }
 
+.achievements-card {
+  min-height: 365px;
+  margin-top: 28px;
+  padding: 72px 74px 64px;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #6f7483;
+}
+
+.achievements-heading {
+  margin: 0 0 112px auto;
+  width: fit-content;
+  color: #707070;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.achievements-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  align-items: center;
+  gap: 58px;
+}
+
+.achievements-logos {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+  color: #707789;
+}
+
+.achievement-logo {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  color: #6e7586;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.achievement-logo-spurs {
+  padding: 3px 8px;
+  border: 2px solid #737b8d;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transform: skew(-8deg);
+}
+
+.achievement-logo-google {
+  font-size: 1.58rem;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.achievement-logo-aws {
+  margin-left: 14px;
+  padding-left: 18px;
+  border-left: 2px solid #d9dce4;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.achievement-logo-elevate {
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: #596073;
+}
+
+.achievements-card p {
+  max-width: 620px;
+  margin: 28px 0 0 40px;
+  color: #717789;
+  font-size: 1.95rem;
+  font-weight: 400;
+  line-height: 1.42;
+  letter-spacing: 0.01em;
+}
+
+.achievements-divider {
+  width: 2px;
+  height: 96px;
+  background: #dfe2ea;
+}
+
 .metric-card {
   padding: 18px;
   min-height: 118px;
@@ -485,6 +579,109 @@ label span,
   grid-column: 1 / -1;
 }
 
+.route-goal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.route-goal-option,
+.route-endpoint-option {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  border-radius: 10px;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.route-goal-option {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+}
+
+.route-goal-option strong,
+.route-endpoint-option strong {
+  font-size: 0.88rem;
+}
+
+.route-goal-option span,
+.route-endpoint-option small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.route-goal-option:hover,
+.route-endpoint-option:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(116, 227, 197, 0.24);
+}
+
+.route-goal-option.active,
+.route-endpoint-option.active {
+  border-color: rgba(116, 227, 197, 0.42);
+  background: rgba(116, 227, 197, 0.1);
+  box-shadow: 0 0 0 1px rgba(116, 227, 197, 0.08);
+}
+
+.route-endpoint-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.route-endpoint-option {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+}
+
+.route-endpoint-option small {
+  display: block;
+  margin-top: 3px;
+  word-break: break-all;
+}
+
+.route-endpoint-check {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.route-endpoint-option.active .route-endpoint-check {
+  border-color: rgba(116, 227, 197, 0.55);
+  background: rgba(116, 227, 197, 0.12);
+}
+
+.route-summary {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 12px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.route-summary strong {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
 .table-shell {
   overflow: auto;
   border-radius: 18px;
@@ -591,6 +788,13 @@ th {
 }
 
 /* ── Claude Code Setup widget ────────────────────────────────── */
+.overview-two-column {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
 .cc-widget {
   transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
@@ -659,6 +863,155 @@ th {
   background: rgba(255, 182, 94, 0.25);
   color: #ffb65e;
   box-shadow: 0 1px 8px rgba(255, 182, 94, 0.3);
+}
+
+.settings-list {
+  display: grid;
+  gap: 10px;
+}
+
+.overview-tab-list {
+  margin-bottom: 20px;
+}
+
+.settings-list-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  text-align: left;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.settings-list-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(116, 227, 197, 0.24);
+}
+
+.settings-list-item.active {
+  border-color: rgba(116, 227, 197, 0.38);
+  background: rgba(116, 227, 197, 0.11);
+  box-shadow: 0 0 0 1px rgba(116, 227, 197, 0.08);
+}
+
+.settings-list-card {
+  cursor: default;
+}
+
+.settings-list-card:hover {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.07);
+}
+
+.cc-widget--anthropic .settings-list-item.active {
+  border-color: rgba(255, 182, 94, 0.4);
+  background: rgba(255, 182, 94, 0.12);
+  box-shadow: 0 0 0 1px rgba(255, 182, 94, 0.08);
+}
+
+.settings-list-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--accent);
+}
+
+.cc-widget--anthropic .settings-list-icon {
+  color: var(--accent-2);
+}
+
+.settings-list-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.settings-list-copy strong {
+  font-size: 0.9rem;
+}
+
+.settings-list-copy span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.settings-list-status {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.settings-list-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-mini-action,
+.settings-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.settings-mini-action {
+  padding: 0 10px;
+}
+
+.settings-action-button {
+  padding: 0 2px;
+  background: transparent;
+}
+
+.settings-mini-action:hover:not(:disabled),
+.settings-action-button:hover:not(:disabled) {
+  color: var(--accent);
+  background: rgba(116, 227, 197, 0.1);
+}
+
+.settings-mini-action.active {
+  color: var(--accent);
+  background: rgba(116, 227, 197, 0.16);
+}
+
+.settings-mini-action.anthropic.active {
+  color: var(--accent-2);
+  background: rgba(255, 182, 94, 0.16);
+}
+
+.settings-list-item.active .settings-list-status {
+  color: var(--accent);
+}
+
+.cc-widget--anthropic .settings-list-item.active .settings-list-status {
+  color: var(--accent-2);
+}
+
+@media (max-width: 1100px) {
+  .overview-two-column {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Hardware widget ─────────────────────────────────────────── */
@@ -838,6 +1191,30 @@ th {
   .hero-grid {
     grid-template-columns: 1fr;
   }
+
+  .achievements-card {
+    min-height: 300px;
+    padding: 44px 40px;
+  }
+
+  .achievements-heading {
+    margin-bottom: 72px;
+    font-size: 1.45rem;
+  }
+
+  .achievements-content {
+    grid-template-columns: minmax(0, 1fr) 48px;
+    gap: 28px;
+  }
+
+  .achievement-logo-google {
+    font-size: 1.2rem;
+  }
+
+  .achievements-card p {
+    margin-left: 18px;
+    font-size: 1.45rem;
+  }
 }
 
 /* ── 860px: slide-out sidebar drawer + mobile header ─────────── */
@@ -946,6 +1323,40 @@ th {
 
   .hero-grid {
     grid-template-columns: 1fr;
+  }
+
+  .achievements-card {
+    min-height: 260px;
+    padding: 32px 24px;
+  }
+
+  .achievements-heading {
+    margin-bottom: 54px;
+    font-size: 1.1rem;
+  }
+
+  .achievements-content {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .achievements-logos {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .achievement-logo-google {
+    font-size: 1rem;
+  }
+
+  .achievements-card p {
+    margin: 18px 0 0;
+    font-size: 1.15rem;
+  }
+
+  .achievements-divider {
+    width: 96px;
+    height: 2px;
   }
 
   .auth-shell {
@@ -1368,4 +1779,3 @@ input:checked + .slider:before {
   from { opacity: 0; }
   to { opacity: 1; }
 }
-

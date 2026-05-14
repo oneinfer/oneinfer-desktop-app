@@ -30,6 +30,25 @@ export function AuthPage(props: {
             <HeroChip icon={KeyRound} title="Developer Keys" text="Generate and revoke keys without leaving the desktop app." />
             <HeroChip icon={Orbit} title="Routing Studio" text="Create inference endpoints and attach them into intelligent routing." />
           </div>
+          <section className="achievements-card" aria-label="Achievements">
+            <div className="achievements-heading">Achievements</div>
+            <div className="achievements-content">
+              <div>
+                <div className="achievements-logos" aria-label="Google for Startups, AWS, ML Elevate">
+                  <span className="achievement-logo achievement-logo-spurs">Spurs</span>
+                  <img
+                    className="achievement-logo-google"
+                    src="https://i.ibb.co/jZ5VjwTz/google-startup.png"
+                    alt="Google for Startups"
+                  />
+                  <span className="achievement-logo achievement-logo-aws">AWS</span>
+                  <span className="achievement-logo achievement-logo-elevate">ML Elevate</span>
+                </div>
+                <p>Incubated by Google accelerator program, Spurs and AWS elevate</p>
+              </div>
+              <div className="achievements-divider" />
+            </div>
+          </section>
         </div>
 
         <div className="auth-forms glass-panel">
