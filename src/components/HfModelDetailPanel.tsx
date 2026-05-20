@@ -52,6 +52,7 @@ export function HfModelDetailPanel(props: {
   const isRegisterBusy = busy === 'register-self-hosted';
   const isAnyInstalling = isVllmBusy || isOllamaBusy;
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
+  const isWindows = machine?.platform === 'win32' || navigator.userAgent.includes('Windows');
   const preferredRuntime = libraries.vllm ? 'vLLM' : libraries.ollama ? 'Ollama' : null;
   const canDeploy = Boolean(preferredRuntime) && validation?.status !== 'insufficient';
 
@@ -156,7 +157,14 @@ export function HfModelDetailPanel(props: {
                 <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Serving Libraries</span>
                 <Info size={14} style={{ opacity: 0.4 }} />
               </div>
-              <LibraryStatus name="vLLM (Linux GPU)" installed={libraries.vllm} busy={isVllmBusy} onInstall={() => handleInstall('vllm')} />
+              <LibraryStatus
+                name="vLLM (Linux GPU)"
+                installed={libraries.vllm}
+                busy={isVllmBusy}
+                onInstall={() => handleInstall('vllm')}
+                disabled={isWindows}
+                disabledLabel="Use WSL2/Linux"
+              />
               <LibraryStatus name="Ollama" installed={libraries.ollama} busy={isOllamaBusy} onInstall={() => handleInstall('ollama')} />
             </div>
 
@@ -246,7 +254,7 @@ function DeploymentProgressLog(props: { items: DesktopDeploymentProgress[] }) {
   );
 }
 
-function LibraryStatus(props: { name: string; installed: boolean; busy: boolean; onInstall: () => void }) {
+function LibraryStatus(props: { name: string; installed: boolean; busy: boolean; onInstall: () => void; disabled?: boolean; disabledLabel?: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
@@ -254,8 +262,8 @@ function LibraryStatus(props: { name: string; installed: boolean; busy: boolean;
         {props.name}
       </div>
       {!props.installed ? (
-        <button className="ghost-button" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={props.onInstall} disabled={props.busy} type="button">
-          {props.busy ? <LoaderCircle className="spin" size={12} /> : 'Install'}
+        <button className="ghost-button" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={props.onInstall} disabled={props.busy || props.disabled} type="button">
+          {props.busy ? <LoaderCircle className="spin" size={12} /> : props.disabled ? props.disabledLabel || 'Unavailable' : 'Install'}
         </button>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>

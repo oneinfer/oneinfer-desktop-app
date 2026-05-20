@@ -30,6 +30,7 @@ const DEFAULT_ONEINFER_MODEL = 'MiniMax-M2.7';
 const DEFAULT_CLAUDE_MODEL = 'haiku';
 const CLAUDE_CODE_SETUP_DOCS_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 const OPENCODE_SETUP_DOCS_URL = 'https://opencode.ai/docs/';
+const VLLM_WINDOWS_UNSUPPORTED_MESSAGE = 'Native Windows vLLM is not supported by OneInfer Desktop. Run vLLM from WSL2/Ubuntu, Linux, or Docker and register its OpenAI-compatible endpoint, or use Ollama for supported local Windows serving.';
 
 if (process.platform === 'win32') {
   app.setAppUserModelId(appId);
@@ -568,6 +569,10 @@ async function ensureOpenCodeInstalled() {
 async function isLibraryInstalled(name) {
   try {
     if (name === 'vllm') {
+      if (process.platform === 'win32') {
+        return false;
+      }
+
       // First try standard command
       if (await commandExists('vllm')) return true;
       // Then try python import
@@ -608,6 +613,10 @@ async function isLibraryInstalled(name) {
 
 async function installLibrary(name) {
   if (name === 'vllm') {
+    if (process.platform === 'win32') {
+      throw new Error(VLLM_WINDOWS_UNSUPPORTED_MESSAGE);
+    }
+
     const pipCommand = await getPythonPipCommand();
     if (!pipCommand) {
       throw new Error('pip is not installed. Please install Python and pip first.');
@@ -947,6 +956,16 @@ async function startOllamaModel(repoId, onProgress = () => {}) {
 }
 
 async function startVllmServer(repoId, port, onProgress = () => {}) {
+  if (process.platform === 'win32') {
+    onProgress({
+      stage: 'error',
+      message: 'vLLM is not supported natively on Windows.',
+      detail: VLLM_WINDOWS_UNSUPPORTED_MESSAGE,
+      level: 'error',
+    });
+    throw new Error(VLLM_WINDOWS_UNSUPPORTED_MESSAGE);
+  }
+
   let command = 'vllm';
   let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
 
