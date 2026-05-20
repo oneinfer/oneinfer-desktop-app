@@ -30,7 +30,9 @@ const DEFAULT_ONEINFER_MODEL = 'MiniMax-M2.7';
 const DEFAULT_CLAUDE_MODEL = 'haiku';
 const CLAUDE_CODE_SETUP_DOCS_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 const OPENCODE_SETUP_DOCS_URL = 'https://opencode.ai/docs/';
-const VLLM_WINDOWS_UNSUPPORTED_MESSAGE = 'Native Windows vLLM is not supported by OneInfer Desktop. Run vLLM from WSL2/Ubuntu, Linux, or Docker and register its OpenAI-compatible endpoint, or use Ollama for supported local Windows serving.';
+const WINDOWS_VLLM_VERSION = '0.21.0';
+const WINDOWS_VLLM_WHEEL_URL = `https://github.com/SystemPanic/vllm-windows/releases/download/v${WINDOWS_VLLM_VERSION}/vllm-${WINDOWS_VLLM_VERSION}%2Bcu132-cp312-cp312-win_amd64.whl`;
+const WINDOWS_VLLM_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu130';
 
 if (process.platform === 'win32') {
   app.setAppUserModelId(appId);
@@ -342,8 +344,67 @@ function getMacOllamaCommandPath() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
+function getWindowsOllamaCommandPath() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const candidates = [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe'),
+    path.join(process.env.PROGRAMFILES || '', 'Ollama', 'ollama.exe'),
+  ];
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
+}
+
+function getWindowsVllmRuntimeDirectory() {
+  return path.join(app.getPath('userData'), 'runtimes', 'vllm-windows');
+}
+
+function getWindowsVllmPythonPath() {
+  return path.join(getWindowsVllmRuntimeDirectory(), 'Scripts', 'python.exe');
+}
+
+function getWindowsVllmCommandPath() {
+  return path.join(getWindowsVllmRuntimeDirectory(), 'Scripts', 'vllm.exe');
+}
+
+async function hasWindowsPython312() {
+  try {
+    await runCommand('py', ['-3.12', '--version'], { timeoutMs: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureWindowsPython312() {
+  if (await hasWindowsPython312()) {
+    return;
+  }
+
+  if (await commandExists('winget')) {
+    await runCommand('winget', [
+      'install',
+      '--id',
+      'Python.Python.3.12',
+      '--exact',
+      '--accept-package-agreements',
+      '--accept-source-agreements',
+    ], { timeoutMs: 20 * 60 * 1000 });
+  }
+
+  if (!await hasWindowsPython312()) {
+    throw new Error('OneInfer Windows vLLM requires Python 3.12. Install Python 3.12 with the py launcher enabled, then try installing vLLM again.');
+  }
+}
+
 async function getPythonPipCommand() {
   const candidates = [
+    { command: 'py', args: ['-3.12', '-m', 'pip'] },
+    { command: 'py', args: ['-3.11', '-m', 'pip'] },
+    { command: 'py', args: ['-3.10', '-m', 'pip'] },
     { command: 'python3', args: ['-m', 'pip'] },
     { command: 'python', args: ['-m', 'pip'] },
     { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3', args: ['-m', 'pip'] },
@@ -371,6 +432,53 @@ async function getPythonPipCommand() {
   }
 
   return null;
+}
+
+async function isWindowsManagedVllmInstalled() {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  const pythonPath = getWindowsVllmPythonPath();
+  if (!fs.existsSync(pythonPath)) {
+    return false;
+  }
+
+  try {
+    await runCommand(pythonPath, ['-c', 'import vllm'], { timeoutMs: 30000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function installWindowsManagedVllm() {
+  await ensureWindowsPython312();
+
+  const runtimeDir = getWindowsVllmRuntimeDirectory();
+  const pythonPath = getWindowsVllmPythonPath();
+
+  if (!fs.existsSync(pythonPath)) {
+    fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
+    await runCommand('py', ['-3.12', '-m', 'venv', runtimeDir], { timeoutMs: 5 * 60 * 1000 });
+  }
+
+  await runCommand(pythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'], { timeoutMs: 10 * 60 * 1000 });
+  await runCommand(pythonPath, [
+    '-m',
+    'pip',
+    'install',
+    '--force-reinstall',
+    WINDOWS_VLLM_WHEEL_URL,
+    '--extra-index-url',
+    WINDOWS_VLLM_TORCH_INDEX_URL,
+  ], { timeoutMs: 45 * 60 * 1000 });
+
+  if (!await isWindowsManagedVllmInstalled()) {
+    throw new Error('OneInfer installed the Windows vLLM runtime, but vLLM could not be imported. Check that the machine has a CUDA 13-compatible NVIDIA driver and try again.');
+  }
+
+  return 'installed';
 }
 
 async function isClaudeCodeInstalled() {
@@ -570,7 +678,15 @@ async function isLibraryInstalled(name) {
   try {
     if (name === 'vllm') {
       if (process.platform === 'win32') {
-        return false;
+        if (await isWindowsManagedVllmInstalled()) return true;
+        if (!await commandExists('vllm')) return false;
+
+        try {
+          await runCommand('vllm', ['--version'], { timeoutMs: 30000 });
+          return true;
+        } catch {
+          return false;
+        }
       }
 
       // First try standard command
@@ -597,10 +713,8 @@ async function isLibraryInstalled(name) {
       if (isMacOS()) {
         return Boolean(getMacOllamaCommandPath());
       }
-      // Check default install path on Windows
       if (process.platform === 'win32') {
-        const defaultPath = path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe');
-        return fs.existsSync(defaultPath);
+        return Boolean(getWindowsOllamaCommandPath());
       }
     }
 
@@ -614,7 +728,7 @@ async function isLibraryInstalled(name) {
 async function installLibrary(name) {
   if (name === 'vllm') {
     if (process.platform === 'win32') {
-      throw new Error(VLLM_WINDOWS_UNSUPPORTED_MESSAGE);
+      return await installWindowsManagedVllm();
     }
 
     const pipCommand = await getPythonPipCommand();
@@ -627,7 +741,44 @@ async function installLibrary(name) {
 
   if (name === 'ollama') {
     if (process.platform === 'win32') {
-      throw new Error('Automatic installation of Ollama on Windows is not supported yet. Please download it from https://ollama.com/download/windows');
+      if (await isLibraryInstalled('ollama')) {
+        return 'installed';
+      }
+
+      try {
+        await runCommand('powershell.exe', [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          'irm https://ollama.com/install.ps1 | iex',
+        ], { timeoutMs: 15 * 60 * 1000 });
+
+        if (await isLibraryInstalled('ollama')) {
+          return 'installed';
+        }
+      } catch {
+        // Fall back to WinGet below.
+      }
+
+      if (await commandExists('winget')) {
+        await runCommand('winget', [
+          'install',
+          '--id',
+          'Ollama.Ollama',
+          '--exact',
+          '--accept-package-agreements',
+          '--accept-source-agreements',
+        ], { timeoutMs: 15 * 60 * 1000 });
+
+        if (await isLibraryInstalled('ollama')) {
+          return 'installed';
+        }
+
+        throw new Error('Ollama installer completed, but the ollama command was not found yet. Restart OneInfer Desktop or sign out and back in so Windows refreshes PATH.');
+      }
+
+      throw new Error('WinGet is not available on this Windows machine. Install Ollama from https://ollama.com/download/windows, then restart OneInfer Desktop.');
     }
 
     if (isMacOS()) {
@@ -956,16 +1107,6 @@ async function startOllamaModel(repoId, onProgress = () => {}) {
 }
 
 async function startVllmServer(repoId, port, onProgress = () => {}) {
-  if (process.platform === 'win32') {
-    onProgress({
-      stage: 'error',
-      message: 'vLLM is not supported natively on Windows.',
-      detail: VLLM_WINDOWS_UNSUPPORTED_MESSAGE,
-      level: 'error',
-    });
-    throw new Error(VLLM_WINDOWS_UNSUPPORTED_MESSAGE);
-  }
-
   let command = 'vllm';
   let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
 
@@ -975,7 +1116,12 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
     detail: 'Looking for vllm command or Python module.',
   });
 
-  if (!await commandExists('vllm')) {
+  if (process.platform === 'win32' && await isWindowsManagedVllmInstalled()) {
+    command = getWindowsVllmCommandPath();
+    args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
+  }
+
+  if (command === 'vllm' && !await commandExists('vllm')) {
     if (!await commandExists('python')) {
       throw new Error('vLLM is not available and Python was not found. Install vLLM before deploying.');
     }
@@ -1010,6 +1156,14 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  const recentOutput = [];
+
+  function rememberOutput(line) {
+    recentOutput.push(line);
+    if (recentOutput.length > 80) {
+      recentOutput.shift();
+    }
+  }
 
   const pipeOutput = (stream, level) => {
     let buffer = '';
@@ -1021,6 +1175,7 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
         .map((line) => line.trim())
         .filter(Boolean)
         .forEach((line) => {
+          rememberOutput(line);
           writeLog(line);
         });
       lines
@@ -1056,10 +1211,11 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
     writeLog(`Process exited — code: ${code}, signal: ${signal}`);
     logStream.end();
     if (code !== null && code !== 0) {
+      const outputDetail = getVllmExitDetail(recentOutput.join('\n'));
       onProgress({
         stage: 'error',
-        message: `vLLM exited with code ${code}. Logs saved to: ${logPath}`,
-        detail: signal ? `Signal: ${signal}` : undefined,
+        message: outputDetail.message || `vLLM exited with code ${code}. Logs saved to: ${logPath}`,
+        detail: outputDetail.detail || (signal ? `Signal: ${signal}` : undefined),
         level: 'error',
       });
     }
@@ -1067,6 +1223,29 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
 
   child.unref();
   return child;
+}
+
+function getVllmExitDetail(output) {
+  if (output.includes('operator torchvision::nms does not exist')) {
+    return {
+      message: 'vLLM failed because TorchVision is incompatible with the installed PyTorch runtime.',
+      detail: process.platform === 'win32'
+        ? 'Windows vLLM needs a matching Windows build of torch, torchvision, CUDA, and vLLM. Use a OneInfer-managed Windows vLLM runtime or reinstall matching Windows wheels in an isolated environment.'
+        : 'Reinstall torch and torchvision from the same PyTorch wheel channel, then restart deployment.',
+    };
+  }
+
+  if (output.includes("Could not import module 'ProcessorMixin'")) {
+    return {
+      message: 'vLLM failed while importing the model processor dependencies.',
+      detail: 'Check the vLLM log for the first Python import error; processor import errors are usually caused by a lower-level dependency crash.',
+    };
+  }
+
+  return {
+    message: null,
+    detail: null,
+  };
 }
 
 async function deployHfModel(payload = {}) {

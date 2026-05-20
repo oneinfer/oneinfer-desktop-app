@@ -52,7 +52,6 @@ export function HfModelDetailPanel(props: {
   const isRegisterBusy = busy === 'register-self-hosted';
   const isAnyInstalling = isVllmBusy || isOllamaBusy;
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
-  const isWindows = machine?.platform === 'win32' || navigator.userAgent.includes('Windows');
   const preferredRuntime = libraries.vllm ? 'vLLM' : libraries.ollama ? 'Ollama' : null;
   const canDeploy = Boolean(preferredRuntime) && validation?.status !== 'insufficient';
 
@@ -162,8 +161,6 @@ export function HfModelDetailPanel(props: {
                 installed={libraries.vllm}
                 busy={isVllmBusy}
                 onInstall={() => handleInstall('vllm')}
-                disabled={isWindows}
-                disabledLabel="Use WSL2/Linux"
               />
               <LibraryStatus name="Ollama" installed={libraries.ollama} busy={isOllamaBusy} onInstall={() => handleInstall('ollama')} />
             </div>
