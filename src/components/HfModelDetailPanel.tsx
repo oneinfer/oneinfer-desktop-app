@@ -52,7 +52,8 @@ export function HfModelDetailPanel(props: {
   const isRegisterBusy = busy === 'register-self-hosted';
   const isAnyInstalling = isVllmBusy || isOllamaBusy;
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
-  const canDeploy = libraries.vllm && validation?.status !== 'insufficient';
+  const preferredRuntime = libraries.vllm ? 'vLLM' : libraries.ollama ? 'Ollama' : null;
+  const canDeploy = Boolean(preferredRuntime) && validation?.status !== 'insufficient';
 
   const handleInstall = async (name: 'vllm' | 'ollama') => {
     setLocalError(null);
@@ -155,7 +156,7 @@ export function HfModelDetailPanel(props: {
                 <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Serving Libraries</span>
                 <Info size={14} style={{ opacity: 0.4 }} />
               </div>
-              <LibraryStatus name="vLLM (Recommended)" installed={libraries.vllm} busy={isVllmBusy} onInstall={() => handleInstall('vllm')} />
+              <LibraryStatus name="vLLM (Linux GPU)" installed={libraries.vllm} busy={isVllmBusy} onInstall={() => handleInstall('vllm')} />
               <LibraryStatus name="Ollama" installed={libraries.ollama} busy={isOllamaBusy} onInstall={() => handleInstall('ollama')} />
             </div>
 
@@ -209,7 +210,7 @@ export function HfModelDetailPanel(props: {
         ) : null}
         <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canDeploy} type="button">
           {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
-          {libraries.vllm ? 'Deploy with vLLM' : 'Install vLLM to Deploy'}
+          {preferredRuntime ? `Deploy with ${preferredRuntime}` : 'Install Ollama or vLLM to Deploy'}
         </button>
       </div>
     </section>

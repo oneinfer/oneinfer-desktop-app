@@ -8,6 +8,7 @@ import {
   createIntelligentEndpoint,
   deleteApiKey,
   deleteInstance,
+  deleteInferenceEndpoint,
   deleteIntelligentEndpoint,
   getActiveDeveloperPlan,
   getCredits,
@@ -49,7 +50,9 @@ import type {
   CreateInstanceFormState,
   DashboardState,
   DesktopSession,
+  EndpointItem,
   HfModelInfo,
+  InstanceItem,
   LocalModelDeployment,
   LocalModelMetrics,
   SectionKey,
@@ -115,6 +118,7 @@ function App() {
   const [deploymentProgress, setDeploymentProgress] = useState<DesktopDeploymentProgress[]>([]);
   const [localDeployments, setLocalDeployments] = useState<LocalModelDeployment[]>([]);
   const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
+  const [routeInitialEndpointId, setRouteInitialEndpointId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -750,7 +754,23 @@ function App() {
         temperature: 0.7,
         max_tokens: 4096,
       });
+      setLocalDeployments((current) => {
+        const nextDeployment: LocalModelDeployment = {
+          endpointUrl: selfHostForm.endpoint_url.trim(),
+          modelId,
+          name: selfHostForm.name.trim() || modelId,
+          pid: null,
+          runtime: 'vllm',
+          deployedAt: new Date().toISOString(),
+        };
+
+        return [
+          nextDeployment,
+          ...current.filter((item) => item.endpointUrl !== nextDeployment.endpointUrl && item.modelId !== nextDeployment.modelId),
+        ];
+      });
       setMessage({ tone: 'success', text: 'Local inference endpoint registered.' });
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to register endpoint.' });
       throw error;
@@ -785,8 +805,9 @@ function App() {
       return false;
     }
 
-    if (!libraries.vllm) {
-      setMessage({ tone: 'error', text: 'vLLM must be installed before deploying a Hugging Face model locally.' });
+    const localRuntime = getPreferredLocalRuntime(libraries);
+    if (!localRuntime) {
+      setMessage({ tone: 'error', text: 'Install Ollama on Mac or vLLM on Linux GPU before deploying a Hugging Face model locally.' });
       return false;
     }
 
@@ -804,14 +825,14 @@ function App() {
         id: progressId,
         stage: 'preparing',
         message: `Preparing to deploy ${repoId}.`,
-        detail: 'Checking runtime, choosing a port, then starting vLLM.',
+        detail: `Checking runtime, choosing a port, then starting ${formatLocalRuntime(localRuntime)}.`,
         level: 'info',
         timestamp: Date.now(),
       }]);
-      setMessage({ tone: 'info', text: `Starting ${repoId} with vLLM on your local GPU...` });
+      setMessage({ tone: 'info', text: `Starting ${repoId} with ${formatLocalRuntime(localRuntime)} on this machine...` });
       const deployment = await window.desktopBridge.deployHfModel({
         repoId,
-        runtime: 'vllm',
+        runtime: localRuntime,
         progressId,
       });
 
@@ -871,16 +892,20 @@ function App() {
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
       return true;
     } catch (error) {
+      const rawErrorMessage = error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.';
+      const errorMessage = rawErrorMessage.includes('Unsupported local deployment runtime: ollama')
+        ? 'Ollama deploy support is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then deploy again.'
+        : rawErrorMessage;
       const errorProgress: DesktopDeploymentProgress = {
         id: `${repoId}-${Date.now()}`,
         stage: 'error',
         message: 'Deployment flow stopped.',
-        detail: error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.',
+        detail: errorMessage,
         level: 'error',
         timestamp: Date.now(),
       };
       setDeploymentProgress((current) => [...current, errorProgress].slice(-80));
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.' });
+      setMessage({ tone: 'error', text: errorMessage });
       return false;
     } finally {
       setBusy(null);
@@ -1035,6 +1060,98 @@ function App() {
     }
   }
 
+  async function ensureLocalRouterDeployment(routingAlgorithm: string): Promise<{ endpointId?: string; endpointUrl: string; modelId: string }> {
+    if (!session) {
+      throw new Error('Sign in before deploying a local router model.');
+    }
+
+    const routerModelId = normalizeHfRepoId(routingAlgorithm);
+    if (!routerModelId) {
+      throw new Error('Select a valid Hugging Face router model before deploying locally.');
+    }
+
+    const existingRouterEndpoint = dashboard.inferenceEndpoints.find((endpoint, index) => {
+      const record = endpoint as Record<string, unknown>;
+      const endpointModelId = String(record.model_id ?? record.modelId ?? '');
+      const endpointRole = String(record.endpoint_role ?? record.role ?? '').toLowerCase();
+      const endpointUrl = String(record.endpoint_url ?? '').toLowerCase();
+      const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
+      return endpointModelId === routerModelId
+        && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'))
+        && (!endpointRole || endpointRole === 'router' || String(record.name ?? '').toLowerCase().includes('router'))
+        && Boolean(getInferenceEndpointIdFromRecord(endpoint, index));
+    });
+
+    if (existingRouterEndpoint) {
+      const endpointRecord = existingRouterEndpoint as Record<string, unknown>;
+      return {
+        endpointId: getInferenceEndpointIdFromRecord(existingRouterEndpoint, dashboard.inferenceEndpoints.indexOf(existingRouterEndpoint)),
+        endpointUrl: String(endpointRecord.endpoint_url ?? ''),
+        modelId: routerModelId,
+      };
+    }
+
+    if (!window.desktopBridge?.deployHfModel) {
+      throw new Error('Local router deployment is not available in this app build.');
+    }
+
+    if (!libraries.vllm) {
+      throw new Error('vLLM must be installed before deploying a router model locally.');
+    }
+
+    setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId}...` });
+    const deployment = await window.desktopBridge.deployHfModel({
+      repoId: routerModelId,
+      runtime: 'vllm',
+      progressId: `${routerModelId}-router-${Date.now()}`,
+    });
+
+    const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
+    const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
+      ? dashboard.machineDetails.machineName
+      : typeof dashboard.machineDetails?.hostname === 'string'
+        ? dashboard.machineDetails.hostname
+        : '';
+
+    const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+      name: `${routerModelId} router`,
+      provider: 'openai',
+      model_id: deployment.modelId,
+      deployment_target: 'local',
+      endpoint_url: deployment.endpointUrl,
+      machine_id: detectedMachineId,
+      machine_name: detectedMachineName,
+      top_p: 0.9,
+      temperature: 0.1,
+      max_tokens: 1024,
+      endpoint_role: 'router',
+    });
+
+    setLocalDeployments((current) => {
+      const nextDeployment: LocalModelDeployment = {
+        endpointUrl: deployment.endpointUrl,
+        modelId: deployment.modelId,
+        name: `${routerModelId} router`,
+        pid: deployment.pid,
+        runtime: deployment.runtime,
+        deployedAt: new Date().toISOString(),
+      };
+
+      return [
+        nextDeployment,
+        ...current.filter((item) => item.endpointUrl !== nextDeployment.endpointUrl && item.modelId !== nextDeployment.modelId),
+      ];
+    });
+
+    await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
+
+    return {
+      endpointId: getEndpointIdFromPayload(registeredEndpoint),
+      endpointUrl: deployment.endpointUrl,
+      modelId: deployment.modelId,
+    };
+  }
+
   async function handleCreateRoute(payload: CreateRoutePayload) {
     if (!session) {
       return false;
@@ -1053,10 +1170,15 @@ function App() {
 
     setBusy('create-intelligent-endpoint');
     try {
+      const routerDeployment = await ensureLocalRouterDeployment(payload.routingAlgorithm);
+
       await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
         name: routeName,
         routing_config: {
           routing_algorithm: payload.routingAlgorithm,
+          router_runtime: 'local',
+          ...(routerDeployment?.endpointId ? { router_endpoint_id: routerDeployment.endpointId } : {}),
+          ...(routerDeployment?.endpointUrl ? { router_endpoint_url: routerDeployment.endpointUrl } : {}),
           input_modality: payload.inputModality,
           candidate_models: payload.modelId ? [payload.modelId] : [],
           description: payload.description.trim() || undefined,
@@ -1071,6 +1193,7 @@ function App() {
                     payload.inputModality,
                     payload.modelId,
                     dashboard.inferenceEndpoints,
+                    dashboard.instances,
                     dashboard.models,
                   )
                 )),
@@ -1125,6 +1248,66 @@ function App() {
     const routeUrl = `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
     navigator.clipboard?.writeText(routeUrl);
     setMessage({ tone: 'success', text: 'Route URL copied.' });
+  }
+
+  async function handleUseEndpointInRoute(endpointId: string, endpointName: string) {
+    setRouteInitialEndpointId(endpointId);
+    setIntelligentEndpointName((current) => current || `${endpointName} route`);
+    setActiveSection('routing');
+    if (session) {
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
+    }
+  }
+
+  async function handleDeleteLocalDeployment(deployment: {
+    endpointId: string;
+    endpointUrl: string;
+    modelId: string;
+    name: string;
+    runtime: string;
+    registered: boolean;
+  }) {
+    if (!session) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete local model "${deployment.name}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setBusy(`delete-local:${deployment.endpointUrl}`);
+    try {
+      if (deployment.registered) {
+        await deleteInferenceEndpoint(settingsDraft.apiBaseUrl, session, deployment.endpointId);
+      }
+
+      if (window.desktopBridge?.deleteLocalModel) {
+        await window.desktopBridge.deleteLocalModel({
+          endpointUrl: deployment.endpointUrl,
+          modelId: deployment.modelId,
+          runtime: deployment.runtime,
+        });
+      }
+
+      setLocalDeployments((current) => current.filter((item) => item.endpointUrl !== deployment.endpointUrl && item.modelId !== deployment.modelId));
+      setLocalModelMetrics((current) => {
+        const next = { ...current };
+        delete next[deployment.endpointUrl];
+        return next;
+      });
+      setMessage({ tone: 'success', text: 'Local model deleted.' });
+      await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
+    } catch (error) {
+      const rawErrorMessage = error instanceof Error ? error.message : 'Failed to delete local model.';
+      const errorMessage = rawErrorMessage.includes("No handler registered for 'app:delete-local-model'")
+        ? 'Local model deletion is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then delete again.'
+        : rawErrorMessage;
+      setMessage({ tone: 'error', text: errorMessage });
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function handleInstallLibrary(name: 'vllm' | 'ollama') {
@@ -1232,8 +1415,12 @@ function App() {
                 onCancelDeploy={handleCancelSelfHostedDeployment}
               />
             )}
+            localDeployments={localDeployments}
+            localModelMetrics={localModelMetrics}
             onFormChange={setSelfHostForm}
             onSubmit={handleRegisterSelfHosted}
+            onUseInRoute={handleUseEndpointInRoute}
+            onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
         ) : null}
 
@@ -1248,6 +1435,7 @@ function App() {
             onCreate={handleCreateInstance}
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}
+            onUseEndpointInRoute={handleUseEndpointInRoute}
           />
         ) : null}
 
@@ -1273,6 +1461,9 @@ function App() {
             onCreateRoute={handleCreateRoute}
             onCopyRoute={handleCopyRoute}
             onDeleteRoute={handleDeleteRoute}
+            onCreateSelfHosting={() => setActiveSection('selfHosting')}
+            initialEndpointId={routeInitialEndpointId}
+            onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
           />
         ) : null}
 
@@ -1304,17 +1495,22 @@ function buildAttachedInferenceEndpointPayload(
   inputModality: string,
   modelId: string,
   inferenceEndpoints: EndpointItem[],
+  instances: InstanceItem[],
   models: Record<string, unknown>[],
 ) {
   const endpoint = inferenceEndpoints.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
   });
+  const instance = instances.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
+  });
   const model = models.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
   });
-  const endpointRecord = (endpoint ?? {}) as Record<string, unknown>;
+  const endpointRecord = (endpoint ?? instance ?? {}) as Record<string, unknown>;
   const modelRecord = (model ?? {}) as Record<string, unknown>;
   const outputModalities = Array.isArray(modelRecord.outputModalities)
     ? modelRecord.outputModalities
@@ -1331,12 +1527,44 @@ function buildAttachedInferenceEndpointPayload(
 }
 
 function getAttachedInferenceEndpointName(endpoint: Record<string, unknown>, fallbackName: string): string {
-  const explicitName = endpoint.endpoint_name ?? endpoint.name;
+  const explicitName = endpoint.endpoint_name ?? endpoint.name ?? endpoint.instance_name;
   if (explicitName) {
     return String(explicitName);
   }
 
   return fallbackName;
+}
+
+function getInferenceEndpointIdFromRecord(endpoint: EndpointItem, index: number): string {
+  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+}
+
+function getEndpointIdFromPayload(payload: Record<string, unknown>): string | undefined {
+  const candidates = [
+    payload.inference_endpoint_id,
+    payload.endpoint_id,
+    payload.id,
+    typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).endpoint_id : undefined,
+    typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).inference_endpoint_id : undefined,
+  ];
+  const endpointId = candidates.find((value) => typeof value === 'string' && value.trim());
+  return endpointId ? String(endpointId) : undefined;
+}
+
+function getPreferredLocalRuntime(libraries: { vllm: boolean; ollama: boolean }): 'vllm' | 'ollama' | null {
+  if (libraries.vllm) {
+    return 'vllm';
+  }
+
+  if (libraries.ollama) {
+    return 'ollama';
+  }
+
+  return null;
+}
+
+function formatLocalRuntime(runtime: 'vllm' | 'ollama'): string {
+  return runtime === 'vllm' ? 'vLLM' : 'Ollama';
 }
 
 export default App;

@@ -1,9 +1,9 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, LoaderCircle, Rocket, Search, Server, Settings2, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
 import type { ValidationResult } from '../helpers/hardwareValidation';
-import type { DashboardState, HfModelInfo } from '../types';
+import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics } from '../types';
 import { getMachineGpuRows, getMachineSummaryEntries } from '../utils/format';
 
 export interface SelfHostFormState {
@@ -24,14 +24,20 @@ export function SelfHostingPage(props: {
   libraries: { vllm: boolean; ollama: boolean };
   busy: string | null;
   analysisPanel: ReactNode;
+  localDeployments: LocalModelDeployment[];
+  localModelMetrics: Record<string, LocalModelMetrics>;
   onFormChange: (next: SelfHostFormState) => void;
   onSubmit: (event?: FormEvent<HTMLFormElement>) => void;
+  onUseInRoute: (endpointId: string, endpointName: string) => void;
+  onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const canShowAnalysis = Boolean(props.hfModelMetadata);
   const selectedModelValue = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
   const hasModelInput = selectedModelValue.trim().length > 0;
-  const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && props.libraries.vllm;
+  const hasLocalRuntime = props.libraries.vllm || props.libraries.ollama;
+  const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && hasLocalRuntime;
+  const localDeploymentRows = getLocalDeploymentRows(props.dashboard.inferenceEndpoints, props.localDeployments);
   const ctaLabel = props.busy === 'register-self-hosted'
     ? 'Deploying...'
     : props.hfModelMetadata
@@ -128,6 +134,7 @@ export function SelfHostingPage(props: {
               metadataError={props.hfModelMetadataError}
               validationResult={props.validationResult}
               vllmInstalled={props.libraries.vllm}
+              ollamaInstalled={props.libraries.ollama}
             />
 
             <button
@@ -163,8 +170,136 @@ export function SelfHostingPage(props: {
           {props.analysisPanel}
         </div>
       ) : null}
+
+      <Panel title="Local Deployments" icon={Server}>
+        <div className="form-hint">
+          Local deployments registered with OneInfer are available as routing candidates when the Local source is selected.
+        </div>
+        <div className="local-deployment-list">
+          {localDeploymentRows.length === 0 ? (
+            <div className="empty-state">No local deployments registered yet.</div>
+          ) : null}
+          {localDeploymentRows.map((deployment) => (
+            <LocalDeploymentCard
+              key={`${deployment.endpointId}-${deployment.endpointUrl}`}
+              deployment={deployment}
+              metrics={props.localModelMetrics[deployment.endpointUrl]}
+              onUseInRoute={props.onUseInRoute}
+              onDelete={props.onDeleteLocalDeployment}
+            />
+          ))}
+        </div>
+      </Panel>
     </div>
   );
+}
+
+interface LocalDeploymentRow {
+  endpointId: string;
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  runtime: string;
+  deployedAt: string;
+  registered: boolean;
+  pid: number | null;
+}
+
+function LocalDeploymentCard(props: {
+  deployment: LocalDeploymentRow;
+  metrics?: LocalModelMetrics;
+  onUseInRoute: (endpointId: string, endpointName: string) => void;
+  onDelete: (deployment: LocalDeploymentRow) => void;
+}) {
+  const healthLabel = props.metrics?.healthy === undefined
+    ? props.deployment.registered ? 'registered' : 'local'
+    : props.metrics.healthy ? 'online' : 'offline';
+  const curlBase = props.deployment.endpointUrl.replace(/\/+$/, '');
+
+  return (
+    <div className="local-deployment-card">
+      <div className="local-deployment-main">
+        <div style={{ minWidth: 0 }}>
+          <strong>{props.deployment.name}</strong>
+          <span>{props.deployment.modelId}</span>
+          <code>{props.deployment.endpointUrl}</code>
+        </div>
+        <span className={`status-pill ${props.metrics?.healthy ? 'active' : 'soft'}`}>{healthLabel}</span>
+      </div>
+      <div className="local-deployment-meta">
+        <span>Runtime: {props.deployment.runtime}</span>
+        <span>{props.deployment.pid ? `PID: ${props.deployment.pid}` : 'Backend registered'}</span>
+        <span>{props.deployment.deployedAt}</span>
+      </div>
+      <div className="local-deployment-actions">
+        <button className="ghost-button" type="button" disabled={!props.deployment.registered} onClick={() => props.onUseInRoute(props.deployment.endpointId, props.deployment.name)}>
+          <Orbit size={14} />
+          Use in route
+        </button>
+        <button className="ghost-button" type="button" onClick={() => navigator.clipboard?.writeText(curlBase)}>
+          <Copy size={14} />
+          Copy URL
+        </button>
+        <button className="ghost-button !text-[#ff7c78]" type="button" onClick={() => props.onDelete(props.deployment)}>
+          <Trash2 size={14} />
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalModelDeployment[]): LocalDeploymentRow[] {
+  const rows = new Map<string, LocalDeploymentRow>();
+
+  endpoints
+    .filter((endpoint) => isLocalEndpoint(endpoint))
+    .forEach((endpoint, index) => {
+      const endpointUrl = String(endpoint.endpoint_url ?? '');
+      if (!endpointUrl) {
+        return;
+      }
+
+      const endpointId = getEndpointId(endpoint, index);
+      rows.set(endpointUrl, {
+        endpointId,
+        endpointUrl,
+        modelId: String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`),
+        name: String(endpoint.name ?? endpoint.model_id ?? `Local model ${index + 1}`),
+        runtime: endpointUrl.includes(':11434') ? 'ollama' : 'vllm',
+        deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? 'Registered endpoint'),
+        registered: true,
+        pid: null,
+      });
+    });
+
+  deployments.forEach((deployment, index) => {
+    const existing = rows.get(deployment.endpointUrl);
+    rows.set(deployment.endpointUrl, {
+      endpointId: existing?.endpointId ?? `local-deployment-${index + 1}`,
+      endpointUrl: deployment.endpointUrl,
+      modelId: deployment.modelId,
+      name: deployment.name,
+      runtime: deployment.runtime,
+      deployedAt: deployment.deployedAt,
+      registered: Boolean(existing?.registered),
+      pid: deployment.pid,
+    });
+  });
+
+  return Array.from(rows.values());
+}
+
+function getEndpointId(endpoint: EndpointItem, index: number): string {
+  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+}
+
+function isLocalEndpoint(endpoint: EndpointItem): boolean {
+  const endpointUrl = String(endpoint.endpoint_url ?? '').toLowerCase();
+  return String(endpoint.deployment_target ?? '').toLowerCase() === 'local'
+    || endpointUrl.includes('localhost')
+    || endpointUrl.includes('127.0.0.1')
+    || endpointUrl.includes('0.0.0.0');
 }
 
 function DeployabilityChecklist(props: {
@@ -174,7 +309,16 @@ function DeployabilityChecklist(props: {
   metadataError: string | null;
   validationResult: ValidationResult | null;
   vllmInstalled: boolean;
+  ollamaInstalled: boolean;
 }) {
+  const runtimeInstalled = props.vllmInstalled || props.ollamaInstalled;
+  const runtimeLabel = props.vllmInstalled ? 'vLLM installed' : props.ollamaInstalled ? 'Ollama installed' : 'Local runtime required';
+  const runtimeDetail = props.vllmInstalled
+    ? 'Ready to launch an OpenAI-compatible local server with vLLM.'
+    : props.ollamaInstalled
+      ? 'Ready to launch an OpenAI-compatible local server with Ollama.'
+      : 'Install Ollama on Mac or vLLM on Linux GPU before deployment.';
+
   return (
     <div style={{ display: 'grid', gap: '8px', padding: '12px', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
       <ReadinessRow
@@ -190,9 +334,9 @@ function DeployabilityChecklist(props: {
         detail={props.validationResult?.message}
       />
       <ReadinessRow
-        ok={props.vllmInstalled}
-        label={props.vllmInstalled ? 'vLLM installed' : 'vLLM required'}
-        detail={props.vllmInstalled ? 'Ready to launch an OpenAI-compatible local server.' : 'Install vLLM from the analysis panel before deployment.'}
+        ok={runtimeInstalled}
+        label={runtimeLabel}
+        detail={runtimeDetail}
       />
     </div>
   );

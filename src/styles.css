@@ -197,6 +197,7 @@ button {
 th,
 td,
 label span,
+.field-label,
 .data-row span,
 .instance-card p,
 .sub-card p {
@@ -579,6 +580,168 @@ label span,
   grid-column: 1 / -1;
 }
 
+.field-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+}
+
+.field-help {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.endpoint-source-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.endpoint-source-option {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-size: 0.82rem;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.endpoint-source-option:hover,
+.endpoint-source-option.active {
+  border-color: rgba(116, 227, 197, 0.42);
+  background: rgba(116, 227, 197, 0.1);
+  color: var(--text);
+}
+
+.local-deployment-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.cloud-endpoint-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.local-deployment-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.cloud-endpoint-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.local-deployment-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.cloud-endpoint-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.local-deployment-main strong,
+.local-deployment-main span,
+.local-deployment-main code {
+  display: block;
+}
+
+.cloud-endpoint-main strong,
+.cloud-endpoint-main span,
+.cloud-endpoint-main code {
+  display: block;
+}
+
+.local-deployment-main strong {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.cloud-endpoint-main strong {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.local-deployment-main span,
+.local-deployment-meta {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.cloud-endpoint-main span,
+.cloud-endpoint-meta {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.local-deployment-main code {
+  margin-top: 6px;
+  color: var(--accent);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.cloud-endpoint-main code {
+  margin-top: 6px;
+  color: var(--accent);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.local-deployment-meta,
+.local-deployment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cloud-endpoint-meta,
+.cloud-endpoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.local-deployment-actions .ghost-button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+}
+
+.cloud-endpoint-actions .ghost-button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+}
+
 .route-goal-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -602,12 +765,37 @@ label span,
   padding: 12px;
 }
 
+.route-goal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.route-goal-info {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.route-goal-info:hover {
+  color: var(--accent);
+  background: rgba(116, 227, 197, 0.12);
+}
+
 .route-goal-option strong,
 .route-endpoint-option strong {
   font-size: 0.88rem;
 }
 
 .route-goal-option span,
+.route-goal-option small,
 .route-endpoint-option small {
   color: var(--muted);
   font-size: 0.74rem;
@@ -633,6 +821,30 @@ label span,
   max-height: 260px;
   overflow-y: auto;
   padding-right: 3px;
+}
+
+.route-empty-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(116, 227, 197, 0.2);
+  border-radius: 12px;
+  background: rgba(116, 227, 197, 0.08);
+  color: var(--text);
+}
+
+.route-empty-action span {
+  min-width: 0;
+  color: var(--muted);
+}
+
+.route-empty-action .secondary-button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 8px 12px;
+  font-size: 0.78rem;
 }
 
 .route-endpoint-option {

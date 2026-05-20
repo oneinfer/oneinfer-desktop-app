@@ -1,8 +1,8 @@
 import { useEffect, type FormEvent } from 'react';
-import { LoaderCircle, Rocket, Server } from 'lucide-react';
+import { Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { CreateInstanceFormState, DashboardState } from '../types';
+import type { CreateInstanceFormState, DashboardState, EndpointItem } from '../types';
 import { formatValue } from '../utils/format';
 
 export function InstancesPage(props: {
@@ -15,6 +15,7 @@ export function InstancesPage(props: {
   onCreate: (event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   onAction: (action: 'start-instance' | 'stop-instance' | 'restart-instance', instanceId: string, provider: string) => void;
   onDelete: (instanceId: string, provider: string) => void;
+  onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
 }) {
   const providers = getProviderOptions(props.dashboard.providerInfo);
   const validProviderName = providers.some((provider) => provider.value === props.instanceForm.provider_name)
@@ -32,6 +33,7 @@ export function InstancesPage(props: {
   const gpuPricePerHour = selectedGpu?.pricePerHourUsd ?? 0;
   const diskPricePerHour = calculateDiskPricePerHour(props.instanceForm.disk_size);
   const totalPricePerHour = gpuPricePerHour + diskPricePerHour;
+  const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints);
 
   useEffect(() => {
     if (!props.showCreateInstanceModal || providers.length === 0) {
@@ -141,6 +143,31 @@ export function InstancesPage(props: {
             </table>
           </div>
         )}
+      </div>
+
+      <div className="glass-panel mt-5 p-5">
+        <div className="panel-header" style={{ marginBottom: '12px' }}>
+          <div className="panel-title">
+            <Server size={18} />
+            <h3>Cloud Endpoints</h3>
+          </div>
+          <span className="status-pill soft">{cloudEndpoints.length} registered</span>
+        </div>
+        <div className="form-hint">
+          Registered cloud inference endpoints are available as routing candidates when the Cloud source is selected.
+        </div>
+        <div className="cloud-endpoint-list">
+          {cloudEndpoints.length === 0 ? (
+            <div className="empty-state">No cloud inference endpoints registered yet.</div>
+          ) : null}
+          {cloudEndpoints.map((endpoint) => (
+            <CloudEndpointCard
+              endpoint={endpoint}
+              key={endpoint.endpointId}
+              onUseEndpointInRoute={props.onUseEndpointInRoute}
+            />
+          ))}
+        </div>
       </div>
 
       <Modal title={selectedGpu ? `Deploy ${selectedGpu.name} Instance` : 'Create Instance'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
@@ -326,6 +353,130 @@ type ProviderImageOption = {
   image_url: string;
   start_command: string;
 };
+
+interface CloudEndpointRow {
+  endpointId: string;
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  provider: string;
+  status: string;
+  updatedAt: string;
+}
+
+function CloudEndpointCard(props: {
+  endpoint: CloudEndpointRow;
+  onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
+}) {
+  return (
+    <div className="cloud-endpoint-card">
+      <div className="cloud-endpoint-main">
+        <div style={{ minWidth: 0 }}>
+          <strong>{props.endpoint.name}</strong>
+          <span>{props.endpoint.provider} / {props.endpoint.modelId}</span>
+          {props.endpoint.endpointUrl ? <code>{props.endpoint.endpointUrl}</code> : null}
+        </div>
+        <span className={`status-pill ${isActiveEndpointStatus(props.endpoint.status) ? 'active' : 'soft'}`}>{props.endpoint.status}</span>
+      </div>
+      <div className="cloud-endpoint-meta">
+        <span>Endpoint ID: {props.endpoint.endpointId}</span>
+        <span>{props.endpoint.updatedAt}</span>
+      </div>
+      <div className="cloud-endpoint-actions">
+        <button className="ghost-button" type="button" onClick={() => props.onUseEndpointInRoute(props.endpoint.endpointId, props.endpoint.name)}>
+          <Orbit size={14} />
+          Use in route
+        </button>
+        <button className="ghost-button" type="button" disabled={!props.endpoint.endpointUrl} onClick={() => navigator.clipboard?.writeText(props.endpoint.endpointUrl)}>
+          <Copy size={14} />
+          Copy URL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function getCloudEndpointRows(endpoints: EndpointItem[]): CloudEndpointRow[] {
+  return endpoints
+    .filter((endpoint) => getEndpointSource(endpoint) === 'cloud')
+    .map((endpoint, index) => {
+      const endpointId = getEndpointId(endpoint, index);
+      const modelId = String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `model-${index + 1}`);
+      return {
+        endpointId,
+        endpointUrl: String(endpoint.endpoint_url ?? ''),
+        modelId,
+        name: String(endpoint.name ?? endpoint.endpoint_name ?? modelId),
+        provider: String(endpoint.provider ?? endpoint.endpoint_source ?? 'cloud'),
+        status: String(endpoint.status ?? endpoint.creation_status ?? 'ready'),
+        updatedAt: String(endpoint.updated_at ?? endpoint.created_at ?? 'Registered endpoint'),
+      };
+    });
+}
+
+function getEndpointId(endpoint: EndpointItem, index: number): string {
+  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+}
+
+type EndpointSource = 'local' | 'cloud' | 'openbandwidth' | 'closed_source_api';
+
+function getEndpointSource(endpoint: EndpointItem): EndpointSource {
+  const record = endpoint as Record<string, unknown>;
+  const sourceText = [
+    record.endpoint_source,
+    record.source,
+    record.endpoint_type,
+    record.provider,
+    record.deployment_target,
+    record.endpoint_url,
+    record.name,
+    record.endpoint_name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (sourceText.includes('openbandwidth') || sourceText.includes('open_bandwidth') || sourceText.includes('open bandwidth')) {
+    return 'openbandwidth';
+  }
+
+  if (String(record.deployment_target ?? '').toLowerCase() === 'local' || isLocalEndpointUrl(record.endpoint_url)) {
+    return 'local';
+  }
+
+  if (
+    sourceText.includes('closed_source_api')
+    || sourceText.includes('closed source')
+    || sourceText.includes('close source')
+    || isClosedSourceProvider(record.provider)
+  ) {
+    return 'closed_source_api';
+  }
+
+  return 'cloud';
+}
+
+function isLocalEndpointUrl(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const endpointUrl = String(value).toLowerCase();
+  return endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1') || endpointUrl.includes('0.0.0.0');
+}
+
+function isClosedSourceProvider(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return ['openai', 'anthropic', 'groq', 'deepseek', 'google', 'grok', 'zai', 'minimax', 'sarvam'].includes(String(value).toLowerCase());
+}
+
+function isActiveEndpointStatus(status: string): boolean {
+  const normalizedStatus = status.toLowerCase();
+  return normalizedStatus === 'active' || normalizedStatus === 'running' || normalizedStatus === 'ready';
+}
 
 type ProviderGpuOption = {
   gpu_id: string;

@@ -323,6 +323,55 @@ async function commandExists(command) {
   }
 }
 
+function isMacOS() {
+  return process.platform === 'darwin' || os.type() === 'Darwin';
+}
+
+function getMacOllamaCommandPath() {
+  if (!isMacOS()) {
+    return null;
+  }
+
+  const candidates = [
+    '/opt/homebrew/bin/ollama',
+    '/usr/local/bin/ollama',
+    '/Applications/Ollama.app/Contents/Resources/ollama',
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+async function getPythonPipCommand() {
+  const candidates = [
+    { command: 'python3', args: ['-m', 'pip'] },
+    { command: 'python', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', args: ['-m', 'pip'] },
+    { command: '/opt/homebrew/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/local/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/bin/python3', args: ['-m', 'pip'] },
+    { command: 'pip3', args: [] },
+    { command: 'pip', args: [] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/pip3', args: [] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.12/bin/pip3', args: [] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.13/bin/pip3', args: [] },
+    { command: '/opt/homebrew/bin/pip3', args: [] },
+    { command: '/usr/local/bin/pip3', args: [] },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await runCommand(candidate.command, [...candidate.args, '--version'], { timeoutMs: 10000 });
+      return candidate;
+    } catch {
+      // Try the next pip entry point.
+    }
+  }
+
+  return null;
+}
+
 async function isClaudeCodeInstalled() {
   try {
     return await commandExists('claude');
@@ -523,12 +572,14 @@ async function isLibraryInstalled(name) {
       if (await commandExists('vllm')) return true;
       // Then try python import
       try {
-        await runCommand('python', ['-c', 'import vllm'], { timeoutMs: 10000 });
+        await runCommand('python3', ['-c', 'import vllm'], { timeoutMs: 10000 });
         return true;
       } catch {
         // Fallback to pip check
         try {
-          const { stdout } = await runCommand('pip', ['show', 'vllm'], { timeoutMs: 5000 });
+          const pipCommand = await getPythonPipCommand();
+          if (!pipCommand) return false;
+          const { stdout } = await runCommand(pipCommand.command, [...pipCommand.args, 'show', 'vllm'], { timeoutMs: 5000 });
           return stdout.includes('Name: vllm');
         } catch {
           return false;
@@ -538,6 +589,9 @@ async function isLibraryInstalled(name) {
     
     if (name === 'ollama') {
       if (await commandExists('ollama')) return true;
+      if (isMacOS()) {
+        return Boolean(getMacOllamaCommandPath());
+      }
       // Check default install path on Windows
       if (process.platform === 'win32') {
         const defaultPath = path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe');
@@ -554,10 +608,11 @@ async function isLibraryInstalled(name) {
 
 async function installLibrary(name) {
   if (name === 'vllm') {
-    if (!await commandExists('pip')) {
+    const pipCommand = await getPythonPipCommand();
+    if (!pipCommand) {
       throw new Error('pip is not installed. Please install Python and pip first.');
     }
-    await runCommand('pip', ['install', 'vllm'], { timeoutMs: 15 * 60 * 1000 });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', 'vllm'], { timeoutMs: 15 * 60 * 1000 });
     return 'installed';
   }
 
@@ -565,6 +620,20 @@ async function installLibrary(name) {
     if (process.platform === 'win32') {
       throw new Error('Automatic installation of Ollama on Windows is not supported yet. Please download it from https://ollama.com/download/windows');
     }
+
+    if (isMacOS()) {
+      if (await isLibraryInstalled('ollama')) {
+        return 'installed';
+      }
+
+      if (await commandExists('brew')) {
+        await runCommand('brew', ['install', 'ollama'], { timeoutMs: 15 * 60 * 1000 });
+        return 'installed';
+      }
+
+      throw new Error('Automatic Ollama installation on macOS requires Homebrew. Install Ollama from https://ollama.com/download/mac or run "brew install ollama", then restart OneInfer Desktop.');
+    }
+
     await runCommand('sh', ['-lc', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeoutMs: 15 * 60 * 1000 });
     return 'installed';
   }
@@ -782,6 +851,101 @@ function getVllmLogPath(repoId) {
   return path.join(logsDir, `vllm-${safeId}-${timestamp}.log`);
 }
 
+function getOllamaCommand() {
+  return getMacOllamaCommandPath() || 'ollama';
+}
+
+function getOllamaModelName(repoId) {
+  const value = String(repoId || '').trim();
+  const normalized = value.toLowerCase();
+  const mappings = new Map([
+    ['qwen/qwen2.5-0.5b-instruct', 'qwen2.5:0.5b'],
+    ['qwen/qwen2.5-1.5b-instruct', 'qwen2.5:1.5b'],
+    ['qwen/qwen2.5-3b-instruct', 'qwen2.5:3b'],
+    ['qwen/qwen2.5-7b-instruct', 'qwen2.5:7b'],
+    ['meta-llama/llama-3.2-1b-instruct', 'llama3.2:1b'],
+    ['meta-llama/llama-3.2-3b-instruct', 'llama3.2:3b'],
+  ]);
+
+  if (mappings.has(normalized)) {
+    return mappings.get(normalized);
+  }
+
+  if (value.includes(':') || normalized.startsWith('hf.co/')) {
+    return value;
+  }
+
+  return `hf.co/${value}`;
+}
+
+async function ensureOllamaServer(endpointUrl, onProgress = () => {}) {
+  try {
+    await waitForOpenAiEndpoint(endpointUrl, 3000, onProgress, () => false);
+    return null;
+  } catch {
+    // Ollama is not responding yet. Start the local server below.
+  }
+
+  const command = getOllamaCommand();
+  onProgress({
+    stage: 'starting',
+    message: 'Starting Ollama local server...',
+    detail: command,
+  });
+
+  const child = spawn(command, ['serve'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: {
+      ...process.env,
+      OLLAMA_HOST: '127.0.0.1:11434',
+    },
+  });
+
+  child.once('error', (error) => {
+    onProgress({
+      stage: 'error',
+      message: 'Failed to start Ollama.',
+      detail: error.message,
+      level: 'error',
+    });
+  });
+
+  child.unref();
+  await waitForOpenAiEndpoint(endpointUrl, 30000, onProgress, () => false);
+  return child;
+}
+
+async function startOllamaModel(repoId, onProgress = () => {}) {
+  if (!await isLibraryInstalled('ollama')) {
+    throw new Error('Ollama is not installed. Install Ollama before deploying on macOS.');
+  }
+
+  const endpointUrl = 'http://127.0.0.1:11434/v1';
+  const modelName = getOllamaModelName(repoId);
+
+  const child = await ensureOllamaServer(endpointUrl, onProgress);
+  onProgress({
+    stage: 'loading',
+    message: `Pulling Ollama model ${modelName}...`,
+    detail: modelName.startsWith('hf.co/') ? 'Ollama can pull Hugging Face GGUF models with hf.co/... names.' : undefined,
+  });
+  await runCommand(getOllamaCommand(), ['pull', modelName], { timeoutMs: 30 * 60 * 1000 });
+
+  onProgress({
+    stage: 'ready',
+    message: `${modelName} is available in Ollama.`,
+    detail: endpointUrl,
+    level: 'success',
+  });
+
+  return {
+    child,
+    endpointUrl,
+    modelName,
+  };
+}
+
 async function startVllmServer(repoId, port, onProgress = () => {}) {
   let command = 'vllm';
   let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
@@ -893,7 +1057,7 @@ async function deployHfModel(payload = {}) {
   const progress = (patch) => sendDeploymentProgress({ id: progressId, ...patch });
   const shouldCancel = () => Boolean(localModelDeploymentsInFlight.get(repoId)?.cancelled);
 
-  if (runtime !== 'vllm') {
+  if (!['vllm', 'ollama'].includes(runtime)) {
     throw new Error(`Unsupported local deployment runtime: ${runtime}`);
   }
 
@@ -913,7 +1077,7 @@ async function deployHfModel(payload = {}) {
   progress({
     stage: 'preparing',
     message: `Preparing local deployment for ${repoId}.`,
-    detail: 'Runtime: vLLM',
+    detail: `Runtime: ${runtime === 'ollama' ? 'Ollama' : 'vLLM'}`,
   });
 
   const existingDeployment = localModelDeployments.get(repoId);
@@ -933,6 +1097,47 @@ async function deployHfModel(payload = {}) {
         message: 'Existing local server did not respond. Starting a fresh deployment...',
       });
       localModelDeployments.delete(repoId);
+    }
+  }
+
+  if (runtime === 'ollama') {
+    try {
+      assertDeploymentNotCancelled(repoId);
+      const ollamaDeployment = await startOllamaModel(repoId, progress);
+      const activeDeployment = localModelDeploymentsInFlight.get(repoId);
+      if (activeDeployment) {
+        activeDeployment.child = ollamaDeployment.child;
+        activeDeployment.endpointUrl = ollamaDeployment.endpointUrl;
+      }
+
+      const deployment = {
+        endpointUrl: ollamaDeployment.endpointUrl,
+        modelId: ollamaDeployment.modelName,
+        pid: ollamaDeployment.child?.pid || null,
+        runtime,
+        startedAt: Date.now(),
+      };
+
+      localModelDeployments.set(repoId, deployment);
+      localModelDeploymentsInFlight.delete(repoId);
+      progress({
+        stage: 'ready',
+        message: `${ollamaDeployment.modelName} is ready for OpenAI-compatible requests.`,
+        detail: ollamaDeployment.endpointUrl,
+        level: 'success',
+      });
+      return deployment;
+    } catch (error) {
+      const activeDeployment = localModelDeploymentsInFlight.get(repoId);
+      stopProcessTree(activeDeployment?.child?.pid);
+      localModelDeploymentsInFlight.delete(repoId);
+      progress({
+        stage: 'error',
+        message: error?.cancelled ? 'Local deployment cancelled.' : 'Ollama deployment failed.',
+        detail: error instanceof Error ? error.message : String(error),
+        level: 'error',
+      });
+      throw error;
     }
   }
 
@@ -1008,6 +1213,45 @@ async function cancelHfDeployment(payload = {}) {
   });
 
   return { cancelled: true, message: `Cancelled deployment for ${repoId}.` };
+}
+
+async function deleteLocalModel(payload = {}) {
+  const endpointUrl = String(payload.endpointUrl || '').trim();
+  const modelId = String(payload.modelId || '').trim();
+  const runtime = String(payload.runtime || '').trim().toLowerCase();
+
+  if (!endpointUrl && !modelId) {
+    throw new Error('Local endpoint URL or model id is required.');
+  }
+
+  const entries = [...localModelDeployments.entries()];
+  const matchedEntry = entries.find(([repoId, deployment]) => {
+    return deployment.endpointUrl === endpointUrl
+      || deployment.modelId === modelId
+      || repoId === modelId;
+  });
+
+  if (matchedEntry) {
+    const [repoId, deployment] = matchedEntry;
+    stopProcessTree(deployment.pid);
+    localModelDeployments.delete(repoId);
+  }
+
+  if (runtime === 'ollama' && modelId && await isLibraryInstalled('ollama')) {
+    try {
+      await runCommand(getOllamaCommand(), ['rm', modelId], { timeoutMs: 2 * 60 * 1000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes('not found')) {
+        throw error;
+      }
+    }
+  }
+
+  return {
+    deleted: true,
+    message: matchedEntry ? 'Local deployment stopped and removed.' : 'Local deployment registration removed.',
+  };
 }
 
 async function getLocalModelMetrics(payload = {}) {
@@ -1902,6 +2146,10 @@ function toNullableNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function toNullableInteger(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
+}
+
 function toTrimmedString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -2108,18 +2356,18 @@ async function collectMachineDetails() {
       currentLoadPercent: toNullableNumber(currentLoad.currentLoad),
     },
     memory: {
-      totalBytes: resolvedMemory.total,
-      availableBytes: resolvedMemory.available,
-      usedBytes: resolvedMemory.used,
-      freeBytes: resolvedMemory.free,
+      totalBytes: toNullableInteger(resolvedMemory.total),
+      availableBytes: toNullableInteger(resolvedMemory.available),
+      usedBytes: toNullableInteger(resolvedMemory.used),
+      freeBytes: toNullableInteger(resolvedMemory.free),
       totalGb: toGb(resolvedMemory.total),
       availableGb: toGb(resolvedMemory.available),
       usedGb: toGb(resolvedMemory.used),
-      swapTotalBytes: resolvedMemory.swaptotal,
-      swapUsedBytes: resolvedMemory.swapused,
+      swapTotalBytes: toNullableInteger(resolvedMemory.swaptotal),
+      swapUsedBytes: toNullableInteger(resolvedMemory.swapused),
     },
     memoryLayout: Array.isArray(memLayout) ? memLayout.map((entry) => ({
-      sizeBytes: entry.size,
+      sizeBytes: toNullableInteger(entry.size),
       sizeGb: toGb(entry.size),
       bank: toTrimmedString(entry.bank),
       type: toTrimmedString(entry.type),
@@ -2135,9 +2383,9 @@ async function collectMachineDetails() {
       name: toTrimmedString(entry.fs) || toTrimmedString(entry.mount),
       mount: toTrimmedString(entry.mount),
       fsType: toTrimmedString(entry.type),
-      totalBytes: entry.size,
-      usedBytes: entry.used,
-      freeBytes: typeof entry.size === 'number' && typeof entry.used === 'number' ? Math.max(entry.size - entry.used, 0) : null,
+      totalBytes: toNullableInteger(entry.size),
+      usedBytes: toNullableInteger(entry.used),
+      freeBytes: typeof entry.size === 'number' && typeof entry.used === 'number' ? Math.max(Math.round(entry.size - entry.used), 0) : null,
       usePercent: toNullableNumber(entry.use),
     })) : [],
     networkInterfaces: normalizedNetworkInterfaces,
@@ -2363,6 +2611,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
   ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
+  ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
 
   createWindow();

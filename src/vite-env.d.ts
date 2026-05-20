@@ -59,7 +59,7 @@ interface DesktopHfDeploymentResult {
   endpointUrl: string;
   modelId: string;
   pid: number | null;
-  runtime: 'vllm';
+  runtime: 'vllm' | 'ollama';
 }
 
 interface DesktopLocalModelMetrics {
@@ -134,13 +134,18 @@ interface Window {
     deployHfModel: (payload: {
       repoId: string;
       port?: number;
-      runtime?: 'vllm';
+      runtime?: 'vllm' | 'ollama';
       healthTimeoutMs?: number;
       progressId?: string;
     }) => Promise<DesktopHfDeploymentResult>;
     cancelHfDeployment: (payload: {
       repoId: string;
     }) => Promise<{ cancelled: boolean; message: string }>;
+    deleteLocalModel: (payload: {
+      endpointUrl: string;
+      modelId?: string;
+      runtime?: 'vllm' | 'ollama' | string;
+    }) => Promise<{ deleted: boolean; message: string }>;
     getLocalModelMetrics: (payload: {
       endpointUrl: string;
     }) => Promise<DesktopLocalModelMetrics>;

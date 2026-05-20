@@ -25,6 +25,9 @@ export interface CreateIntelligentEndpointPayload {
   name: string;
   routing_config: {
     routing_algorithm: string;
+    router_runtime?: 'local';
+    router_endpoint_id?: string;
+    router_endpoint_url?: string;
     input_modality: string;
     candidate_models: string[];
     description?: string;
@@ -610,6 +613,20 @@ export async function createInferenceEndpoint(
     method: 'POST',
     token: session.accessToken,
     body: payload,
+  });
+}
+
+export async function deleteInferenceEndpoint(
+  baseUrl: string,
+  session: DesktopSession,
+  inferenceEndpointId: string,
+): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: `/developer/${session.developerId}/delete-inference-api-endpoint`,
+    method: 'DELETE',
+    token: session.accessToken,
+    query: { inference_endpoint_id: inferenceEndpointId },
   });
 }
 

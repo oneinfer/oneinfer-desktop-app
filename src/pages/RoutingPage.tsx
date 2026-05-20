@@ -1,30 +1,33 @@
-import { useState, type FormEvent } from 'react';
-import { Copy, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Copy, Info, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { DashboardState, EndpointItem } from '../types';
+import type { DashboardState, EndpointItem, InstanceItem } from '../types';
 import { formatValue } from '../utils/format';
 
 interface CreateRouteDetails {
-  endpointSource: EndpointSource;
+  endpointSources: EndpointSource[];
   routingGoal: RoutingGoal;
   modelId: string;
   attachedEndpointIds: string[];
   inputModality: string;
   routingAlgorithm: string;
+  routerRuntime: RouterRuntime;
   description: string;
 }
 
 type EndpointSource = 'local' | 'cloud' | 'openbandwidth' | 'closed_source_api';
 type RoutingGoal = 'balanced' | 'fastest' | 'lowest_cost' | 'highest_quality' | 'reliability' | 'custom';
+type RouterRuntime = 'local';
 
 const defaultRouteDetails: CreateRouteDetails = {
-  endpointSource: 'local',
+  endpointSources: ['local'],
   routingGoal: 'balanced',
   modelId: '',
   attachedEndpointIds: [],
   inputModality: 'text',
-  routingAlgorithm: 'knnrouter',
+  routingAlgorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
+  routerRuntime: 'local',
   description: '',
 };
 
@@ -33,32 +36,72 @@ export interface CreateRoutePayload extends CreateRouteDetails {
 }
 
 const routingAlgorithms = [
-  { value: 'knnrouter', label: 'KNN Router' },
-  { value: 'svmrouter', label: 'SVM Router' },
-  { value: 'mlprouter', label: 'MLP Router' },
-  { value: 'mfrouter', label: 'Matrix Factorization Router' },
-  { value: 'elorouter', label: 'Elo Router' },
-  { value: 'routerdc', label: 'RouterDC' },
-  { value: 'automix', label: 'AutoMix' },
-  { value: 'hybrid_llm', label: 'Hybrid LLM' },
-  { value: 'graphrouter', label: 'GraphRouter' },
-  { value: 'causallm_router', label: 'CausalLM Router' },
-  { value: 'smallest_llm', label: 'Smallest LLM' },
-  { value: 'largest_llm', label: 'Largest LLM' },
-  { value: 'router_r1', label: 'Router-R1' },
-  { value: 'gmtrouter', label: 'GMTRouter' },
-  { value: 'personalizedrouter', label: 'PersonalizedRouter' },
-  { value: 'knnmultiroundrouter', label: 'KNN Multi-Round Router' },
-  { value: 'llmmultiroundrouter', label: 'LLM Multi-Round Router' },
+  { value: 'https://huggingface.co/katanemo/Arch-Router-1.5B', label: 'Arch-Router 1.5B', family: 'Router Models' },
+  { value: 'https://huggingface.co/routellm/bert', label: 'RouteLLM BERT', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/bert_gpt4_augmented', label: 'RouteLLM BERT GPT-4 Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/bert_mmlu_augmented', label: 'RouteLLM BERT MMLU Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/causal_llm', label: 'RouteLLM Causal LLM', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/causal_llm_gpt4_augmented', label: 'RouteLLM Causal LLM GPT-4 Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/causal_llm_mmlu_augmented', label: 'RouteLLM Causal LLM MMLU Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/mf', label: 'RouteLLM Matrix Factorization', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/mf_gpt4_augmented', label: 'RouteLLM Matrix Factorization GPT-4 Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/mf_mmlu_augmented', label: 'RouteLLM Matrix Factorization MMLU Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct', label: 'Router-R1 Qwen2.5 3B Instruct', family: 'Router-R1' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct-Alpha0.9', label: 'Router-R1 Qwen2.5 3B Instruct Alpha 0.9', family: 'Router-R1' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct', label: 'Router-R1 Llama 3.2 3B Instruct', family: 'Router-R1' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct-Alpha0.9', label: 'Router-R1 Llama 3.2 3B Instruct Alpha 0.9', family: 'Router-R1' },
+  { value: 'https://huggingface.co/llm-semantic-router/mmbert32k-modality-router-merged', label: 'MMBERT32K Modality Router Merged', family: 'vLLM Semantic Router / MoM' },
 ];
 
-const routingGoals: Array<{ value: RoutingGoal; title: string; text: string; algorithm: string }> = [
-  { value: 'balanced', title: 'Balanced', text: 'Blend quality, latency, and cost for everyday requests.', algorithm: 'knnrouter' },
-  { value: 'fastest', title: 'Fastest', text: 'Prefer endpoints expected to respond with the lowest latency.', algorithm: 'smallest_llm' },
-  { value: 'lowest_cost', title: 'Lowest cost', text: 'Route simple work to the cheapest capable endpoint first.', algorithm: 'smallest_llm' },
-  { value: 'highest_quality', title: 'Highest quality', text: 'Prefer stronger models for harder prompts and reasoning.', algorithm: 'largest_llm' },
-  { value: 'reliability', title: 'Reliability', text: 'Prioritize fallback behavior and healthy endpoint coverage.', algorithm: 'hybrid_llm' },
-  { value: 'custom', title: 'Custom', text: 'Pick the exact routing algorithm in advanced settings.', algorithm: 'knnrouter' },
+const routingGoals: Array<{ value: RoutingGoal; title: string; text: string; algorithm: string; algorithmLabel: string; explanation: string }> = [
+  {
+    value: 'balanced',
+    title: 'Balanced',
+    text: 'Blend quality, latency, and cost for everyday requests.',
+    algorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
+    algorithmLabel: 'Arch-Router 1.5B',
+    explanation: 'Uses the confirmed Arch-Router model as the default general-purpose router for balancing endpoint capability, latency, and cost.',
+  },
+  {
+    value: 'fastest',
+    title: 'Fastest',
+    text: 'Prefer endpoints expected to respond with the lowest latency.',
+    algorithm: 'https://huggingface.co/routellm/bert',
+    algorithmLabel: 'RouteLLM BERT',
+    explanation: 'Uses the confirmed RouteLLM BERT router for lightweight classification when latency is the main priority.',
+  },
+  {
+    value: 'lowest_cost',
+    title: 'Lowest cost',
+    text: 'Route simple work to the cheapest capable endpoint first.',
+    algorithm: 'https://huggingface.co/routellm/mf',
+    algorithmLabel: 'RouteLLM Matrix Factorization',
+    explanation: 'Uses the confirmed RouteLLM matrix-factorization router to score candidate endpoints with a compact preference model.',
+  },
+  {
+    value: 'highest_quality',
+    title: 'Highest quality',
+    text: 'Prefer stronger models for harder prompts and reasoning.',
+    algorithm: 'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct',
+    algorithmLabel: 'Router-R1 Qwen2.5 3B Instruct',
+    explanation: 'Uses the confirmed Router-R1 Qwen router for quality-sensitive routing decisions across stronger candidate endpoints.',
+  },
+  {
+    value: 'reliability',
+    title: 'Reliability',
+    text: 'Prioritize fallback behavior and healthy endpoint coverage.',
+    algorithm: 'https://huggingface.co/llm-semantic-router/mmbert32k-modality-router-merged',
+    algorithmLabel: 'MMBERT32K Modality Router Merged',
+    explanation: 'Uses the confirmed vLLM semantic-router modality model to keep routing aligned with input modality and available endpoint coverage.',
+  },
+  {
+    value: 'custom',
+    title: 'Custom',
+    text: 'Pick a confirmed Hugging Face router in advanced settings.',
+    algorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
+    algorithmLabel: 'Advanced selection',
+    explanation: 'Lets you manually choose from the confirmed Hugging Face router model allowlist in advanced settings.',
+  },
 ];
 
 const endpointSources: Array<{ value: EndpointSource; label: string; emptyText: string; selectText: string }> = [
@@ -96,13 +139,18 @@ export function RoutingPage(props: {
   onCreateRoute: (payload: CreateRoutePayload) => boolean | void | Promise<boolean | void>;
   onCopyRoute: (routeId: string) => void;
   onDeleteRoute: (routeId: string, routeName: string) => void;
+  onCreateSelfHosting: () => void;
+  initialEndpointId?: string | null;
+  onInitialEndpointConsumed?: () => void;
 }) {
   const [showCreateRouteModal, setShowCreateRouteModal] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [testRoute, setTestRoute] = useState<{ id: string; name: string } | null>(null);
   const [editRoute, setEditRoute] = useState<{ id: string; name: string } | null>(null);
+  const [goalInfo, setGoalInfo] = useState<(typeof routingGoals)[number] | null>(null);
   const [testPrompt, setTestPrompt] = useState('Explain what this route is optimized for in one sentence.');
   const [routeDetails, setRouteDetails] = useState<CreateRouteDetails>(defaultRouteDetails);
+  const activeEndpointSources = getActiveEndpointSources(routeDetails);
   const inferenceEndpointOptions = props.dashboard.inferenceEndpoints
     .map((endpoint, index) => ({
       id: getInferenceEndpointId(endpoint, index),
@@ -110,15 +158,55 @@ export function RoutingPage(props: {
       modelName: getInferenceEndpointModelName(endpoint, index),
       source: getEndpointSource(endpoint),
     }))
-    .filter((endpoint) => endpoint.source === routeDetails.endpointSource);
-  const selectedEndpointSource = endpointSources.find((source) => source.value === routeDetails.endpointSource) ?? endpointSources[0];
+    .concat(props.dashboard.instances.map((instance, index) => ({
+      id: getCloudInstanceEndpointId(instance, index),
+      endpointName: getCloudInstanceEndpointName(instance, index),
+      modelName: getCloudInstanceModelName(instance),
+      source: 'cloud' as EndpointSource,
+    })))
+    .filter((endpoint) => activeEndpointSources.includes(endpoint.source));
+  const selectedEndpointSourceLabels = endpointSources
+    .filter((source) => activeEndpointSources.includes(source.value))
+    .map((source) => source.label);
+  const hasLocalEndpointSource = activeEndpointSources.includes('local');
+  const localEndpointCount = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local').length;
+  const showLocalEmptyAction = hasLocalEndpointSource && localEndpointCount === 0;
   const selectedEndpointOptions = inferenceEndpointOptions.filter((endpoint) => routeDetails.attachedEndpointIds.includes(endpoint.id));
   const selectedGoal = routingGoals.find((goal) => goal.value === routeDetails.routingGoal) ?? routingGoals[0];
+  const selectedAlgorithm = routingAlgorithms.find((algorithm) => algorithm.value === routeDetails.routingAlgorithm) ?? routingAlgorithms[0];
+  const effectiveRouterRuntime: RouterRuntime = 'local';
+
+  useEffect(() => {
+    if (!props.initialEndpointId) {
+      return;
+    }
+
+    const endpoint = props.dashboard.inferenceEndpoints.find((item, index) => getInferenceEndpointId(item, index) === props.initialEndpointId);
+    const instance = props.dashboard.instances.find((item, index) => getCloudInstanceEndpointId(item, index) === props.initialEndpointId);
+    if (!endpoint && !instance) {
+      return;
+    }
+
+    const endpointSource = endpoint ? getEndpointSource(endpoint) : 'cloud';
+    setShowCreateRouteModal(true);
+    setRouteDetails((current) => {
+      const endpointSources = getActiveEndpointSources(current);
+      return {
+        ...current,
+        endpointSources: endpointSources.includes(endpointSource) ? endpointSources : [...endpointSources, endpointSource],
+        attachedEndpointIds: current.attachedEndpointIds.includes(props.initialEndpointId!)
+          ? current.attachedEndpointIds
+          : [...current.attachedEndpointIds, props.initialEndpointId!],
+      };
+    });
+    props.onInitialEndpointConsumed?.();
+  }, [props.initialEndpointId, props.dashboard.inferenceEndpoints, props.dashboard.instances, props.onInitialEndpointConsumed]);
 
   async function handleCreateRoute(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const created = await props.onCreateRoute({
       ...routeDetails,
+      routerRuntime: effectiveRouterRuntime,
       name: props.intelligentEndpointName,
     });
     if (created !== false) {
@@ -127,12 +215,32 @@ export function RoutingPage(props: {
     }
   }
 
-  function updateEndpointSource(endpointSource: EndpointSource) {
-    setRouteDetails((current) => ({
-      ...current,
-      endpointSource,
-      attachedEndpointIds: [],
-    }));
+  function toggleEndpointSource(endpointSource: EndpointSource) {
+    setRouteDetails((current) => {
+      const currentEndpointSources = getActiveEndpointSources(current);
+      const selected = currentEndpointSources.includes(endpointSource);
+      const endpointSources = selected
+        ? currentEndpointSources.filter((source) => source !== endpointSource)
+        : [...currentEndpointSources, endpointSource];
+
+      if (endpointSources.length === 0) {
+        return current;
+      }
+
+      return {
+        ...current,
+        endpointSources,
+        routerRuntime: 'local',
+        attachedEndpointIds: current.attachedEndpointIds.filter((endpointId) => {
+          const endpoint = props.dashboard.inferenceEndpoints.find((item, index) => getInferenceEndpointId(item, index) === endpointId);
+          const instance = props.dashboard.instances.find((item, index) => getCloudInstanceEndpointId(item, index) === endpointId);
+          if (endpoint) {
+            return endpointSources.includes(getEndpointSource(endpoint));
+          }
+          return instance ? endpointSources.includes('cloud') : false;
+        }),
+      };
+    });
   }
 
   function updateRoutingGoal(routingGoal: RoutingGoal) {
@@ -154,6 +262,11 @@ export function RoutingPage(props: {
           : [...current.attachedEndpointIds, endpointId],
       };
     });
+  }
+
+  function handleCreateSelfHosting() {
+    setShowCreateRouteModal(false);
+    props.onCreateSelfHosting();
   }
 
   return (
@@ -259,31 +372,61 @@ export function RoutingPage(props: {
                     onClick={() => updateRoutingGoal(goal.value)}
                     type="button"
                   >
-                    <strong>{goal.title}</strong>
+                    <span className="route-goal-header">
+                      <strong>{goal.title}</strong>
+                      <span
+                        className="route-goal-info"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setGoalInfo(goal);
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        title={`About ${goal.title}`}
+                      >
+                        <Info size={14} />
+                      </span>
+                    </span>
                     <span>{goal.text}</span>
+                    <small>Uses {goal.algorithmLabel}</small>
                   </button>
                 ))}
               </div>
             </label>
-            <label>
-              <span>Endpoint Source</span>
-              <select
-                value={routeDetails.endpointSource}
-                onChange={(event) => updateEndpointSource(event.target.value as EndpointSource)}
-              >
-                {endpointSources.map((source) => (
-                  <option key={source.value} value={source.value}>{source.label}</option>
-                ))}
-              </select>
-            </label>
+            <div>
+              <span className="field-label">Endpoint Sources</span>
+              <div className="endpoint-source-options">
+                {endpointSources.map((source) => {
+                  const selected = activeEndpointSources.includes(source.value);
+                  return (
+                    <button
+                      className={`endpoint-source-option${selected ? ' active' : ''}`}
+                      key={source.value}
+                      onClick={() => toggleEndpointSource(source.value)}
+                      type="button"
+                    >
+                      {source.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="full-span">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <span className="text-[0.85rem] text-[var(--muted)]">Choose Endpoints</span>
                 <span className="text-[0.75rem] text-[var(--muted)]">{selectedEndpointOptions.length} selected</span>
               </div>
               <div className="route-endpoint-list">
-                {inferenceEndpointOptions.length === 0 ? (
-                  <div className="empty-state">{selectedEndpointSource.emptyText}</div>
+                {showLocalEmptyAction ? (
+                  <div className="route-empty-action">
+                    <span>No local endpoints available.</span>
+                    <button className="secondary-button" onClick={handleCreateSelfHosting} type="button">
+                      Create self hosting
+                    </button>
+                  </div>
+                ) : null}
+                {inferenceEndpointOptions.length === 0 && !showLocalEmptyAction ? (
+                  <div className="empty-state">No endpoints available for {selectedEndpointSourceLabels.join(', ')}</div>
                 ) : null}
                 {inferenceEndpointOptions.map((endpoint) => {
                   const selected = routeDetails.attachedEndpointIds.includes(endpoint.id);
@@ -309,6 +452,8 @@ export function RoutingPage(props: {
           <div className="route-summary">
             <strong>{selectedGoal.title}</strong>
             <span>{selectedEndpointOptions.length === 0 ? 'Select at least two endpoints for meaningful routing.' : `${selectedEndpointOptions.length} endpoint${selectedEndpointOptions.length === 1 ? '' : 's'} selected.`}</span>
+            <small>{selectedAlgorithm.family} / {selectedAlgorithm.label}</small>
+            <small>Router runtime: Local</small>
           </div>
           <button className="ghost-button !justify-start !border-0 !bg-transparent !px-0 !py-1 !text-[0.85rem]" onClick={() => setShowAdvanced((open) => !open)} type="button">
             {showAdvanced ? 'Hide advanced settings' : 'Show advanced settings'}
@@ -322,9 +467,18 @@ export function RoutingPage(props: {
                   onChange={(event) => setRouteDetails((current) => ({ ...current, routingGoal: 'custom', routingAlgorithm: event.target.value }))}
                 >
                   {routingAlgorithms.map((algorithm) => (
-                    <option key={algorithm.value} value={algorithm.value}>{algorithm.label}</option>
+                    <option key={algorithm.value} value={algorithm.value}>{algorithm.family} / {algorithm.label}</option>
                   ))}
                 </select>
+              </label>
+              <label>
+                <span>Router Runtime</span>
+                <select value={effectiveRouterRuntime} disabled>
+                  <option value="local">Local router</option>
+                </select>
+                <small className="field-help">
+                  The router model is always deployed locally. It can still choose local, cloud, OpenBandwidth, or closed-source candidate endpoints.
+                </small>
               </label>
               <label>
                 <span>Input Modality</span>
@@ -347,9 +501,12 @@ export function RoutingPage(props: {
               rows={4}
               value={routeDetails.description}
               onChange={(event) => setRouteDetails((current) => ({ ...current, description: event.target.value }))}
-              placeholder="Describe how this route should be used."
+              placeholder="Use for programming bug fixes, stack traces, dependency errors, and code repair tasks where correctness matters more than lowest latency."
             />
           </label>
+          <div className="form-hint">
+            Good descriptions name the domain, task/action, selection preference, and boundary. Example: Prefer local models for private drafts, simple code edits, and low-latency summaries; use cloud endpoints for complex reasoning, long-context debugging, or when local health is poor.
+          </div>
           <button className="primary-button" type="submit" disabled={props.busy === 'create-intelligent-endpoint'}>
             {props.busy === 'create-intelligent-endpoint' ? <LoaderCircle className="spin" size={16} /> : <Orbit size={16} />}
             Create Route
@@ -383,6 +540,21 @@ export function RoutingPage(props: {
           <button className="secondary-button" type="button" onClick={() => setEditRoute(null)}>Close</button>
         </div>
       </Modal>
+
+      <Modal title={goalInfo ? `${goalInfo.title} Routing` : 'Routing Goal'} isOpen={Boolean(goalInfo)} onClose={() => setGoalInfo(null)}>
+        {goalInfo ? (
+          <div className="stack-form">
+            <div className="route-summary">
+              <strong>Algorithm: {goalInfo.algorithmLabel}</strong>
+              <span>Payload value: {goalInfo.algorithm}</span>
+            </div>
+            <div className="route-summary">
+              <strong>How it works</strong>
+              <span>{goalInfo.explanation}</span>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
@@ -406,6 +578,18 @@ function getInferenceEndpointName(endpoint: EndpointItem, index: number): string
 
 function getInferenceEndpointModelName(endpoint: EndpointItem, index: number): string {
   return String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `Model ${index + 1}`);
+}
+
+function getCloudInstanceEndpointId(instance: InstanceItem, index: number): string {
+  return String(instance.inference_endpoint_id ?? instance.endpoint_id ?? instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `cloud-instance-${index + 1}`);
+}
+
+function getCloudInstanceEndpointName(instance: InstanceItem, index: number): string {
+  return String(instance.instance_name ?? instance.name ?? instance.instance_id ?? `Cloud instance ${index + 1}`);
+}
+
+function getCloudInstanceModelName(instance: InstanceItem): string {
+  return String(instance.model_id ?? instance.model_name ?? instance.gpu_name ?? instance.provider_name ?? 'Cloud instance');
 }
 
 function getEndpointSource(endpoint: EndpointItem): EndpointSource {
@@ -442,6 +626,15 @@ function getEndpointSource(endpoint: EndpointItem): EndpointSource {
   }
 
   return 'cloud';
+}
+
+function getActiveEndpointSources(routeDetails: CreateRouteDetails): EndpointSource[] {
+  if (Array.isArray(routeDetails.endpointSources) && routeDetails.endpointSources.length > 0) {
+    return routeDetails.endpointSources;
+  }
+
+  const legacySource = (routeDetails as Partial<CreateRouteDetails> & { endpointSource?: EndpointSource }).endpointSource;
+  return legacySource ? [legacySource] : defaultRouteDetails.endpointSources;
 }
 
 function isLocalEndpointUrl(value: unknown): boolean {

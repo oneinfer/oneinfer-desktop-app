@@ -208,6 +208,7 @@ export interface CreateInferenceFormState {
   top_p: number;
   temperature: number;
   max_tokens: number;
+  endpoint_role?: 'inference' | 'router';
 }
 
 export interface HfModelInfo {
@@ -228,7 +229,7 @@ export interface LocalModelDeployment {
   modelId: string;
   name: string;
   pid: number | null;
-  runtime: 'vllm';
+  runtime: 'vllm' | 'ollama';
   deployedAt: string;
 }
 
