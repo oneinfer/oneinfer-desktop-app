@@ -26,10 +26,30 @@ let updateState = {
 
 const CLAUDE_SETTINGS_SCHEMA_URL = 'https://json.schemastore.org/claude-code-settings.json';
 const OPENCODE_CONFIG_SCHEMA_URL = 'https://opencode.ai/config.json';
+const KILO_CODE_CONFIG_SCHEMA_URL = 'https://app.kilo.ai/config.json';
 const DEFAULT_ONEINFER_MODEL = 'MiniMax-M2.7';
+const DEFAULT_ONEINFER_CODE_MODEL = 'glm-5.1';
+const DEFAULT_KILOCODE_MODEL = 'MiniMax-M2.7';
 const DEFAULT_CLAUDE_MODEL = 'haiku';
 const CLAUDE_CODE_SETUP_DOCS_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 const OPENCODE_SETUP_DOCS_URL = 'https://opencode.ai/docs/';
+const KILO_CODE_SETUP_DOCS_URL = 'https://kilo.ai/docs/code-with-ai/platforms/cli';
+const ONEINFER_CODE_MODELS = {
+  'MiniMax-M2.7': {
+    name: 'MiniMax M2.7',
+    limit: {
+      context: 128000,
+      output: 32000,
+    },
+  },
+  'glm-5.1': {
+    name: 'GLM 5.1',
+    limit: {
+      context: 128000,
+      output: 32000,
+    },
+  },
+};
 
 if (process.platform === 'win32') {
   app.setAppUserModelId(appId);
@@ -265,6 +285,60 @@ function readOpenCodeConfig() {
     configFilePath,
     existingConfig,
   };
+}
+
+function getKiloCodeConfigDirectory() {
+  return process.env.KILO_CONFIG_DIR
+    ? path.resolve(process.env.KILO_CONFIG_DIR)
+    : path.join(os.homedir(), '.config', 'kilo');
+}
+
+function getKiloCodeConfigFilePath() {
+  if (process.env.KILO_CONFIG) {
+    return path.resolve(process.env.KILO_CONFIG);
+  }
+
+  return path.join(getKiloCodeConfigDirectory(), 'kilo.json');
+}
+
+function getLegacyKiloCodeConfigFilePath() {
+  return path.join(getKiloCodeConfigDirectory(), 'opencode.json');
+}
+
+function readKiloCodeConfig() {
+  const configFilePath = getKiloCodeConfigFilePath();
+  const legacyConfigFilePath = process.env.KILO_CONFIG ? null : getLegacyKiloCodeConfigFilePath();
+  const sourceFilePath = fs.existsSync(configFilePath)
+    ? configFilePath
+    : legacyConfigFilePath && fs.existsSync(legacyConfigFilePath)
+      ? legacyConfigFilePath
+      : configFilePath;
+  const existingConfig = readJsonFile(sourceFilePath, {});
+  if (!existingConfig || typeof existingConfig !== 'object' || Array.isArray(existingConfig)) {
+    throw new Error('Kilo Code config must contain a top-level JSON object.');
+  }
+
+  return {
+    configFilePath,
+    legacyConfigFilePath,
+    existingConfig,
+  };
+}
+
+function removeLegacyKiloCodeConfig(configFilePath, legacyConfigFilePath) {
+  if (!legacyConfigFilePath || path.resolve(configFilePath) === path.resolve(legacyConfigFilePath)) {
+    return;
+  }
+
+  if (!fs.existsSync(legacyConfigFilePath)) {
+    return;
+  }
+
+  try {
+    fs.unlinkSync(legacyConfigFilePath);
+  } catch (error) {
+    console.warn('[kilocode] failed to remove legacy config', error);
+  }
 }
 
 function runCommand(command, args = [], options = {}) {
@@ -514,6 +588,76 @@ async function ensureOpenCodeInstalled() {
 
   const detail = lastError ? ` Last attempt via ${lastError.label} failed: ${lastError.message}` : '';
   throw new Error(`OpenCode was not found and automatic installation failed.${detail} See ${OPENCODE_SETUP_DOCS_URL}`);
+}
+
+async function isKiloCodeInstalled() {
+  try {
+    return await commandExists('kilo') || await commandExists('kilocode');
+  } catch {
+    return false;
+  }
+}
+
+async function getKiloCodeInstallCommands() {
+  if (process.platform === 'win32') {
+    const commands = [];
+
+    if (await commandExists('npm')) {
+      commands.push({
+        command: 'cmd.exe',
+        args: ['/d', '/s', '/c', 'npm install -g @kilocode/cli'],
+        label: 'npm global installer via cmd.exe',
+      });
+    }
+
+    return commands;
+  }
+
+  const commands = [];
+
+  if (await commandExists('npm')) {
+    commands.push({
+      command: 'npm',
+      args: ['install', '-g', '@kilocode/cli'],
+      label: 'npm global installer',
+    });
+  }
+
+  return commands;
+}
+
+async function ensureKiloCodeInstalled() {
+  if (await isKiloCodeInstalled()) {
+    return 'already-installed';
+  }
+
+  const installCommands = await getKiloCodeInstallCommands();
+  if (installCommands.length === 0) {
+    throw new Error(`Kilo Code was not found and no supported installer was available on this ${process.platform} system. See ${KILO_CODE_SETUP_DOCS_URL}`);
+  }
+
+  let lastError = null;
+
+  for (const installCommand of installCommands) {
+    try {
+      await runCommand(installCommand.command, installCommand.args, {
+        timeoutMs: 10 * 60 * 1000,
+        shell: process.platform === 'win32' && installCommand.command.endsWith('.cmd'),
+      });
+
+      if (await isKiloCodeInstalled()) {
+        return 'installed';
+      }
+    } catch (error) {
+      lastError = {
+        label: installCommand.label,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const detail = lastError ? ` Last attempt via ${lastError.label} failed: ${lastError.message}` : '';
+  throw new Error(`Kilo Code was not found and automatic installation failed.${detail} See ${KILO_CODE_SETUP_DOCS_URL}`);
 }
 
 async function isLibraryInstalled(name) {
@@ -1139,6 +1283,11 @@ function createOpenCodeApiKeyName() {
   return `OpenCode-${hostname}-${Date.now().toString(36)}`;
 }
 
+function createKiloCodeApiKeyName() {
+  const hostname = (os.hostname() || 'device').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 16) || 'device';
+  return `KiloCode-${hostname}-${Date.now().toString(36)}`;
+}
+
 async function readResponsePayload(response) {
   const contentType = response.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
@@ -1406,6 +1555,10 @@ async function createOpenCodeApiKey(payload) {
   return createOneInferApiKey(payload, createOpenCodeApiKeyName(), 'OpenCode');
 }
 
+async function createKiloCodeApiKey(payload) {
+  return createOneInferApiKey(payload, createKiloCodeApiKeyName(), 'Kilo Code');
+}
+
 function isClaudeCodeUsingOneInfer(existingSettings, apiBaseUrl) {
   const existingEnv = getClaudeSettingsEnv(existingSettings);
   const existingBaseUrl = trimTrailingSlash(toTrimmedString(existingEnv.ANTHROPIC_BASE_URL));
@@ -1527,7 +1680,35 @@ function getOpenCodeModelId(existingConfig, providerId = 'oneinfer') {
       ? providerConfig.models
       : {};
   const firstModelId = Object.keys(providerModels).find((modelId) => toTrimmedString(modelId));
-  return firstModelId || DEFAULT_ONEINFER_MODEL;
+  return firstModelId || DEFAULT_ONEINFER_CODE_MODEL;
+}
+
+function buildOneInferCodeModels(existingOneInferModels) {
+  const nextModels = {
+    ...existingOneInferModels,
+  };
+
+  for (const [modelId, modelConfig] of Object.entries(ONEINFER_CODE_MODELS)) {
+    const existingModelConfig =
+      nextModels[modelId] && typeof nextModels[modelId] === 'object' && !Array.isArray(nextModels[modelId])
+        ? nextModels[modelId]
+        : {};
+    const existingLimit =
+      existingModelConfig.limit && typeof existingModelConfig.limit === 'object' && !Array.isArray(existingModelConfig.limit)
+        ? existingModelConfig.limit
+        : {};
+
+    nextModels[modelId] = {
+      ...existingModelConfig,
+      name: toTrimmedString(existingModelConfig.name) || modelConfig.name,
+      limit: {
+        ...modelConfig.limit,
+        ...existingLimit,
+      },
+    };
+  }
+
+  return nextModels;
 }
 
 function configureOpenCode(payload) {
@@ -1557,6 +1738,7 @@ function configureOpenCode(payload) {
     existingOneInferConfig.models && typeof existingOneInferConfig.models === 'object' && !Array.isArray(existingOneInferConfig.models)
       ? existingOneInferConfig.models
       : {};
+  const nextModels = buildOneInferCodeModels(existingOneInferModels);
 
   const nextConfig = {
     ...existingConfig,
@@ -1566,22 +1748,14 @@ function configureOpenCode(payload) {
       ...existingProviders,
       oneinfer: {
         ...existingOneInferConfig,
-        npm: '@ai-sdk/openai-compatible',
+        npm: '@ai-sdk/anthropic',
         name: 'OneInfer',
         options: {
           ...existingOneInferOptions,
           baseURL: apiBaseUrl,
           apiKey,
         },
-        models: {
-          ...existingOneInferModels,
-          [modelId]: {
-            ...(existingOneInferModels[modelId] && typeof existingOneInferModels[modelId] === 'object'
-              ? existingOneInferModels[modelId]
-              : {}),
-            name: modelId,
-          },
-        },
+        models: nextModels,
       },
     },
   };
@@ -1597,7 +1771,81 @@ function configureOpenCode(payload) {
   };
 }
 
+function configureKiloCode(payload) {
+  const apiBaseUrl = normalizeApiBaseUrl(payload?.apiBaseUrl);
+  const apiKey = toTrimmedString(payload?.apiKey);
+
+  if (!apiBaseUrl) {
+    throw new Error('API base URL is required to configure Kilo Code.');
+  }
+
+  if (!apiKey) {
+    throw new Error('Kilo Code API key is missing.');
+  }
+
+  const { configFilePath, legacyConfigFilePath, existingConfig } = readKiloCodeConfig();
+  const modelId = toTrimmedString(payload?.modelId) || getOpenCodeModelId(existingConfig);
+  const existingProviders =
+    existingConfig.provider && typeof existingConfig.provider === 'object' && !Array.isArray(existingConfig.provider)
+      ? existingConfig.provider
+      : {};
+  const existingOneInferConfig = getOpenCodeProvider(existingConfig) || {};
+  const existingOneInferOptions =
+    existingOneInferConfig.options && typeof existingOneInferConfig.options === 'object' && !Array.isArray(existingOneInferConfig.options)
+      ? existingOneInferConfig.options
+      : {};
+  const existingOneInferModels =
+    existingOneInferConfig.models && typeof existingOneInferConfig.models === 'object' && !Array.isArray(existingOneInferConfig.models)
+      ? existingOneInferConfig.models
+      : {};
+  const nextModels = buildOneInferCodeModels(existingOneInferModels);
+
+  const nextConfig = {
+    ...existingConfig,
+    $schema: existingConfig.$schema || KILO_CODE_CONFIG_SCHEMA_URL,
+    model: `oneinfer/${modelId}`,
+    provider: {
+      ...existingProviders,
+      oneinfer: {
+        ...existingOneInferConfig,
+        npm: '@ai-sdk/anthropic',
+        name: 'OneInfer',
+        options: {
+          ...existingOneInferOptions,
+          baseURL: apiBaseUrl,
+          apiKey,
+        },
+        models: nextModels,
+      },
+    },
+  };
+
+  fs.mkdirSync(path.dirname(configFilePath), { recursive: true });
+  fs.writeFileSync(configFilePath, `${JSON.stringify(nextConfig, null, 2)}\n`, 'utf8');
+  removeLegacyKiloCodeConfig(configFilePath, legacyConfigFilePath);
+
+  return {
+    apiBaseUrl,
+    configPath: configFilePath,
+    model: nextConfig.model,
+    providerId: 'oneinfer',
+  };
+}
+
 function isOpenCodeUsingOneInfer(existingConfig, apiBaseUrl) {
+  const oneinferConfig = getOpenCodeProvider(existingConfig);
+  const options =
+    oneinferConfig?.options && typeof oneinferConfig.options === 'object' && !Array.isArray(oneinferConfig.options)
+      ? oneinferConfig.options
+      : {};
+  const existingBaseUrl = trimTrailingSlash(toTrimmedString(options.baseURL));
+  const existingApiKey = toTrimmedString(options.apiKey);
+  const expectedBaseUrl = trimTrailingSlash(normalizeApiBaseUrl(apiBaseUrl));
+
+  return Boolean(existingBaseUrl && existingApiKey && existingBaseUrl === expectedBaseUrl);
+}
+
+function isKiloCodeUsingOneInfer(existingConfig, apiBaseUrl) {
   const oneinferConfig = getOpenCodeProvider(existingConfig);
   const options =
     oneinferConfig?.options && typeof oneinferConfig.options === 'object' && !Array.isArray(oneinferConfig.options)
@@ -1639,6 +1887,7 @@ async function enableOpenCode(payload) {
         ...configureOpenCode({
           apiBaseUrl: payload?.apiBaseUrl,
           apiKey: savedApiKey,
+          modelId: DEFAULT_ONEINFER_CODE_MODEL,
         }),
         apiKeyName: savedApiKeyName,
         opencodeInstallState,
@@ -1662,9 +1911,70 @@ async function enableOpenCode(payload) {
     ...configureOpenCode({
       apiBaseUrl,
       apiKey,
+      modelId: DEFAULT_ONEINFER_CODE_MODEL,
     }),
     apiKeyName,
     opencodeInstallState,
+    providerId: 'oneinfer',
+  };
+}
+
+async function enableKiloCode(payload) {
+  const kilocodeInstallState = await ensureKiloCodeInstalled();
+  const { existingConfig } = readKiloCodeConfig();
+  const config = readOneInferConfig();
+  const savedApiKey = toTrimmedString(config.kilocodeApiKey);
+  const savedApiKeyName = toTrimmedString(config.kilocodeApiKeyName);
+
+  const isAlreadyUsingOneInfer = isKiloCodeUsingOneInfer(existingConfig, payload?.apiBaseUrl);
+  const apiKeyFetchResult = await fetchApiKeysWithMeta(payload);
+
+  if (savedApiKey && savedApiKeyName) {
+    const keyExists = apiKeyFetchResult.apiKeys.some((k) =>
+      k.api_key_name === savedApiKeyName || k.id === savedApiKeyName || k.name === savedApiKeyName
+    );
+
+    if (keyExists || !apiKeyFetchResult.reachable) {
+      writeOneInferConfig({
+        ...config,
+        kilocodeApiKey: savedApiKey,
+        kilocodeApiKeyName: savedApiKeyName,
+        kilocodeApiBaseUrl: normalizeApiBaseUrl(payload?.apiBaseUrl),
+      });
+
+      return {
+        alreadyConfigured: isAlreadyUsingOneInfer,
+        ...configureKiloCode({
+          apiBaseUrl: payload?.apiBaseUrl,
+          apiKey: savedApiKey,
+          modelId: DEFAULT_KILOCODE_MODEL,
+        }),
+        apiKeyName: savedApiKeyName,
+        kilocodeInstallState,
+        providerId: 'oneinfer',
+        ...(isAlreadyUsingOneInfer ? {} : { reusedExistingKey: true }),
+      };
+    }
+  }
+
+  const { apiKey, apiKeyName, apiBaseUrl } = await createKiloCodeApiKey(payload);
+
+  writeOneInferConfig({
+    ...config,
+    kilocodeApiKey: apiKey,
+    kilocodeApiKeyName: apiKeyName,
+    kilocodeApiBaseUrl: apiBaseUrl,
+  });
+
+  return {
+    alreadyConfigured: false,
+    ...configureKiloCode({
+      apiBaseUrl,
+      apiKey,
+      modelId: DEFAULT_KILOCODE_MODEL,
+    }),
+    apiKeyName,
+    kilocodeInstallState,
     providerId: 'oneinfer',
   };
 }
@@ -2358,6 +2668,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:sync-machine-details', async (_event, payload) => syncMachineDetails(payload, { force: true }));
   ipcMain.handle('app:enable-claude-code', async (_event, payload) => enableClaudeCode(payload));
   ipcMain.handle('app:enable-opencode', async (_event, payload) => enableOpenCode(payload));
+  ipcMain.handle('app:enable-kilocode', async (_event, payload) => enableKiloCode(payload));
   ipcMain.handle('app:enable-openclaw', async (_event, payload) => enableOpenClaw(payload));
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
