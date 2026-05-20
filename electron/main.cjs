@@ -1012,7 +1012,7 @@ function getVllmLogPath(repoId) {
 }
 
 function getOllamaCommand() {
-  return getMacOllamaCommandPath() || 'ollama';
+  return getMacOllamaCommandPath() || getWindowsOllamaCommandPath() || 'ollama';
 }
 
 function getOllamaModelName(repoId) {
