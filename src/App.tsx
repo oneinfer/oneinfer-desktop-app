@@ -805,9 +805,15 @@ function App() {
       return false;
     }
 
+    const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
     const localRuntime = getPreferredLocalRuntime(libraries);
     if (!localRuntime) {
-      setMessage({ tone: 'error', text: 'Install Ollama on Mac or vLLM on Linux GPU before deploying a Hugging Face model locally.' });
+      setMessage({ tone: 'error', text: 'Install vLLM for Transformers models, or Ollama for GGUF/llama.cpp models.' });
+      return false;
+    }
+
+    if (localRuntime === 'ollama' && !isOllamaCompatibleRepo) {
+      setMessage({ tone: 'error', text: `${repoId} is not a GGUF/llama.cpp model, so Ollama cannot deploy it. Install vLLM to run this model locally.` });
       return false;
     }
 
@@ -1565,6 +1571,14 @@ function getPreferredLocalRuntime(libraries: { vllm: boolean; ollama: boolean })
 
 function formatLocalRuntime(runtime: 'vllm' | 'ollama'): string {
   return runtime === 'vllm' ? 'vLLM' : 'Ollama';
+}
+
+function isOllamaCompatibleModelId(modelId: string): boolean {
+  const normalized = modelId.trim().toLowerCase();
+  return normalized.includes('gguf')
+    || normalized.endsWith('.gguf')
+    || normalized.startsWith('hf.co/')
+    || !normalized.includes('/');
 }
 
 export default App;

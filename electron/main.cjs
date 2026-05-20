@@ -312,6 +312,18 @@ function runCommand(command, args = [], options = {}) {
   });
 }
 
+function stripAnsi(value) {
+  return String(value || '')
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '\n')
+    .trim();
+}
+
+function formatCommandError(error) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  return stripAnsi(rawMessage);
+}
+
 async function commandExists(command) {
   try {
     if (process.platform === 'win32') {
@@ -1090,7 +1102,16 @@ async function startOllamaModel(repoId, onProgress = () => {}) {
     message: `Pulling Ollama model ${modelName}...`,
     detail: modelName.startsWith('hf.co/') ? 'Ollama can pull Hugging Face GGUF models with hf.co/... names.' : undefined,
   });
-  await runCommand(getOllamaCommand(), ['pull', modelName], { timeoutMs: 30 * 60 * 1000 });
+  try {
+    await runCommand(getOllamaCommand(), ['pull', modelName], { timeoutMs: 30 * 60 * 1000 });
+  } catch (error) {
+    const message = formatCommandError(error);
+    if (message.includes('Repository is not GGUF') || message.includes('not compatible with llama.cpp')) {
+      throw new Error(`${repoId} cannot be deployed with Ollama because the Hugging Face repository is not GGUF/llama.cpp compatible. Use vLLM for this Transformers-format model, or choose a GGUF model repository for Ollama.`);
+    }
+
+    throw new Error(message || 'Ollama failed to pull the model.');
+  }
 
   onProgress({
     stage: 'ready',
