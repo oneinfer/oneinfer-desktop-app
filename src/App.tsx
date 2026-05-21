@@ -1205,7 +1205,7 @@ function App() {
       const routerDeployment = await ensureLocalRouterDeployment(payload.routingAlgorithm);
       const registeredLocalDeployments = await ensureSelectedLocalDeploymentsRegistered(payload.attachedEndpointIds);
       const attachedEndpointIds = payload.attachedEndpointIds.map((endpointId) => {
-        const localDeployment = registeredLocalDeployments.find((deployment) => `local:${deployment.endpointUrl}` === endpointId);
+        const localDeployment = registeredLocalDeployments.find((deployment) => getLocalDeploymentSelectionId(deployment) === endpointId);
         return localDeployment?.endpointId || endpointId;
       });
 
@@ -1260,7 +1260,7 @@ function App() {
       return [];
     }
 
-    const selectedLocalDeployments = localDeployments.filter((deployment) => endpointIds.includes(`local:${deployment.endpointUrl}`));
+    const selectedLocalDeployments = localDeployments.filter((deployment) => endpointIds.includes(getLocalDeploymentSelectionId(deployment)));
     if (selectedLocalDeployments.length === 0) {
       return [];
     }
@@ -1619,7 +1619,7 @@ function buildAttachedInferenceEndpointPayload(
     const record = item as Record<string, unknown>;
     return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
   });
-  const localDeployment = localDeployments.find((item) => `local:${item.endpointUrl}` === endpointId);
+  const localDeployment = localDeployments.find((item) => getLocalDeploymentSelectionId(item) === endpointId);
   const model = models.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
@@ -1653,6 +1653,10 @@ function getAttachedInferenceEndpointName(endpoint: Record<string, unknown>, fal
   }
 
   return fallbackName;
+}
+
+function getLocalDeploymentSelectionId(deployment: LocalModelDeployment): string {
+  return `local:${deployment.endpointUrl}::${deployment.modelId}`;
 }
 
 function getInferenceEndpointIdFromRecord(endpoint: EndpointItem, index: number): string {

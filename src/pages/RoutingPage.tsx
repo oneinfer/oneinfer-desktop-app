@@ -152,13 +152,13 @@ export function RoutingPage(props: {
   const [testPrompt, setTestPrompt] = useState('Explain what this route is optimized for in one sentence.');
   const [routeDetails, setRouteDetails] = useState<CreateRouteDetails>(defaultRouteDetails);
   const activeEndpointSources = getActiveEndpointSources(routeDetails);
-  const registeredLocalEndpointUrls = new Set(
+  const registeredLocalEndpointKeys = new Set(
     props.dashboard.inferenceEndpoints
-      .map((endpoint) => String(endpoint.endpoint_url ?? '').trim())
+      .map((endpoint) => getLocalEndpointKey(String(endpoint.endpoint_url ?? '').trim(), String(endpoint.model_id ?? endpoint.name ?? '')))
       .filter(Boolean),
   );
   const localDeploymentOptions = (props.localDeployments || [])
-    .filter((deployment) => !registeredLocalEndpointUrls.has(deployment.endpointUrl))
+    .filter((deployment) => !registeredLocalEndpointKeys.has(getLocalEndpointKey(deployment.endpointUrl, deployment.modelId)))
     .map((deployment) => ({
       id: getLocalDeploymentEndpointId(deployment),
       endpointName: deployment.name,
@@ -597,7 +597,11 @@ function getInferenceEndpointModelName(endpoint: EndpointItem, index: number): s
 }
 
 function getLocalDeploymentEndpointId(deployment: LocalModelDeployment): string {
-  return `local:${deployment.endpointUrl}`;
+  return `local:${deployment.endpointUrl}::${deployment.modelId}`;
+}
+
+function getLocalEndpointKey(endpointUrl: string, modelId: string): string {
+  return `${endpointUrl}::${modelId}`;
 }
 
 function getCloudInstanceEndpointId(instance: InstanceItem, index: number): string {

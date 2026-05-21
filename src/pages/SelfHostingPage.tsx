@@ -261,7 +261,7 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
       }
 
       const endpointId = getEndpointId(endpoint, index);
-      rows.set(endpointUrl, {
+      rows.set(getLocalDeploymentRowKey(endpointUrl, String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`)), {
         endpointId,
         endpointUrl,
         modelId: String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`),
@@ -274,8 +274,9 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
     });
 
   deployments.forEach((deployment, index) => {
-    const existing = rows.get(deployment.endpointUrl);
-    rows.set(deployment.endpointUrl, {
+    const rowKey = getLocalDeploymentRowKey(deployment.endpointUrl, deployment.modelId);
+    const existing = rows.get(rowKey);
+    rows.set(rowKey, {
       endpointId: existing?.endpointId ?? `local-deployment-${index + 1}`,
       endpointUrl: deployment.endpointUrl,
       modelId: deployment.modelId,
@@ -288,6 +289,10 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
   });
 
   return Array.from(rows.values());
+}
+
+function getLocalDeploymentRowKey(endpointUrl: string, modelId: string): string {
+  return `${endpointUrl}::${modelId}`;
 }
 
 function getEndpointId(endpoint: EndpointItem, index: number): string {
