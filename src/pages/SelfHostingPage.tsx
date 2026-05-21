@@ -251,6 +251,7 @@ function LocalDeploymentCard(props: {
 
 function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalModelDeployment[]): LocalDeploymentRow[] {
   const rows = new Map<string, LocalDeploymentRow>();
+  const deploymentKeys = new Set(deployments.map((deployment) => getLocalDeploymentRowKey(deployment.endpointUrl, deployment.modelId)));
 
   endpoints
     .filter((endpoint) => isLocalEndpoint(endpoint))
@@ -261,10 +262,16 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
       }
 
       const endpointId = getEndpointId(endpoint, index);
-      rows.set(getLocalDeploymentRowKey(endpointUrl, String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`)), {
+      const modelId = String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`);
+      const rowKey = getLocalDeploymentRowKey(endpointUrl, modelId);
+      if (deploymentKeys.has(rowKey)) {
+        return;
+      }
+
+      rows.set(rowKey, {
         endpointId,
-        endpointUrl,
-        modelId: String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`),
+        endpointUrl: normalizeLocalEndpointUrl(endpointUrl),
+        modelId,
         name: String(endpoint.name ?? endpoint.model_id ?? `Local model ${index + 1}`),
         runtime: endpointUrl.includes(':11434') ? 'ollama' : 'vllm',
         deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? 'Registered endpoint'),
@@ -278,7 +285,7 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
     const existing = rows.get(rowKey);
     rows.set(rowKey, {
       endpointId: existing?.endpointId ?? `local-deployment-${index + 1}`,
-      endpointUrl: deployment.endpointUrl,
+      endpointUrl: normalizeLocalEndpointUrl(deployment.endpointUrl),
       modelId: deployment.modelId,
       name: deployment.name,
       runtime: deployment.runtime,
@@ -292,7 +299,11 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
 }
 
 function getLocalDeploymentRowKey(endpointUrl: string, modelId: string): string {
-  return `${endpointUrl}::${modelId}`;
+  return `${normalizeLocalEndpointUrl(endpointUrl)}::${modelId}`;
+}
+
+function normalizeLocalEndpointUrl(endpointUrl: string): string {
+  return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
 }
 
 function getEndpointId(endpoint: EndpointItem, index: number): string {

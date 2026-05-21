@@ -26,16 +26,21 @@ export function OverviewPage(props: {
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isOpenClawBusy = props.busy === 'configure-openclaw';
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => String(endpoint.deployment_target).toLowerCase() === 'local');
-  const visibleLocalDeployments = props.localDeployments.length > 0
-    ? props.localDeployments
-    : localEndpoints.map((endpoint, index) => ({
-      endpointUrl: String(endpoint.endpoint_url ?? ''),
+  const localDeploymentKeys = new Set(props.localDeployments.map((deployment) => getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)));
+  const visibleLocalDeployments = [
+    ...props.localDeployments.map((deployment) => ({
+      ...deployment,
+      endpointUrl: normalizeLocalEndpointUrl(deployment.endpointUrl),
+    })),
+    ...localEndpoints.map((endpoint, index) => ({
+      endpointUrl: normalizeLocalEndpointUrl(String(endpoint.endpoint_url ?? '')),
       modelId: String(endpoint.model_id ?? `local-model-${index}`),
       name: String(endpoint.name ?? endpoint.model_id ?? `Local model ${index + 1}`),
       pid: null,
-      runtime: 'vllm' as const,
+      runtime: String(endpoint.endpoint_url ?? '').includes(':11434') ? 'ollama' as const : 'vllm' as const,
       deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? new Date().toISOString()),
-    })).filter((deployment) => deployment.endpointUrl);
+    })).filter((deployment) => deployment.endpointUrl && !localDeploymentKeys.has(getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId))),
+  ];
 
   const activePlanId = props.dashboard.activeDeveloperPlan?.planId ?? null;
   const activePlan = props.dashboard.developerPlans?.find((p) => p.planId === activePlanId);
@@ -211,6 +216,14 @@ function LocalDeploymentSummary(props: { deployment: LocalModelDeployment; metri
       </div>
     </div>
   );
+}
+
+function getLocalDeploymentKey(endpointUrl: string, modelId: string): string {
+  return `${normalizeLocalEndpointUrl(endpointUrl)}::${modelId}`;
+}
+
+function normalizeLocalEndpointUrl(endpointUrl: string): string {
+  return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
 }
 
 function LocalAccessPanel(props: { deployment: LocalModelDeployment; metrics?: LocalModelMetrics }) {
