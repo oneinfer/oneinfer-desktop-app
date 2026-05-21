@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Copy, Info, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { DashboardState, EndpointItem, InstanceItem } from '../types';
+import type { DashboardState, EndpointItem, InstanceItem, LocalModelDeployment } from '../types';
 import { formatValue } from '../utils/format';
 
 interface CreateRouteDetails {
@@ -140,6 +140,7 @@ export function RoutingPage(props: {
   onCopyRoute: (routeId: string) => void;
   onDeleteRoute: (routeId: string, routeName: string) => void;
   onCreateSelfHosting: () => void;
+  localDeployments?: LocalModelDeployment[];
   initialEndpointId?: string | null;
   onInitialEndpointConsumed?: () => void;
 }) {
@@ -151,6 +152,19 @@ export function RoutingPage(props: {
   const [testPrompt, setTestPrompt] = useState('Explain what this route is optimized for in one sentence.');
   const [routeDetails, setRouteDetails] = useState<CreateRouteDetails>(defaultRouteDetails);
   const activeEndpointSources = getActiveEndpointSources(routeDetails);
+  const registeredLocalEndpointUrls = new Set(
+    props.dashboard.inferenceEndpoints
+      .map((endpoint) => String(endpoint.endpoint_url ?? '').trim())
+      .filter(Boolean),
+  );
+  const localDeploymentOptions = (props.localDeployments || [])
+    .filter((deployment) => !registeredLocalEndpointUrls.has(deployment.endpointUrl))
+    .map((deployment) => ({
+      id: getLocalDeploymentEndpointId(deployment),
+      endpointName: deployment.name,
+      modelName: deployment.modelId,
+      source: 'local' as EndpointSource,
+    }));
   const inferenceEndpointOptions = props.dashboard.inferenceEndpoints
     .map((endpoint, index) => ({
       id: getInferenceEndpointId(endpoint, index),
@@ -164,12 +178,13 @@ export function RoutingPage(props: {
       modelName: getCloudInstanceModelName(instance),
       source: 'cloud' as EndpointSource,
     })))
+    .concat(localDeploymentOptions)
     .filter((endpoint) => activeEndpointSources.includes(endpoint.source));
   const selectedEndpointSourceLabels = endpointSources
     .filter((source) => activeEndpointSources.includes(source.value))
     .map((source) => source.label);
   const hasLocalEndpointSource = activeEndpointSources.includes('local');
-  const localEndpointCount = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local').length;
+  const localEndpointCount = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local').length + localDeploymentOptions.length;
   const showLocalEmptyAction = hasLocalEndpointSource && localEndpointCount === 0;
   const selectedEndpointOptions = inferenceEndpointOptions.filter((endpoint) => routeDetails.attachedEndpointIds.includes(endpoint.id));
   const selectedGoal = routingGoals.find((goal) => goal.value === routeDetails.routingGoal) ?? routingGoals[0];
@@ -182,12 +197,13 @@ export function RoutingPage(props: {
     }
 
     const endpoint = props.dashboard.inferenceEndpoints.find((item, index) => getInferenceEndpointId(item, index) === props.initialEndpointId);
+    const localDeployment = (props.localDeployments || []).find((item) => getLocalDeploymentEndpointId(item) === props.initialEndpointId);
     const instance = props.dashboard.instances.find((item, index) => getCloudInstanceEndpointId(item, index) === props.initialEndpointId);
-    if (!endpoint && !instance) {
+    if (!endpoint && !localDeployment && !instance) {
       return;
     }
 
-    const endpointSource = endpoint ? getEndpointSource(endpoint) : 'cloud';
+    const endpointSource = endpoint ? getEndpointSource(endpoint) : localDeployment ? 'local' : 'cloud';
     setShowCreateRouteModal(true);
     setRouteDetails((current) => {
       const endpointSources = getActiveEndpointSources(current);
@@ -200,7 +216,7 @@ export function RoutingPage(props: {
       };
     });
     props.onInitialEndpointConsumed?.();
-  }, [props.initialEndpointId, props.dashboard.inferenceEndpoints, props.dashboard.instances, props.onInitialEndpointConsumed]);
+  }, [props.initialEndpointId, props.dashboard.inferenceEndpoints, props.dashboard.instances, props.localDeployments, props.onInitialEndpointConsumed]);
 
   async function handleCreateRoute(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -578,6 +594,10 @@ function getInferenceEndpointName(endpoint: EndpointItem, index: number): string
 
 function getInferenceEndpointModelName(endpoint: EndpointItem, index: number): string {
   return String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `Model ${index + 1}`);
+}
+
+function getLocalDeploymentEndpointId(deployment: LocalModelDeployment): string {
+  return `local:${deployment.endpointUrl}`;
 }
 
 function getCloudInstanceEndpointId(instance: InstanceItem, index: number): string {

@@ -1200,6 +1200,7 @@ function App() {
                     payload.modelId,
                     dashboard.inferenceEndpoints,
                     dashboard.instances,
+                    localDeployments,
                     dashboard.models,
                   )
                 )),
@@ -1468,6 +1469,7 @@ function App() {
             onCopyRoute={handleCopyRoute}
             onDeleteRoute={handleDeleteRoute}
             onCreateSelfHosting={() => setActiveSection('selfHosting')}
+            localDeployments={localDeployments}
             initialEndpointId={routeInitialEndpointId}
             onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
           />
@@ -1502,6 +1504,7 @@ function buildAttachedInferenceEndpointPayload(
   modelId: string,
   inferenceEndpoints: EndpointItem[],
   instances: InstanceItem[],
+  localDeployments: LocalModelDeployment[],
   models: Record<string, unknown>[],
 ) {
   const endpoint = inferenceEndpoints.find((item) => {
@@ -1512,11 +1515,16 @@ function buildAttachedInferenceEndpointPayload(
     const record = item as Record<string, unknown>;
     return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
   });
+  const localDeployment = localDeployments.find((item) => `local:${item.endpointUrl}` === endpointId);
   const model = models.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
   });
-  const endpointRecord = (endpoint ?? instance ?? {}) as Record<string, unknown>;
+  const endpointRecord = (endpoint ?? instance ?? (localDeployment ? {
+    name: localDeployment.name,
+    model_id: localDeployment.modelId,
+    endpoint_url: localDeployment.endpointUrl,
+  } : {})) as Record<string, unknown>;
   const modelRecord = (model ?? {}) as Record<string, unknown>;
   const outputModalities = Array.isArray(modelRecord.outputModalities)
     ? modelRecord.outputModalities
@@ -1525,8 +1533,10 @@ function buildAttachedInferenceEndpointPayload(
       : [];
 
   return {
-    endpoint_id: endpointId,
+    endpoint_id: endpoint ? endpointId : localDeployment ? localDeployment.endpointUrl : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
+    endpoint_url: localDeployment?.endpointUrl,
+    model_id: localDeployment?.modelId,
     input_modality: inputModality,
     output_modality: String(outputModalities[0] ?? 'text'),
   };
