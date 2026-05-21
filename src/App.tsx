@@ -394,7 +394,14 @@ function App() {
           activeDeveloperPlan: results[5].status === 'fulfilled' ? results[5].value : current.activeDeveloperPlan,
         }));
 
-        announcePartialFailures('Overview', results, shouldBeSilent);
+        announcePartialFailures('Overview', results, shouldBeSilent, [
+          'profile',
+          'credits',
+          'inference endpoints',
+          'instances',
+          'developer plans',
+          'active developer plan',
+        ]);
       }
 
       if (section === 'instances') {
@@ -411,7 +418,7 @@ function App() {
           gpuSpecs: results[2].status === 'fulfilled' ? results[2].value : current.gpuSpecs,
         }));
 
-        announcePartialFailures('Instances', results, shouldBeSilent);
+        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs']);
       }
 
       if (section === 'apiKeys') {
@@ -433,7 +440,7 @@ function App() {
           models: results[2].status === 'fulfilled' ? results[2].value : current.models,
         }));
 
-        announcePartialFailures('Routing', results, shouldBeSilent);
+        announcePartialFailures('Routing', results, shouldBeSilent, ['routes', 'inference endpoints', 'models']);
       }
 
       if (section === 'selfHosting') {
@@ -456,7 +463,7 @@ function App() {
           activeDeveloperPlan: results[1].status === 'fulfilled' ? results[1].value : current.activeDeveloperPlan,
         }));
 
-        announcePartialFailures('Bandwidth', results, shouldBeSilent);
+        announcePartialFailures('Bandwidth', results, shouldBeSilent, ['developer plans', 'active developer plan']);
       }
 
       setLoadedSections((current) => ({ ...current, [section]: true }));
@@ -470,10 +477,19 @@ function App() {
     }
   }
 
-  function announcePartialFailures(label: string, results: PromiseSettledResult<unknown>[], silent: boolean) {
-    const failed = results.filter((result) => result.status === 'rejected').length;
+  function announcePartialFailures(label: string, results: PromiseSettledResult<unknown>[], silent: boolean, names: string[] = []) {
+    const failures = results
+      .map((result, index) => ({ result, name: names[index] || `request ${index + 1}` }))
+      .filter((item): item is { result: PromiseRejectedResult; name: string } => item.result.status === 'rejected');
+    const failed = failures.length;
     if (failed > 0) {
-      setMessage({ tone: 'error', text: `${label} loaded with ${failed} partial failure${failed > 1 ? 's' : ''}.` });
+      console.warn(`[${label}] partial load failure`, failures.map((failure) => ({
+        name: failure.name,
+        reason: failure.result.reason instanceof Error ? failure.result.reason.message : String(failure.result.reason),
+      })));
+      if (!silent) {
+        setMessage({ tone: 'error', text: `${label} loaded with ${failed} partial failure${failed > 1 ? 's' : ''}: ${failures.map((failure) => failure.name).join(', ')}.` });
+      }
     } else if (!silent) {
       setMessage({ tone: 'success', text: `${label} synced.` });
     }
@@ -783,7 +799,7 @@ function App() {
 
         return [
           nextDeployment,
-          ...current.filter((item) => item.endpointUrl !== nextDeployment.endpointUrl && item.modelId !== nextDeployment.modelId),
+          ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
         ];
       });
       setMessage({ tone: 'success', text: 'Local inference endpoint registered.' });
@@ -875,7 +891,7 @@ function App() {
 
         return [
           nextDeployment,
-          ...current.filter((item) => item.endpointUrl !== deployment.endpointUrl && item.modelId !== deployment.modelId),
+          ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
         ];
       });
 
@@ -1171,7 +1187,7 @@ function App() {
 
       return [
         nextDeployment,
-        ...current.filter((item) => item.endpointUrl !== nextDeployment.endpointUrl && item.modelId !== nextDeployment.modelId),
+        ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
       ];
     });
 
@@ -1390,7 +1406,7 @@ function App() {
         });
       }
 
-      setLocalDeployments((current) => current.filter((item) => item.endpointUrl !== deployment.endpointUrl && item.modelId !== deployment.modelId));
+      setLocalDeployments((current) => current.filter((item) => !isSameLocalDeployment(item, deployment)));
       setLocalModelMetrics((current) => {
         const next = { ...current };
         delete next[deployment.endpointUrl];
@@ -1709,6 +1725,10 @@ function isValidLocalDeployment(value: unknown): value is LocalModelDeployment {
     && typeof record.name === 'string'
     && (record.runtime === 'vllm' || record.runtime === 'ollama')
     && typeof record.deployedAt === 'string';
+}
+
+function isSameLocalDeployment(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {
+  return left.endpointUrl === right.endpointUrl && left.modelId === right.modelId;
 }
 
 function getWelcomeName(session: DesktopSession): string {
