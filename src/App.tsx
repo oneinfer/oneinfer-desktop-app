@@ -282,6 +282,7 @@ function App() {
             endpointUrl: deployment.endpointUrl,
             healthy: false,
             modelCount: 0,
+            modelIds: [],
             uptimeSeconds: null,
             requestsRunning: null,
             requestsWaiting: null,
@@ -296,6 +297,20 @@ function App() {
       }));
 
       if (!cancelled) {
+        const missingDeployments = localDeployments.filter((deployment) => {
+          const metrics = results.find((item) => item.endpointUrl === deployment.endpointUrl);
+          return Boolean(metrics?.healthy && Array.isArray(metrics.modelIds) && !metrics.modelIds.includes(deployment.modelId));
+        });
+        if (missingDeployments.length > 0) {
+          setLocalDeployments((current) => {
+            const nextDeployments = current.filter((deployment) => !missingDeployments.some((missing) => isSameLocalDeployment(deployment, missing)));
+            persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextDeployments).catch((error) => {
+              console.error('[state] failed to prune stale local deployments', error);
+            });
+            return nextDeployments;
+          });
+        }
+
         setLocalModelMetrics((current) => {
           const next = { ...current };
           results.forEach((metrics) => {

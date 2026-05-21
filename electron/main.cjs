@@ -843,6 +843,23 @@ function normalizeHfRepoId(value) {
   return candidate;
 }
 
+function normalizeLocalModelId(value, runtime = 'vllm') {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) {
+    throw new Error('Local model id is required.');
+  }
+
+  if (runtime === 'ollama') {
+    if (/^https?:\/\//i.test(rawValue)) {
+      return normalizeHfRepoId(rawValue);
+    }
+
+    return rawValue;
+  }
+
+  return normalizeHfRepoId(rawValue);
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1270,8 +1287,8 @@ function getVllmExitDetail(output) {
 }
 
 async function deployHfModel(payload = {}) {
-  const repoId = normalizeHfRepoId(payload.repoId);
   const runtime = payload.runtime || 'vllm';
+  const repoId = normalizeLocalModelId(payload.repoId, runtime);
   const progressId = String(payload.progressId || `${repoId}-${Date.now()}`);
   const progress = (patch) => sendDeploymentProgress({ id: progressId, ...patch });
   const shouldCancel = () => Boolean(localModelDeploymentsInFlight.get(repoId)?.cancelled);
@@ -1414,7 +1431,7 @@ async function deployHfModel(payload = {}) {
 }
 
 async function cancelHfDeployment(payload = {}) {
-  const repoId = normalizeHfRepoId(payload.repoId);
+  const repoId = normalizeLocalModelId(payload.repoId, payload.runtime || 'vllm');
   const inFlight = localModelDeploymentsInFlight.get(repoId);
   if (!inFlight) {
     return { cancelled: false, message: `No active deployment found for ${repoId}.` };
@@ -1490,6 +1507,9 @@ async function getLocalModelMetrics(payload = {}) {
     if (modelsResponse.ok) {
       const payload = await modelsResponse.json().catch(() => null);
       metrics.modelCount = Array.isArray(payload?.data) ? payload.data.length : 0;
+      metrics.modelIds = Array.isArray(payload?.data)
+        ? payload.data.map((model) => String(model?.id ?? model?.model ?? '')).filter(Boolean)
+        : [];
     }
   } catch (error) {
     metrics.error = error instanceof Error ? error.message : String(error);

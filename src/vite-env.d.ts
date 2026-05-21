@@ -77,6 +77,7 @@ interface DesktopLocalModelMetrics {
   endpointUrl: string;
   healthy: boolean;
   modelCount: number;
+  modelIds?: string[];
   uptimeSeconds: number | null;
   requestsRunning: number | null;
   requestsWaiting: number | null;
