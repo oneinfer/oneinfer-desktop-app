@@ -74,6 +74,19 @@ function normalizeHfRepoId(value: string): string {
   return rawValue.includes('/') ? rawValue : '';
 }
 
+function normalizeLocalModelId(value: string): string {
+  const rawValue = value.trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('hf.co/')) {
+    return rawValue;
+  }
+
+  return normalizeHfRepoId(rawValue) || rawValue;
+}
+
 function App() {
   const [booting, setBooting] = useState(true);
   const [appVersion, setAppVersion] = useState('');
@@ -1113,9 +1126,9 @@ function App() {
       throw new Error('Sign in before deploying a local router model.');
     }
 
-    const routerModelId = normalizeHfRepoId(routingAlgorithm);
+    const routerModelId = normalizeLocalModelId(routingAlgorithm);
     if (!routerModelId) {
-      throw new Error('Select a valid Hugging Face router model before deploying locally.');
+      throw new Error('Select a valid local router model before deploying locally.');
     }
 
     const existingRouterEndpoint = dashboard.inferenceEndpoints.find((endpoint, index) => {
@@ -1143,14 +1156,19 @@ function App() {
       throw new Error('Local router deployment is not available in this app build.');
     }
 
-    if (!libraries.vllm) {
-      throw new Error('vLLM must be installed before deploying a router model locally.');
+    const routerRuntime = libraries.ollama ? 'ollama' : libraries.vllm ? 'vllm' : null;
+    if (!routerRuntime) {
+      throw new Error('Install Ollama or vLLM before deploying a router model locally.');
     }
 
-    setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId}...` });
+    if (routerRuntime === 'ollama' && !isOllamaCompatibleModelId(routerModelId)) {
+      throw new Error(`${routerModelId} is not Ollama-compatible. Choose a GGUF/Ollama router model.`);
+    }
+
+    setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId} with ${formatLocalRuntime(routerRuntime)}...` });
     const deployment = await window.desktopBridge.deployHfModel({
       repoId: routerModelId,
-      runtime: 'vllm',
+      runtime: routerRuntime,
       progressId: `${routerModelId}-router-${Date.now()}`,
     });
 
@@ -1177,6 +1195,7 @@ function App() {
 
     setLocalDeployments((current) => {
       const nextDeployment: LocalModelDeployment = {
+        endpointId: getEndpointIdFromPayload(registeredEndpoint),
         endpointUrl: deployment.endpointUrl,
         modelId: deployment.modelId,
         name: `${routerModelId} router`,
