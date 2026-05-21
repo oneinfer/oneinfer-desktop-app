@@ -57,6 +57,7 @@ import type {
   LocalModelMetrics,
   SectionKey,
 } from './types';
+import { getBalance } from './utils/format';
 
 function normalizeHfRepoId(value: string): string {
   const rawValue = value.trim();
@@ -234,6 +235,16 @@ function App() {
   }, [activeSection, session]);
 
   useEffect(() => {
+    if (booting || !session) {
+      return;
+    }
+
+    persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments).catch((error) => {
+      console.error('[state] failed to persist local deployments', error);
+    });
+  }, [booting, session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments]);
+
+  useEffect(() => {
     if (!window.desktopBridge?.onDeploymentProgress) {
       return undefined;
     }
@@ -307,6 +318,7 @@ function App() {
     nextSession: DesktopSession | null,
     nextApiBaseUrl: string,
     nextClaudeCodeProvider: 'oneinfer' | 'anthropic',
+    nextLocalDeployments: LocalModelDeployment[] = localDeployments,
   ) {
     if (!window.desktopBridge) {
       return;
@@ -318,6 +330,7 @@ function App() {
         apiBaseUrl: nextApiBaseUrl,
         claudeCodeProvider: nextClaudeCodeProvider,
       },
+      localDeployments: nextLocalDeployments,
     });
   }
 
@@ -486,6 +499,9 @@ function App() {
       setSettingsDraft({ apiBaseUrl: nextBaseUrl });
       setClaudeCodeProvider(nextClaudeCodeProvider);
       setSession(storedState?.session ?? null);
+      if (Array.isArray(storedState?.localDeployments)) {
+        setLocalDeployments(storedState.localDeployments.filter(isValidLocalDeployment));
+      }
       setLoadedSections(createLoadedSections());
       setEmail(storedState?.session?.email ?? '');
       setAppVersion(version ?? '');
@@ -742,7 +758,7 @@ function App() {
 
     setBusy('register-self-hosted');
     try {
-      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+      const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
         provider: 'openai',
         model_id: modelId,
@@ -756,6 +772,7 @@ function App() {
       });
       setLocalDeployments((current) => {
         const nextDeployment: LocalModelDeployment = {
+          endpointId: getEndpointIdFromPayload(registeredEndpoint),
           endpointUrl: selfHostForm.endpoint_url.trim(),
           modelId,
           name: selfHostForm.name.trim() || modelId,
@@ -872,7 +889,7 @@ function App() {
       };
       setDeploymentProgress((current) => [...current, registeringProgress].slice(-80));
 
-      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+      const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name.trim() || repoId,
         provider: 'openai',
         model_id: deployment.modelId,
@@ -884,6 +901,15 @@ function App() {
         temperature: 0.7,
         max_tokens: 4096,
       });
+
+      const registeredEndpointId = getEndpointIdFromPayload(registeredEndpoint);
+      if (registeredEndpointId) {
+        setLocalDeployments((current) => current.map((item) => (
+          item.endpointUrl === deployment.endpointUrl && item.modelId === deployment.modelId
+            ? { ...item, endpointId: registeredEndpointId }
+            : item
+        )));
+      }
 
       const registeredProgress: DesktopDeploymentProgress = {
         id: progressId,
@@ -1177,6 +1203,11 @@ function App() {
     setBusy('create-intelligent-endpoint');
     try {
       const routerDeployment = await ensureLocalRouterDeployment(payload.routingAlgorithm);
+      const registeredLocalDeployments = await ensureSelectedLocalDeploymentsRegistered(payload.attachedEndpointIds);
+      const attachedEndpointIds = payload.attachedEndpointIds.map((endpointId) => {
+        const localDeployment = registeredLocalDeployments.find((deployment) => `local:${deployment.endpointUrl}` === endpointId);
+        return localDeployment?.endpointId || endpointId;
+      });
 
       await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
         name: routeName,
@@ -1189,10 +1220,10 @@ function App() {
           candidate_models: payload.modelId ? [payload.modelId] : [],
           description: payload.description.trim() || undefined,
         },
-        ...(payload.attachedEndpointIds.length > 0
+        ...(attachedEndpointIds.length > 0
           ? {
               attached_endpoints: {
-                inference_api: payload.attachedEndpointIds.map((endpointId) => (
+                inference_api: attachedEndpointIds.map((endpointId) => (
                   buildAttachedInferenceEndpointPayload(
                     endpointId,
                     routeName,
@@ -1211,7 +1242,7 @@ function App() {
 
       setMessage({
         tone: 'success',
-        text: payload.attachedEndpointIds.length > 0 ? 'Route created with route config and inference endpoints attached.' : 'Route created with route config.',
+        text: attachedEndpointIds.length > 0 ? 'Route created with route config and inference endpoints attached.' : 'Route created with route config.',
       });
       setIntelligentEndpointName('');
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
@@ -1222,6 +1253,68 @@ function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function ensureSelectedLocalDeploymentsRegistered(endpointIds: string[]): Promise<LocalModelDeployment[]> {
+    if (!session) {
+      return [];
+    }
+
+    const selectedLocalDeployments = localDeployments.filter((deployment) => endpointIds.includes(`local:${deployment.endpointUrl}`));
+    if (selectedLocalDeployments.length === 0) {
+      return [];
+    }
+
+    const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
+    const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
+      ? dashboard.machineDetails.machineName
+      : typeof dashboard.machineDetails?.hostname === 'string'
+        ? dashboard.machineDetails.hostname
+        : '';
+
+    const registeredDeployments: LocalModelDeployment[] = [];
+    for (const deployment of selectedLocalDeployments) {
+      if (deployment.endpointId) {
+        registeredDeployments.push(deployment);
+        continue;
+      }
+
+      const existingEndpoint = dashboard.inferenceEndpoints.find((endpoint) => {
+        const endpointUrl = String(endpoint.endpoint_url ?? '');
+        return endpointUrl === deployment.endpointUrl;
+      });
+      const existingEndpointId = existingEndpoint ? getInferenceEndpointIdFromRecord(existingEndpoint, dashboard.inferenceEndpoints.indexOf(existingEndpoint)) : '';
+      if (existingEndpointId) {
+        const nextDeployment = { ...deployment, endpointId: existingEndpointId };
+        registeredDeployments.push(nextDeployment);
+        continue;
+      }
+
+      const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+        name: deployment.name,
+        provider: 'openai',
+        model_id: deployment.modelId,
+        deployment_target: 'local',
+        endpoint_url: deployment.endpointUrl,
+        machine_id: detectedMachineId,
+        machine_name: detectedMachineName,
+        top_p: 0.9,
+        temperature: 0.7,
+        max_tokens: 4096,
+      });
+      const endpointId = getEndpointIdFromPayload(registeredEndpoint);
+      registeredDeployments.push(endpointId ? { ...deployment, endpointId } : deployment);
+    }
+
+    if (registeredDeployments.some((deployment) => deployment.endpointId)) {
+      setLocalDeployments((current) => current.map((deployment) => {
+        const registeredDeployment = registeredDeployments.find((item) => item.endpointUrl === deployment.endpointUrl);
+        return registeredDeployment?.endpointId ? { ...deployment, endpointId: registeredDeployment.endpointId } : deployment;
+      }));
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
+    }
+
+    return registeredDeployments;
   }
 
   async function handleDeleteRoute(routeId: string, routeName: string) {
@@ -1378,6 +1471,17 @@ function App() {
           <Banner tone={message.tone} text={message.text} />
         </div>
       ) : null}
+
+      <div className="app-topbar">
+        <div className="welcome-copy">
+          <strong>Welcome</strong>
+          <span>{getGreeting()}, {getWelcomeName(session)}</span>
+        </div>
+        <div className="top-credit-pill">
+          <span>Available Credits</span>
+          <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
+        </div>
+      </div>
 
       <main className="main-stage" style={{ padding: '20px' }}>
         {activeSection === 'overview' ? (
@@ -1589,6 +1693,30 @@ function isOllamaCompatibleModelId(modelId: string): boolean {
     || normalized.endsWith('.gguf')
     || normalized.startsWith('hf.co/')
     || !normalized.includes('/');
+}
+
+function isValidLocalDeployment(value: unknown): value is LocalModelDeployment {
+  const record = value as Partial<LocalModelDeployment> | null;
+  return Boolean(record)
+    && typeof record?.endpointUrl === 'string'
+    && record.endpointUrl.trim().length > 0
+    && typeof record.modelId === 'string'
+    && record.modelId.trim().length > 0
+    && typeof record.name === 'string'
+    && (record.runtime === 'vllm' || record.runtime === 'ollama')
+    && typeof record.deployedAt === 'string';
+}
+
+function getWelcomeName(session: DesktopSession): string {
+  const emailName = session.email?.split('@')[0]?.trim();
+  return emailName || 'back';
+}
+
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'good morning';
+  if (hour < 17) return 'good afternoon';
+  return 'good evening';
 }
 
 export default App;

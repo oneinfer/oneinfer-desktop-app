@@ -60,8 +60,8 @@ export const defaultInferenceForm: CreateInferenceFormState = {
 
 export const sections: Array<{ key: SectionKey; label: string; icon: typeof Sparkles }> = [
   { key: 'overview', label: 'Overview', icon: Sparkles },
-  { key: 'selfHosting', label: 'Self-hosting', icon: Server },
-  { key: 'instances', label: 'Cloud Instances', icon: Server },
+  { key: 'selfHosting', label: 'Self Hosting', icon: Server },
+  { key: 'instances', label: 'Cloud Hosting', icon: Server },
   { key: 'apiKeys', label: 'API Keys', icon: KeyRound },
   { key: 'routing', label: 'Routing', icon: Orbit },
   { key: 'bandwidth', label: 'AI Bandwidth', icon: Wifi },

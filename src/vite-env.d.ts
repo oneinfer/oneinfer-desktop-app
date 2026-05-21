@@ -22,6 +22,17 @@ interface DesktopSettings {
 interface DesktopState {
   settings: Partial<DesktopSettings>;
   session: DesktopSession | null;
+  localDeployments?: DesktopLocalModelDeployment[];
+}
+
+interface DesktopLocalModelDeployment {
+  endpointId?: string;
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  pid: number | null;
+  runtime: 'vllm' | 'ollama';
+  deployedAt: string;
 }
 
 interface DesktopMachineDetails {

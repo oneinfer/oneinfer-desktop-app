@@ -1,9 +1,9 @@
-import { Blocks, Bot, Copy, LoaderCircle, Orbit, Server, ShieldCheck, Sparkles, Terminal, Zap } from 'lucide-react';
+import { Blocks, Bot, Copy, LoaderCircle, Orbit, Server, Sparkles, Terminal, Zap } from 'lucide-react';
 
 import { EmptyState, MiniTable, Panel } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
 import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey } from '../types';
-import { formatValue, getBalance } from '../utils/format';
+import { formatValue } from '../utils/format';
 import { PlanRow } from './BandwidthPage';
 
 export function OverviewPage(props: {
@@ -183,24 +183,8 @@ export function OverviewPage(props: {
         </main>
       </div>
 
-      <div className="section-grid dashboard-row compact-row" style={{ gridTemplateColumns: '3fr 1fr', marginTop: '20px' }}>
+      <div className="section-grid dashboard-row compact-row hardware-full-row" style={{ marginTop: '20px' }}>
         <HardwareWidget machine={props.dashboard.machineDetails} />
-        <Panel title="Credits" icon={ShieldCheck} style={{ height: '145px' }}>
-          <div style={{ padding: '8px 4px' }}>
-            {props.dashboard.credits ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--text)', letterSpacing: '-0.02em', lineHeight: 1 }}>
-                  {getBalance(props.dashboard.credits)}
-                </div>
-                <div style={{ fontSize: '0.85rem', color: 'var(--muted)', marginTop: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Available Credits
-                </div>
-              </div>
-            ) : (
-              <EmptyState text="Credit data not loaded." />
-            )}
-          </div>
-        </Panel>
       </div>
     </>
   );

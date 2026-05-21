@@ -225,6 +225,7 @@ export interface HfModelInfo {
 }
 
 export interface LocalModelDeployment {
+  endpointId?: string;
   endpointUrl: string;
   modelId: string;
   name: string;

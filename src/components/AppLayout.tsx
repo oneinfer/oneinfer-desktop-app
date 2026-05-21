@@ -1,9 +1,9 @@
-import { LogOut, Menu, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { Fragment, useEffect, useState } from 'react';
+import { ChevronDown, LogOut, Menu, RefreshCw, Server, X } from 'lucide-react';
 
 import oneInferLogo from '../assets/oneinfer-logo.png';
 import { sections } from '../constants';
 import type { DashboardState, SectionKey } from '../types';
-import { getBalance } from '../utils/format';
 
 export function AppLayout(props: {
   appVersion: string;
@@ -16,6 +16,18 @@ export function AppLayout(props: {
   onLogout: () => void;
   children: React.ReactNode;
 }) {
+  const hostingSectionKeys: SectionKey[] = ['selfHosting', 'instances', 'routing'];
+  const hostingSections = sections.filter((section) => hostingSectionKeys.includes(section.key));
+  const topLevelSections = sections.filter((section) => !hostingSectionKeys.includes(section.key));
+  const hostingActive = hostingSectionKeys.includes(props.activeSection);
+  const [hostingOpen, setHostingOpen] = useState(hostingActive);
+
+  useEffect(() => {
+    if (hostingActive) {
+      setHostingOpen(true);
+    }
+  }, [hostingActive]);
+
   return (
     <div className="shell app-shell">
       <header className="mobile-header glass-panel">
@@ -36,19 +48,61 @@ export function AppLayout(props: {
 
           <BrandLockup />
 
-          <div className="developer-pill" style={{ background: 'rgba(116, 227, 197, 0.08)', borderColor: 'rgba(116, 227, 197, 0.2)', padding: '12px 16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <ShieldCheck size={18} style={{ color: 'var(--accent)' }} />
-              <div>
-                <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '2px' }}>Available Balance</div>
-                <strong style={{ color: 'var(--accent)', fontSize: '1.15rem', fontWeight: 800 }}>{getBalance(props.dashboard.credits)}</strong>
-              </div>
-            </div>
-          </div>
-
           <nav className="nav-stack">
-            {sections.map((section) => {
+            {topLevelSections.map((section, index) => {
               const Icon = section.icon;
+              if (index === 1) {
+                return (
+                  <Fragment key="model-hosting-group">
+                    <div className="nav-group" key="model-hosting">
+                      <button
+                        className={`nav-button nav-group-toggle ${hostingActive ? 'active' : ''}`}
+                        onClick={() => setHostingOpen((current) => !current)}
+                        type="button"
+                        aria-expanded={hostingOpen}
+                      >
+                        <Server size={18} />
+                        <span>Model Hosting</span>
+                        <ChevronDown className={`nav-chevron${hostingOpen ? ' open' : ''}`} size={16} />
+                      </button>
+                      {hostingOpen ? (
+                        <div className="nav-substack">
+                          {hostingSections.map((hostingSection) => {
+                            const HostingIcon = hostingSection.icon;
+                            return (
+                              <button
+                                key={hostingSection.key}
+                                className={`nav-button nav-subbutton ${props.activeSection === hostingSection.key ? 'active' : ''}`}
+                                onClick={() => {
+                                  props.onSectionChange(hostingSection.key);
+                                  props.onSidebarOpen(false);
+                                }}
+                                type="button"
+                              >
+                                <HostingIcon size={16} />
+                                {hostingSection.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                    <button
+                      key={section.key}
+                      className={`nav-button ${props.activeSection === section.key ? 'active' : ''}`}
+                      onClick={() => {
+                        props.onSectionChange(section.key);
+                        props.onSidebarOpen(false);
+                      }}
+                      type="button"
+                    >
+                      <Icon size={18} />
+                      {section.label}
+                    </button>
+                  </Fragment>
+                );
+              }
+
               return (
                 <button
                   key={section.key}

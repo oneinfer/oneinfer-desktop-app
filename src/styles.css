@@ -341,6 +341,37 @@ label span,
   background: linear-gradient(135deg, rgba(116, 227, 197, 0.18), rgba(113, 190, 255, 0.14));
 }
 
+.nav-group {
+  display: grid;
+  gap: 8px;
+}
+
+.nav-group-toggle span {
+  flex: 1;
+}
+
+.nav-chevron {
+  margin-left: auto;
+  transition: transform 0.18s ease;
+}
+
+.nav-chevron.open {
+  transform: rotate(180deg);
+}
+
+.nav-substack {
+  display: grid;
+  gap: 8px;
+  padding-left: 14px;
+}
+
+.nav-subbutton {
+  min-height: 42px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+}
+
 .hero-panel {
   display: grid;
   grid-template-columns: 1.3fr 1fr;
@@ -354,10 +385,78 @@ label span,
 .main-stage {
   display: grid;
   gap: 20px;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  height: auto;
   align-content: start;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 20px 0;
+  flex-wrap: wrap;
+}
+
+.welcome-copy {
+  min-width: 0;
+}
+
+.top-credit-pill span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.welcome-copy strong {
+  display: block;
+  color: var(--text);
+  font-size: clamp(2.15rem, 3.4vw, 3.6rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.welcome-copy span {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: clamp(0.95rem, 1.2vw, 1.15rem);
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.top-credit-pill {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border: 1px solid rgba(116, 227, 197, 0.22);
+  border-radius: 16px;
+  background: rgba(116, 227, 197, 0.08);
+}
+
+.top-credit-pill span {
+  text-align: right;
+}
+
+.top-credit-pill strong {
+  color: var(--accent);
+  font-size: 1.25rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.hardware-full-row {
+  grid-template-columns: 1fr !important;
 }
 
 .section-grid {
@@ -1134,10 +1233,11 @@ th {
 
 /* ── Hardware widget ─────────────────────────────────────────── */
 .hw-widget {
-  padding: 16px 20px;
+  padding: 20px 24px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
+  width: 100%;
 }
 
 .hw-widget-header {
@@ -1158,8 +1258,8 @@ th {
 
 .hw-widget-stats {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 20px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px 24px;
 }
 
 .hw-stat {
@@ -1176,7 +1276,7 @@ th {
 }
 
 .hw-stat-value {
-  font-size: 0.9rem;
+  font-size: 1.05rem;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;

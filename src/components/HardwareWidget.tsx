@@ -7,7 +7,7 @@ export function HardwareWidget(props: { machine: DashboardState['machineDetails'
 
   if (!machine) {
     return (
-      <div className="hw-widget glass-panel" style={{ height: '145px' }}>
+      <div className="hw-widget glass-panel">
         <div className="hw-widget-header">
           <Server size={15} />
           <span>Local Hardware</span>
@@ -32,7 +32,7 @@ export function HardwareWidget(props: { machine: DashboardState['machineDetails'
   ];
 
   return (
-    <div className="hw-widget glass-panel" style={{ height: '145px' }}>
+    <div className="hw-widget glass-panel">
       <div className="hw-widget-header">
         <Server size={15} />
         <span>Local Hardware</span>
