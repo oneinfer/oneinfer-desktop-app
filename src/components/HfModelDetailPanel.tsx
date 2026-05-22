@@ -66,7 +66,7 @@ export function HfModelDetailPanel(props: {
   const selectedInstalled = selectedSupported && libraries[selectedOption.value];
   const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
   const selectedLaunchable = isOneClickLaunchable(selectedOption.value);
-  const canDeploy = Boolean(preferredRuntime) && selectedLaunchable && validation?.status !== 'insufficient';
+  const canUseSelectedLibrary = selectedSupported && validation?.status !== 'insufficient';
   const selectedBusy = busy === `install-${selectedOption.value}`;
 
   const handleInstall = async (name: ServingLibrary) => {
@@ -84,11 +84,16 @@ export function HfModelDetailPanel(props: {
     setLocalError(null);
     setLocalSuccess(null);
     try {
+      if (selectedSupported && !selectedInstalled) {
+        await handleInstall(selectedOption.value);
+        return;
+      }
+
       const deployed = await onRegister();
       if (deployed === false) {
         return;
       }
-      setLocalSuccess('Model deployed successfully to your local machine.');
+      setLocalSuccess(selectedLaunchable ? 'Model deployed successfully to your local machine.' : 'Local endpoint registered successfully.');
     } catch (error: any) {
       setLocalError(error?.message || 'Deployment failed');
     }
@@ -240,11 +245,11 @@ export function HfModelDetailPanel(props: {
             Cancel Deployment
           </button>
         ) : null}
-        <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canDeploy} type="button">
+        <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canUseSelectedLibrary || selectedBusy} type="button">
           {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
-          {preferredRuntime
-            ? selectedLaunchable ? `Deploy with ${preferredRuntime}` : `${preferredRuntime} requires manual server`
-            : selectedSupported ? `Install ${selectedOption.label} to Deploy` : `${selectedOption.label} not supported`}
+          {selectedInstalled
+            ? selectedLaunchable ? `Deploy with ${preferredRuntime}` : `Register ${selectedOption.label} endpoint`
+            : selectedSupported ? `Install ${selectedOption.label}` : `${selectedOption.label} not supported`}
         </button>
       </div>
     </section>

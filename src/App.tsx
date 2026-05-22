@@ -903,8 +903,13 @@ function App() {
 
     const selectedRuntime = selfHostForm.serving_library;
     if (!isLaunchableLocalRuntime(selectedRuntime)) {
-      setMessage({ tone: 'error', text: `${formatLocalRuntime(selectedRuntime)} can be registered as an existing local endpoint, but one-click Hugging Face deployment is not supported yet. Start the server yourself, enter its local API URL, then register it.` });
-      return false;
+      if (!libraries[selectedRuntime]) {
+        setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(selectedRuntime)} before registering this local endpoint.` });
+        return false;
+      }
+
+      await handleRegisterSelfHosted();
+      return true;
     }
 
     const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
