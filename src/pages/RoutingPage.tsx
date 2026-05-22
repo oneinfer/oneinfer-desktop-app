@@ -140,6 +140,7 @@ export function RoutingPage(props: {
   onCopyRoute: (routeId: string) => void;
   onDeleteRoute: (routeId: string, routeName: string) => void;
   onCreateSelfHosting: () => void;
+  onSetupRouterEndpoint?: (routerModelId: string) => void;
   localDeployments?: LocalModelDeployment[];
   initialEndpointId?: string | null;
   onInitialEndpointConsumed?: () => void;
@@ -190,6 +191,8 @@ export function RoutingPage(props: {
   const selectedGoal = routingGoals.find((goal) => goal.value === routeDetails.routingGoal) ?? routingGoals[0];
   const selectedAlgorithm = routingAlgorithms.find((algorithm) => algorithm.value === routeDetails.routingAlgorithm) ?? routingAlgorithms[0];
   const effectiveRouterRuntime: RouterRuntime = 'local';
+  const selectedRouterModelId = normalizeHfRepoId(routeDetails.routingAlgorithm);
+  const routerSetupIssue = getRouterSetupIssue(selectedRouterModelId, props.dashboard, props.localDeployments || []);
 
   useEffect(() => {
     if (!props.initialEndpointId) {
@@ -471,6 +474,15 @@ export function RoutingPage(props: {
             <small>Algorithm: {selectedAlgorithm.family} / {selectedAlgorithm.label}</small>
             <small>Router runtime: Local</small>
           </div>
+          {routerSetupIssue ? (
+            <div className="route-summary">
+              <strong>Router setup required</strong>
+              <span>{routerSetupIssue}</span>
+              <button className="secondary-button" onClick={() => props.onSetupRouterEndpoint?.(selectedRouterModelId)} type="button">
+                Set up router endpoint
+              </button>
+            </div>
+          ) : null}
           <button className="ghost-button !justify-start !border-0 !bg-transparent !px-0 !py-1 !text-[0.85rem]" onClick={() => setShowAdvanced((open) => !open)} type="button">
             {showAdvanced ? 'Hide advanced settings' : 'Show advanced settings'}
           </button>
@@ -523,7 +535,7 @@ export function RoutingPage(props: {
           <div className="form-hint">
             Good descriptions name the domain, task/action, selection preference, and boundary. Example: Prefer local models for private drafts, simple code edits, and low-latency summaries; use cloud endpoints for complex reasoning, long-context debugging, or when local health is poor.
           </div>
-          <button className="primary-button" type="submit" disabled={props.busy === 'create-intelligent-endpoint'}>
+          <button className="primary-button" type="submit" disabled={props.busy === 'create-intelligent-endpoint' || Boolean(routerSetupIssue)}>
             {props.busy === 'create-intelligent-endpoint' ? <LoaderCircle className="spin" size={16} /> : <Orbit size={16} />}
             Create Route
           </button>
@@ -573,6 +585,70 @@ export function RoutingPage(props: {
       </Modal>
     </div>
   );
+}
+
+type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+function getRouterSetupIssue(routerModelId: string, dashboard: DashboardState, localDeployments: LocalModelDeployment[]): string | null {
+  if (!routerModelId || hasLocalRouterEndpoint(routerModelId, dashboard, localDeployments)) {
+    return null;
+  }
+
+  const platform = getSupportedPlatform(dashboard.machineDetails?.platform);
+  if (platform === 'windows' && !isOllamaCompatibleModelId(routerModelId)) {
+    return `${routerModelId} needs a local PyTorch or Transformers endpoint on Windows before you create this route. vLLM one-click router deployment is not available on this OS.`;
+  }
+
+  return null;
+}
+
+function hasLocalRouterEndpoint(routerModelId: string, dashboard: DashboardState, localDeployments: LocalModelDeployment[]): boolean {
+  return dashboard.inferenceEndpoints.some((endpoint) => {
+    const record = endpoint as Record<string, unknown>;
+    const endpointModelId = String(record.model_id ?? record.modelId ?? '');
+    const endpointUrl = String(record.endpoint_url ?? '').toLowerCase();
+    const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
+    return endpointModelId === routerModelId
+      && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'));
+  }) || localDeployments.some((deployment) => deployment.modelId === routerModelId);
+}
+
+function normalizeHfRepoId(value: string): string {
+  const rawValue = value.trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
+    try {
+      const url = new URL(rawValue);
+      const parts = url.pathname.split('/').filter(Boolean);
+      return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+    } catch {
+      return '';
+    }
+  }
+
+  return rawValue.includes('/') ? rawValue : '';
+}
+
+function isOllamaCompatibleModelId(modelId: string): boolean {
+  const normalized = modelId.toLowerCase();
+  return normalized.includes('gguf') || normalized.includes('ggml') || normalized.includes('llama.cpp') || normalized.includes('llamacpp');
+}
+
+function getSupportedPlatform(value: unknown): SupportedPlatform {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('win')) return 'windows';
+  if (normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.includes('linux')) return 'linux';
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('windows')) return 'windows';
+    if (userAgent.includes('mac')) return 'macos';
+    if (userAgent.includes('linux')) return 'linux';
+  }
+  return 'unknown';
 }
 
 function getRouteId(endpoint: EndpointItem, index: number): string {

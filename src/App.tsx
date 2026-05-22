@@ -1364,6 +1364,30 @@ function App() {
     }
   }
 
+  function handleSetupRouterEndpoint(routerModelId: string) {
+    const normalizedRouterModelId = normalizeLocalModelId(routerModelId);
+    if (!normalizedRouterModelId) {
+      setMessage({ tone: 'error', text: 'Select a valid router model before setup.' });
+      return;
+    }
+
+    setSelfHostForm((current) => ({
+      ...current,
+      name: `${normalizedRouterModelId} router`,
+      model_id: '',
+      useHfUrl: true,
+      hfUrl: `https://huggingface.co/${normalizedRouterModelId}`,
+      serving_library: libraries.transformers ? 'transformers' : 'pytorch',
+      endpoint_url: current.endpoint_url || 'http://localhost:8000/v1',
+    }));
+    setInfraTab('self-hosted');
+    setActiveSection('selfHosting');
+    setMessage({
+      tone: 'info',
+      text: 'Router model loaded in Self Hosting. Install/register PyTorch or Transformers, then return to Routing to create the route.',
+    });
+  }
+
   async function ensureServingLibraryInstalled(library: ServingLibrary, reason: string): Promise<void> {
     if (libraries[library]) {
       return;
@@ -1706,6 +1730,7 @@ function App() {
             onCopyRoute={handleCopyRoute}
             onDeleteRoute={handleDeleteRoute}
             onCreateSelfHosting={() => setActiveSection('selfHosting')}
+            onSetupRouterEndpoint={handleSetupRouterEndpoint}
             localDeployments={localDeployments}
             initialEndpointId={routeInitialEndpointId}
             onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
