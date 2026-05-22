@@ -372,6 +372,7 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
 
   endpoints
     .filter((endpoint) => isLocalEndpoint(endpoint))
+    .filter((endpoint) => !isRouterEndpoint(endpoint))
     .forEach((endpoint, index) => {
       const endpointUrl = String(endpoint.endpoint_url ?? '');
       if (!endpointUrl) {
@@ -394,7 +395,7 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
       });
     });
 
-  deployments.forEach((deployment, index) => {
+  deployments.filter((deployment) => !isRouterDeployment(deployment)).forEach((deployment, index) => {
     const rowKey = getLocalDeploymentRowKey(deployment.endpointUrl, deployment.modelId);
     const existing = rows.get(rowKey);
     rows.set(rowKey, {
@@ -410,6 +411,24 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
   });
 
   return Array.from(rows.values());
+}
+
+function isRouterEndpoint(endpoint: EndpointItem): boolean {
+  const role = String((endpoint as Record<string, unknown>).endpoint_role ?? (endpoint as Record<string, unknown>).role ?? '').toLowerCase();
+  if (role === 'router') {
+    return true;
+  }
+
+  return isRouterText(String(endpoint.name ?? ''), String(endpoint.model_id ?? ''));
+}
+
+function isRouterDeployment(deployment: LocalModelDeployment): boolean {
+  return isRouterText(deployment.name, deployment.modelId);
+}
+
+function isRouterText(name: string, modelId: string): boolean {
+  const text = `${name} ${modelId}`.toLowerCase();
+  return text.includes(' router') || text.endsWith('router') || text.includes('arch-router') || text.includes('routellm') || text.includes('router-r1');
 }
 
 function getLocalDeploymentRowKey(endpointUrl: string, modelId: string): string {
