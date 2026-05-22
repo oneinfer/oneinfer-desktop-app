@@ -1171,13 +1171,14 @@ function App() {
       throw new Error('Local router deployment is not available in this app build.');
     }
 
-    const routerRuntime = libraries.ollama ? 'ollama' : libraries.vllm ? 'vllm' : null;
+    const canUseOllamaRouter = libraries.ollama && isOllamaCompatibleModelId(routerModelId);
+    const routerRuntime = canUseOllamaRouter ? 'ollama' : libraries.vllm ? 'vllm' : libraries.ollama ? 'ollama' : null;
     if (!routerRuntime) {
       throw new Error('Install Ollama or vLLM before deploying a router model locally.');
     }
 
     if (routerRuntime === 'ollama' && !isOllamaCompatibleModelId(routerModelId)) {
-      throw new Error(`${routerModelId} is not Ollama-compatible. Choose a GGUF/Ollama router model.`);
+      throw new Error(`${routerModelId} is not Ollama-compatible. Install vLLM or choose a GGUF/Ollama router model.`);
     }
 
     setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId} with ${formatLocalRuntime(routerRuntime)}...` });

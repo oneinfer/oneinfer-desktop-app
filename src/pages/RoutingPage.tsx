@@ -26,7 +26,7 @@ const defaultRouteDetails: CreateRouteDetails = {
   modelId: '',
   attachedEndpointIds: [],
   inputModality: 'text',
-  routingAlgorithm: 'hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M',
+  routingAlgorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
   routerRuntime: 'local',
   description: '',
 };
@@ -36,10 +36,21 @@ export interface CreateRoutePayload extends CreateRouteDetails {
 }
 
 const routingAlgorithms = [
-  { value: 'hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M', label: 'Qwen2.5 0.5B Instruct GGUF', family: 'Ollama Router' },
-  { value: 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M', label: 'Llama 3.2 1B Instruct GGUF', family: 'Ollama Router' },
-  { value: 'qwen2.5:0.5b', label: 'Qwen2.5 0.5B', family: 'Ollama Library' },
-  { value: 'llama3.2:1b', label: 'Llama 3.2 1B', family: 'Ollama Library' },
+  { value: 'https://huggingface.co/katanemo/Arch-Router-1.5B', label: 'Arch-Router 1.5B', family: 'Router Models' },
+  { value: 'https://huggingface.co/routellm/bert', label: 'RouteLLM BERT', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/bert_gpt4_augmented', label: 'RouteLLM BERT GPT-4 Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/bert_mmlu_augmented', label: 'RouteLLM BERT MMLU Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/causal_llm', label: 'RouteLLM Causal LLM', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/causal_llm_gpt4_augmented', label: 'RouteLLM Causal LLM GPT-4 Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/causal_llm_mmlu_augmented', label: 'RouteLLM Causal LLM MMLU Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/mf', label: 'RouteLLM Matrix Factorization', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/mf_gpt4_augmented', label: 'RouteLLM Matrix Factorization GPT-4 Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/routellm/mf_mmlu_augmented', label: 'RouteLLM Matrix Factorization MMLU Augmented', family: 'RouteLLM' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct', label: 'Router-R1 Qwen2.5 3B Instruct', family: 'Router-R1' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct-Alpha0.9', label: 'Router-R1 Qwen2.5 3B Instruct Alpha 0.9', family: 'Router-R1' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct', label: 'Router-R1 Llama 3.2 3B Instruct', family: 'Router-R1' },
+  { value: 'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct-Alpha0.9', label: 'Router-R1 Llama 3.2 3B Instruct Alpha 0.9', family: 'Router-R1' },
+  { value: 'https://huggingface.co/llm-semantic-router/mmbert32k-modality-router-merged', label: 'MMBERT32K Modality Router Merged', family: 'vLLM Semantic Router / MoM' },
 ];
 
 const routingGoals: Array<{ value: RoutingGoal; title: string; text: string; algorithm: string; algorithmLabel: string; explanation: string }> = [
@@ -47,49 +58,49 @@ const routingGoals: Array<{ value: RoutingGoal; title: string; text: string; alg
     value: 'balanced',
     title: 'Balanced',
     text: 'Blend quality, latency, and cost for everyday requests.',
-    algorithm: 'hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M',
-    algorithmLabel: 'Qwen2.5 0.5B GGUF',
-    explanation: 'Uses a small Ollama-compatible model as the local router for balancing endpoint capability, latency, and cost.',
+    algorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
+    algorithmLabel: 'Arch-Router 1.5B',
+    explanation: 'Uses the confirmed Arch-Router model as the default general-purpose router for balancing endpoint capability, latency, and cost.',
   },
   {
     value: 'fastest',
     title: 'Fastest',
     text: 'Prefer endpoints expected to respond with the lowest latency.',
-    algorithm: 'qwen2.5:0.5b',
-    algorithmLabel: 'Qwen2.5 0.5B',
-    explanation: 'Uses a tiny Ollama model for lightweight local routing when latency is the main priority.',
+    algorithm: 'https://huggingface.co/routellm/bert',
+    algorithmLabel: 'RouteLLM BERT',
+    explanation: 'Uses the confirmed RouteLLM BERT router for lightweight classification when latency is the main priority.',
   },
   {
     value: 'lowest_cost',
     title: 'Lowest cost',
     text: 'Route simple work to the cheapest capable endpoint first.',
-    algorithm: 'qwen2.5:0.5b',
-    algorithmLabel: 'Qwen2.5 0.5B',
-    explanation: 'Uses a small Ollama router to keep local routing inexpensive and fast.',
+    algorithm: 'https://huggingface.co/routellm/mf',
+    algorithmLabel: 'RouteLLM Matrix Factorization',
+    explanation: 'Uses the confirmed RouteLLM matrix-factorization router to score candidate endpoints with a compact preference model.',
   },
   {
     value: 'highest_quality',
     title: 'Highest quality',
     text: 'Prefer stronger models for harder prompts and reasoning.',
-    algorithm: 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M',
-    algorithmLabel: 'Llama 3.2 1B GGUF',
-    explanation: 'Uses a slightly larger Ollama-compatible router for quality-sensitive routing decisions.',
+    algorithm: 'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct',
+    algorithmLabel: 'Router-R1 Qwen2.5 3B Instruct',
+    explanation: 'Uses the confirmed Router-R1 Qwen router for quality-sensitive routing decisions across stronger candidate endpoints.',
   },
   {
     value: 'reliability',
     title: 'Reliability',
     text: 'Prioritize fallback behavior and healthy endpoint coverage.',
-    algorithm: 'hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M',
-    algorithmLabel: 'Qwen2.5 0.5B GGUF',
-    explanation: 'Uses an Ollama-compatible local router while prioritizing fallback behavior and healthy endpoint coverage.',
+    algorithm: 'https://huggingface.co/llm-semantic-router/mmbert32k-modality-router-merged',
+    algorithmLabel: 'MMBERT32K Modality Router Merged',
+    explanation: 'Uses the confirmed vLLM semantic-router modality model to keep routing aligned with input modality and available endpoint coverage.',
   },
   {
     value: 'custom',
     title: 'Custom',
-    text: 'Pick an Ollama-compatible router in advanced settings.',
-    algorithm: 'hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M',
+    text: 'Pick a confirmed Hugging Face router in advanced settings.',
+    algorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
     algorithmLabel: 'Advanced selection',
-    explanation: 'Lets you manually choose an Ollama-compatible local router model.',
+    explanation: 'Lets you manually choose from the confirmed Hugging Face router model allowlist in advanced settings.',
   },
 ];
 
@@ -457,7 +468,7 @@ export function RoutingPage(props: {
           <div className="route-summary">
             <strong>{selectedGoal.title}</strong>
             <span>{selectedEndpointOptions.length === 0 ? 'Select at least two endpoints for meaningful routing.' : `${selectedEndpointOptions.length} endpoint${selectedEndpointOptions.length === 1 ? '' : 's'} selected.`}</span>
-            <small>{selectedAlgorithm.family} / {selectedAlgorithm.label}</small>
+            <small>Algorithm: {selectedAlgorithm.family} / {selectedAlgorithm.label}</small>
             <small>Router runtime: Local</small>
           </div>
           <button className="ghost-button !justify-start !border-0 !bg-transparent !px-0 !py-1 !text-[0.85rem]" onClick={() => setShowAdvanced((open) => !open)} type="button">
@@ -482,7 +493,7 @@ export function RoutingPage(props: {
                   <option value="local">Local router</option>
                 </select>
                 <small className="field-help">
-                  The router model is deployed locally with Ollama when available. It can still choose local, cloud, OpenBandwidth, or closed-source candidate endpoints.
+                  The selected routing algorithm is deployed locally. It can still choose local, cloud, OpenBandwidth, or closed-source candidate endpoints.
                 </small>
               </label>
               <label>
