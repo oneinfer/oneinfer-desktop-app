@@ -1201,7 +1201,7 @@ function App() {
       const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
       return endpointModelId === routerModelId
         && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'))
-        && (!endpointRole || endpointRole === 'router' || String(record.name ?? '').toLowerCase().includes('router'))
+        && (!endpointRole || endpointRole === 'router' || endpointRole === 'model' || String(record.name ?? '').toLowerCase().includes('router'))
         && Boolean(getInferenceEndpointIdFromRecord(endpoint, index));
     });
 
@@ -1226,6 +1226,12 @@ function App() {
     }
 
     const routerRuntime = getRequiredRouterRuntime(routerModelId);
+    const routerPlatform = getSupportedPlatform(dashboard.machineDetails?.platform);
+    const unsupportedReason = getRouterRuntimeUnsupportedReason(routerRuntime, routerPlatform, routerModelId);
+    if (unsupportedReason) {
+      throw new Error(unsupportedReason);
+    }
+
     if (!libraries[routerRuntime]) {
       await ensureServingLibraryInstalled(routerRuntime, `${formatLocalRuntime(routerRuntime)} is required for the selected router model.`);
     }
@@ -1816,6 +1822,34 @@ function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): '
 
 function getRequiredRouterRuntime(routerModelId: string): 'vllm' | 'ollama' {
   return isOllamaCompatibleModelId(routerModelId) ? 'ollama' : 'vllm';
+}
+
+type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+function getSupportedPlatform(value: unknown): SupportedPlatform {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('win')) return 'windows';
+  if (normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.includes('linux')) return 'linux';
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('windows')) return 'windows';
+    if (userAgent.includes('mac')) return 'macos';
+    if (userAgent.includes('linux')) return 'linux';
+  }
+  return 'unknown';
+}
+
+function getRouterRuntimeUnsupportedReason(runtime: 'vllm' | 'ollama', platform: SupportedPlatform, routerModelId: string): string | null {
+  if (runtime === 'ollama') {
+    return null;
+  }
+
+  if (platform === 'windows') {
+    return `${routerModelId} is a Hugging Face Transformers router model. One-click router deployment with vLLM is not supported on this OS. Register this router model as a local PyTorch or Transformers endpoint first, or choose a GGUF router model that can run with Ollama.`;
+  }
+
+  return null;
 }
 
 function isLaunchableLocalRuntime(runtime: ServingLibrary): runtime is 'vllm' | 'ollama' {
