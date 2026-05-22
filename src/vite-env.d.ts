@@ -153,6 +153,13 @@ interface Window {
       healthTimeoutMs?: number;
       progressId?: string;
     }) => Promise<DesktopHfDeploymentResult>;
+    startLocalRoute: (payload: {
+      routeId?: string;
+      name?: string;
+      routerEndpointUrl?: string;
+      routerModelId?: string;
+      candidates: Array<Record<string, unknown>>;
+    }) => Promise<{ endpointUrl: string; port: number; routeId: string }>;
     cancelHfDeployment: (payload: {
       repoId: string;
     }) => Promise<{ cancelled: boolean; message: string }>;

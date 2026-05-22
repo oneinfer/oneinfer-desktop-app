@@ -3,6 +3,7 @@ const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -15,6 +16,7 @@ let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
 const localModelDeployments = new Map();
 const localModelDeploymentsInFlight = new Map();
+const localRouteDeployments = new Map();
 const MACHINE_SYNC_DEBOUNCE_MS = 15000;
 let updaterConfigured = false;
 let updateState = {
@@ -1898,6 +1900,201 @@ async function cancelHfDeployment(payload = {}) {
   return { cancelled: true, message: `Cancelled deployment for ${repoId}.` };
 }
 
+function normalizeOpenAiBaseUrl(endpointUrl) {
+  const normalized = String(endpointUrl || '').trim().replace(/\/+$/, '');
+  if (!normalized) return '';
+  if (/\/v1$/i.test(normalized)) return normalized;
+  if (/\/v1\/chat\/completions$/i.test(normalized)) return normalized.replace(/\/chat\/completions$/i, '');
+  return `${normalized}/v1`;
+}
+
+async function readJsonRequest(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+
+  const rawBody = Buffer.concat(chunks).toString('utf8') || '{}';
+  return JSON.parse(rawBody);
+}
+
+function sendJsonResponse(res, status, payload) {
+  const raw = Buffer.from(JSON.stringify(payload));
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': raw.length,
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'content-type, authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  });
+  res.end(raw);
+}
+
+async function postOpenAiChatCompletion(endpointUrl, payload, headers = {}) {
+  const targetUrl = `${normalizeOpenAiBaseUrl(endpointUrl)}/chat/completions`;
+  const response = await fetch(targetUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(headers.authorization ? { Authorization: headers.authorization } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
+  }
+
+  if (!response.ok) {
+    const message = typeof parsed === 'string'
+      ? parsed
+      : parsed?.error?.message || parsed?.detail || response.statusText;
+    throw new Error(`Candidate endpoint ${targetUrl} returned HTTP ${response.status}: ${message}`);
+  }
+
+  return parsed;
+}
+
+async function chooseLocalRouteCandidate(route, requestPayload) {
+  const candidates = route.candidates.filter((candidate) => candidate.endpointUrl);
+  if (candidates.length === 0) {
+    throw new Error('This local route has no callable local/OpenAI-compatible candidate endpoint URLs.');
+  }
+
+  if (candidates.length === 1 || !route.routerEndpointUrl) {
+    route.nextIndex = (route.nextIndex + 1) % candidates.length;
+    return candidates[0];
+  }
+
+  const routerPrompt = [
+    'Select the best endpoint for this request.',
+    'Return only the endpoint id, name, or index.',
+    `Endpoints: ${candidates.map((candidate, index) => `${index}: ${candidate.name || candidate.id} (${candidate.modelId || 'unknown model'})`).join('; ')}`,
+    `Request: ${JSON.stringify(requestPayload.messages || requestPayload.prompt || requestPayload).slice(0, 4000)}`,
+  ].join('\n');
+
+  try {
+    const routerResponse = await postOpenAiChatCompletion(route.routerEndpointUrl, {
+      model: route.routerModelId || 'router',
+      messages: [{ role: 'user', content: routerPrompt }],
+      max_tokens: 64,
+    });
+    const content = String(routerResponse?.choices?.[0]?.message?.content || routerResponse?.choices?.[0]?.text || '').toLowerCase();
+    const matched = candidates.find((candidate, index) => {
+      const id = String(candidate.id || '').toLowerCase();
+      const name = String(candidate.name || '').toLowerCase();
+      return content.includes(String(index)) || (id && content.includes(id)) || (name && content.includes(name));
+    });
+    if (matched) {
+      return matched;
+    }
+  } catch (error) {
+    console.warn('[local-route] router selection failed, falling back to round-robin', error);
+  }
+
+  const selected = candidates[route.nextIndex % candidates.length];
+  route.nextIndex = (route.nextIndex + 1) % candidates.length;
+  return selected;
+}
+
+async function startLocalRoute(payload = {}) {
+  const routeId = String(payload.routeId || payload.name || crypto.randomUUID());
+  const existingRoute = localRouteDeployments.get(routeId);
+  if (existingRoute?.endpointUrl) {
+    return {
+      endpointUrl: existingRoute.endpointUrl,
+      port: existingRoute.port,
+      routeId,
+    };
+  }
+
+  const candidates = Array.isArray(payload.candidates)
+    ? payload.candidates
+        .map((candidate) => ({
+          id: String(candidate.endpoint_id || candidate.id || candidate.endpointUrl || ''),
+          name: String(candidate.endpoint_name || candidate.name || candidate.model_id || candidate.modelId || candidate.endpointUrl || 'endpoint'),
+          modelId: String(candidate.model_id || candidate.modelId || candidate.name || ''),
+          endpointUrl: normalizeOpenAiBaseUrl(candidate.endpoint_url || candidate.endpointUrl || ''),
+          authorization: candidate.authorization || candidate.api_key ? `Bearer ${candidate.api_key}` : undefined,
+        }))
+        .filter((candidate) => candidate.endpointUrl)
+    : [];
+
+  if (candidates.length === 0) {
+    throw new Error('Cannot start a fully local route because none of the attached endpoints include a local/OpenAI-compatible endpoint URL.');
+  }
+
+  const port = await findAvailablePort(payload.port || 8500);
+  const route = {
+    routeId,
+    name: String(payload.name || routeId),
+    routerEndpointUrl: normalizeOpenAiBaseUrl(payload.routerEndpointUrl || ''),
+    routerModelId: String(payload.routerModelId || ''),
+    candidates,
+    nextIndex: 0,
+    port,
+    endpointUrl: `http://127.0.0.1:${port}/v1`,
+  };
+
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      sendJsonResponse(res, 204, {});
+      return;
+    }
+
+    if (req.method === 'GET' && req.url.replace(/\/+$/, '') === '/v1/models') {
+      sendJsonResponse(res, 200, {
+        object: 'list',
+        data: candidates.map((candidate) => ({ id: candidate.modelId || candidate.name, object: 'model', owned_by: 'oneinfer-local-route' })),
+      });
+      return;
+    }
+
+    if (req.method !== 'POST' || !['/v1/chat/completions', '/v1/completions'].includes(req.url.replace(/\/+$/, ''))) {
+      sendJsonResponse(res, 404, { error: { message: 'Not found' } });
+      return;
+    }
+
+    try {
+      const requestPayload = await readJsonRequest(req);
+      const candidate = await chooseLocalRouteCandidate(route, requestPayload);
+      const responsePayload = await postOpenAiChatCompletion(candidate.endpointUrl, {
+        ...requestPayload,
+        model: requestPayload.model && requestPayload.model !== 'route' ? requestPayload.model : candidate.modelId || requestPayload.model,
+      }, { authorization: candidate.authorization || req.headers.authorization });
+      sendJsonResponse(res, 200, {
+        ...responsePayload,
+        oneinfer_route: {
+          route_id: route.routeId,
+          selected_endpoint_id: candidate.id,
+          selected_endpoint_name: candidate.name,
+          selected_endpoint_url: candidate.endpointUrl,
+        },
+      });
+    } catch (error) {
+      sendJsonResponse(res, 500, { error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  server.unref();
+  route.server = server;
+  localRouteDeployments.set(routeId, route);
+
+  return {
+    endpointUrl: route.endpointUrl,
+    port,
+    routeId,
+  };
+}
+
 async function deleteLocalModel(payload = {}) {
   const endpointUrl = String(payload.endpointUrl || '').trim();
   const modelId = String(payload.modelId || '').trim();
@@ -3296,6 +3493,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
   ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
+  ipcMain.handle('app:start-local-route', async (_event, payload) => startLocalRoute(payload));
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
   ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));

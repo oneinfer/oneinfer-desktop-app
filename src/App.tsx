@@ -147,6 +147,7 @@ function App() {
   const [libraries, setLibraries] = useState<Record<ServingLibrary, boolean>>(initialLibraryStatus);
   const [deploymentProgress, setDeploymentProgress] = useState<DesktopDeploymentProgress[]>([]);
   const [localDeployments, setLocalDeployments] = useState<LocalModelDeployment[]>([]);
+  const [localRouteUrls, setLocalRouteUrls] = useState<Record<string, string>>({});
   const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
   const [routeInitialEndpointId, setRouteInitialEndpointId] = useState<string | null>(null);
 
@@ -1317,8 +1318,20 @@ function App() {
         const localDeployment = registeredLocalDeployments.find((deployment) => getLocalDeploymentSelectionId(deployment) === endpointId);
         return localDeployment?.endpointId || endpointId;
       });
+      const attachedInferenceEndpoints = attachedEndpointIds.map((endpointId) => (
+        buildAttachedInferenceEndpointPayload(
+          endpointId,
+          routeName,
+          payload.inputModality,
+          payload.modelId,
+          dashboard.inferenceEndpoints,
+          dashboard.instances,
+          localDeployments,
+          dashboard.models,
+        )
+      ));
 
-      await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
+      const createdRoute = await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
         name: routeName,
         routing_config: {
           routing_algorithm: payload.routingAlgorithm,
@@ -1333,26 +1346,31 @@ function App() {
         ...(attachedEndpointIds.length > 0
           ? {
               attached_endpoints: {
-                inference_api: attachedEndpointIds.map((endpointId) => (
-                  buildAttachedInferenceEndpointPayload(
-                    endpointId,
-                    routeName,
-                    payload.inputModality,
-                    payload.modelId,
-                    dashboard.inferenceEndpoints,
-                    dashboard.instances,
-                    localDeployments,
-                    dashboard.models,
-                  )
-                )),
+                inference_api: attachedInferenceEndpoints,
               },
             }
           : {}),
       });
+      const createdRouteId = getEndpointIdFromPayload(createdRoute) || routeName;
+      if (window.desktopBridge?.startLocalRoute) {
+        try {
+          const localRoute = await window.desktopBridge.startLocalRoute({
+            routeId: createdRouteId,
+            name: routeName,
+            routerEndpointUrl: routerDeployment.endpointUrl,
+            routerModelId: routerDeployment.modelId,
+            candidates: attachedInferenceEndpoints,
+          });
+          setLocalRouteUrls((current) => ({ ...current, [createdRouteId]: localRoute.endpointUrl }));
+        } catch (error) {
+          setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Route created, but local route server could not start.' });
+          return false;
+        }
+      }
 
       setMessage({
         tone: 'success',
-        text: attachedEndpointIds.length > 0 ? 'Route created with route config and inference endpoints attached.' : 'Route created with route config.',
+        text: attachedEndpointIds.length > 0 ? 'Local route created with router and inference endpoints attached.' : 'Route created with route config.',
       });
       setIntelligentEndpointName('');
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
@@ -1545,7 +1563,7 @@ function App() {
       return;
     }
 
-    const localRouteUrl = getLocalRouteChatUrl(route);
+    const localRouteUrl = localRouteUrls[routeId] ? toOpenAiChatCompletionsUrl(localRouteUrls[routeId]) : getLocalRouteChatUrl(route);
     const normalizedBaseUrl = settingsDraft.apiBaseUrl.replace(/\/+$/, '');
     const routeUrl = localRouteUrl || `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
     navigator.clipboard?.writeText(routeUrl);
@@ -1855,8 +1873,8 @@ function buildAttachedInferenceEndpointPayload(
   return {
     endpoint_id: endpoint ? endpointId : localDeployment ? localDeployment.endpointUrl : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
-    endpoint_url: localDeployment?.endpointUrl,
-    model_id: localDeployment?.modelId,
+    endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
+    model_id: String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? ''),
     input_modality: inputModality,
     output_modality: String(outputModalities[0] ?? 'text'),
   };
