@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 
 import type { ValidationResult } from '../helpers/hardwareValidation';
-import { bytesToGiB, getModelWeightBytes } from '../helpers/modelSizing';
+import { getModelMemoryBreakdown } from '../helpers/modelSizing';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
 import { Banner } from './Common';
@@ -47,9 +47,12 @@ export function HfModelDetailPanel(props: {
 
   if (!model) return null;
 
-  const sizeGb = bytesToGiB(getModelWeightBytes(model));
+  const memoryBreakdown = getModelMemoryBreakdown(model);
+  const sizeGb = validation?.modelWeightGb ?? memoryBreakdown.modelWeightGb;
+  const kvCacheGb = validation?.kvCacheGb ?? memoryBreakdown.kvCacheGb;
+  const servingOverheadGb = validation?.servingOverheadGb ?? memoryBreakdown.servingOverheadGb;
   const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
-  const effectiveMinVramGb = validation?.effectiveMinVramGb || sizeGb;
+  const effectiveMinVramGb = validation?.effectiveMinVramGb || memoryBreakdown.totalVramGb;
 
   const isVllmBusy = busy === 'install-vllm';
   const isOllamaBusy = busy === 'install-ollama';
@@ -149,7 +152,11 @@ export function HfModelDetailPanel(props: {
               </div>
               <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={16} /> KV Cache (Est.)</span>
-                <strong style={{ color: 'var(--muted)' }}>+ {(sizeGb * 0.15).toFixed(2)} GB</strong>
+                <strong style={{ color: 'var(--muted)' }}>+ {kvCacheGb.toFixed(2)} GB</strong>
+              </div>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Server size={16} /> Serving Overhead</span>
+                <strong style={{ color: 'var(--muted)' }}>+ {servingOverheadGb.toFixed(2)} GB</strong>
               </div>
               <div className="data-row" style={{ padding: '12px', background: 'rgba(116, 227, 197, 0.05)', borderRadius: '8px', borderBottom: 'none' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent)' }}><Server size={16} /> Total Req. VRAM</span>

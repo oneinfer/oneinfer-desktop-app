@@ -36,9 +36,9 @@ import {
   defaultInstanceForm,
   defaultSettings,
 } from './constants';
-import { validateHardwareSupport, type ValidationResult } from './helpers/hardwareValidation';
+import { validateHardwareSupport, type ModelRequirements, type ValidationResult } from './helpers/hardwareValidation';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
-import { bytesToGiB, getModelWeightBytes } from './helpers/modelSizing';
+import { getModelMemoryBreakdown } from './helpers/modelSizing';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
@@ -165,7 +165,7 @@ function App() {
         return;
       }
 
-      let requirements = { minVramGb: 0, modelSizeGb: 0 };
+      let requirements: ModelRequirements = { minVramGb: 0, modelSizeGb: 0 };
       setHfModelMetadataLoading(true);
       setHfModelMetadataError(null);
 
@@ -179,12 +179,15 @@ function App() {
               setHfModelMetadata(info);
             }
 
-            const sizeGb = bytesToGiB(getModelWeightBytes(info));
+            const memoryBreakdown = getModelMemoryBreakdown(info);
+            const sizeGb = memoryBreakdown.modelWeightGb;
 
             if (sizeGb > 0) {
               requirements = {
-                minVramGb: Math.ceil(sizeGb * 1.15) + 2,
+                minVramGb: memoryBreakdown.totalVramGb,
                 modelSizeGb: sizeGb,
+                kvCacheGb: memoryBreakdown.kvCacheGb,
+                servingOverheadGb: memoryBreakdown.servingOverheadGb,
               };
             } else if (active) {
               setValidationResult(null);
@@ -218,9 +221,19 @@ function App() {
           };
           setHfModelMetadata(virtualMetadata);
 
+          const catalogModelWeightGb = Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0);
+          const catalogContextLength = Number(catalogModel.modelContextLength || catalogModel.model_context_length || 0);
+          const catalogMemoryBreakdown = getModelMemoryBreakdown(virtualMetadata, {
+            modelWeightGb: catalogModelWeightGb,
+            contextLength: catalogContextLength || undefined,
+          });
+          const catalogMinVramGb = Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0);
+
           requirements = {
-            minVramGb: Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0),
-            modelSizeGb: Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0),
+            minVramGb: catalogMinVramGb || catalogMemoryBreakdown.totalVramGb,
+            modelSizeGb: catalogMemoryBreakdown.modelWeightGb,
+            kvCacheGb: catalogMemoryBreakdown.kvCacheGb,
+            servingOverheadGb: catalogMemoryBreakdown.servingOverheadGb,
           };
         } else if (active) {
           setHfModelMetadata(null);
@@ -1576,16 +1589,18 @@ function App() {
         </div>
       ) : null}
 
-      <div className="app-topbar">
-        <div className="welcome-copy">
-          <strong>Welcome</strong>
-          <span>{getGreeting()}, {getWelcomeName(session)}</span>
+      {activeSection === 'overview' ? (
+        <div className="app-topbar">
+          <div className="welcome-copy">
+            <strong>Welcome</strong>
+            <span>{getGreeting()}, {getWelcomeName(session)}</span>
+          </div>
+          <div className="top-credit-pill">
+            <span>Available Credits</span>
+            <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
+          </div>
         </div>
-        <div className="top-credit-pill">
-          <span>Available Credits</span>
-          <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
-        </div>
-      </div>
+      ) : null}
 
       <main className="main-stage" style={{ padding: '20px' }}>
         {activeSection === 'overview' ? (

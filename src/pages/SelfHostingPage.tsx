@@ -56,6 +56,7 @@ export function SelfHostingPage(props: {
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
   const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform, props.hfModelMetadata);
   const selectedLibraryInstalled = selectedLibrarySupported && props.libraries[selectedLibrary.value];
+  const selectedLibraryLaunchable = isOneClickLaunchable(selectedLibrary.value);
   const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
   const canInstallSelectedLibrary = selectedLibrarySupported && selectedLibrary.installable && !selectedLibraryInstalled;
   const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && hasLocalRuntime;
@@ -63,7 +64,7 @@ export function SelfHostingPage(props: {
   const ctaLabel = props.busy === 'register-self-hosted'
     ? 'Deploying...'
     : props.hfModelMetadata
-      ? 'Review & Deploy'
+      ? selectedLibraryLaunchable ? 'Review & Deploy' : 'Review Manual Setup'
       : props.hfModelMetadataLoading
         ? 'Checking Model...'
         : hasModelInput
@@ -202,6 +203,9 @@ export function SelfHostingPage(props: {
               metadataError={props.hfModelMetadataError}
               validationResult={props.validationResult}
               libraries={props.libraries}
+              selectedLibrary={selectedLibrary}
+              selectedLibraryInstalled={selectedLibraryInstalled}
+              selectedLibraryLaunchable={selectedLibraryLaunchable}
             />
 
             <button
@@ -435,12 +439,23 @@ function DeployabilityChecklist(props: {
   metadataError: string | null;
   validationResult: ValidationResult | null;
   libraries: Record<ServingLibrary, boolean>;
+  selectedLibrary: { value: ServingLibrary; label: string };
+  selectedLibraryInstalled: boolean;
+  selectedLibraryLaunchable: boolean;
 }) {
   const installedLibraries = servingLibraryOptions.filter((library) => props.libraries[library.value]).map((library) => library.label);
   const runtimeInstalled = installedLibraries.length > 0;
-  const runtimeLabel = runtimeInstalled ? `${installedLibraries.join(', ')} installed` : 'Local runtime required';
-  const runtimeDetail = runtimeInstalled
-    ? 'Ready to register an OpenAI-compatible local server. One-click launch is currently available for vLLM and Ollama.'
+  const runtimeLabel = props.selectedLibraryInstalled
+    ? `${props.selectedLibrary.label} installed`
+    : runtimeInstalled
+      ? `${installedLibraries.join(', ')} installed`
+      : 'Local runtime required';
+  const runtimeDetail = props.selectedLibraryInstalled
+    ? props.selectedLibraryLaunchable
+      ? `${props.selectedLibrary.label} can be launched automatically for this model.`
+      : `${props.selectedLibrary.label} can be registered after you start an OpenAI-compatible local server. One-click launch is currently available for vLLM and Ollama.`
+    : runtimeInstalled
+      ? 'Select an installed runtime, or install the selected runtime before deployment.'
     : 'Install or start a supported local serving library before deployment.';
 
   return (
@@ -464,6 +479,10 @@ function DeployabilityChecklist(props: {
       />
     </div>
   );
+}
+
+function isOneClickLaunchable(library: ServingLibrary): boolean {
+  return library === 'vllm' || library === 'ollama';
 }
 
 function normalizeServingLibrary(value: unknown, endpointUrl = ''): ServingLibrary {
