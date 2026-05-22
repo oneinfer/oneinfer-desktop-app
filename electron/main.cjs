@@ -923,7 +923,7 @@ async function installLibrary(name) {
     tensorrt: ['tensorrt-llm'],
     llama_cpp: ['llama-cpp-python'],
     pytorch: ['torch'],
-    transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5'],
+    transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'],
     dynamo: ['ai-dynamo'],
   };
 
@@ -1236,6 +1236,22 @@ async function getPythonCommandForModule(moduleName) {
 
   return null;
 }
+
+async function removeTorchvisionIfBroken(pipCommand, python, onProgress = () => {}) {
+  try {
+    await runCommand(python.command, [...python.prefixArgs, '-c', 'import torchvision'], { timeoutMs: 10000 });
+    return false;
+  } catch {
+    onProgress({
+      stage: 'preparing',
+      message: 'Removing broken TorchVision package...',
+      detail: 'TorchVision is not required for text router models, and the installed copy is incompatible with PyTorch.',
+    });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'uninstall', '-y', 'torchvision'], { timeoutMs: 5 * 60 * 1000 }).catch(() => undefined);
+    return true;
+  }
+}
+
 
 function getOllamaCommand() {
   return getMacOllamaCommandPath() || getWindowsOllamaCommandPath() || 'ollama';
@@ -1591,7 +1607,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
     throw new Error('Transformers is not installed in an available Python environment.');
   }
 
-  const transformersPreflight = 'import torch; import transformers; import numpy; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__; from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer';
+  const transformersPreflight = 'import torch; import transformers; import numpy; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__; from transformers import AutoTokenizer; from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM';
   try {
     await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
   } catch {
@@ -1605,7 +1621,9 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
       message: 'Repairing PyTorch, Transformers, NumPy, SciPy, and scikit-learn...',
       detail: 'Fixing the Python runtime used by Transformers router models.',
     });
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5'], { timeoutMs: 20 * 60 * 1000 });
+    await removeTorchvisionIfBroken(pipCommand, python, onProgress);
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 20 * 60 * 1000 });
+    await removeTorchvisionIfBroken(pipCommand, python, onProgress);
     await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
   }
 
