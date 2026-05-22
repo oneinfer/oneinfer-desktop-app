@@ -2035,32 +2035,6 @@ input:checked + .slider:before {
   white-space: nowrap;
 }
 
-.serving-library-selected-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 0.8rem;
-  line-height: 1.4;
-}
-
-.serving-library-selected-status span {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  flex: 0 0 auto;
-  background: #ef4444;
-}
-
-.serving-library-selected-status.installed span {
-  background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
-}
-
-.serving-library-selected-status.unsupported span {
-  background: #6b7280;
-}
-
 .stat-badge {
   display: flex;
   align-items: center;

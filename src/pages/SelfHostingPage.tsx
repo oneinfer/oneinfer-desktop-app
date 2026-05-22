@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
@@ -47,13 +47,14 @@ export function SelfHostingPage(props: {
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const analysisRef = useRef<HTMLDivElement | null>(null);
   const canShowAnalysis = Boolean(props.hfModelMetadata);
   const selectedModelValue = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
   const hasModelInput = selectedModelValue.trim().length > 0;
   const hasLocalRuntime = Object.values(props.libraries).some(Boolean);
   const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
-  const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform);
+  const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform, props.hfModelMetadata);
   const selectedLibraryInstalled = selectedLibrarySupported && props.libraries[selectedLibrary.value];
   const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
   const canInstallSelectedLibrary = selectedLibrarySupported && selectedLibrary.installable && !selectedLibraryInstalled;
@@ -91,6 +92,21 @@ export function SelfHostingPage(props: {
       ...next,
       name: props.selfHostForm.name || getRepoName(candidate),
     });
+  }
+
+  function scrollToAnalysis() {
+    requestAnimationFrame(() => {
+      analysisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  function handleReviewAndDeployClick() {
+    if (canShowAnalysis) {
+      scrollToAnalysis();
+      return;
+    }
+
+    props.onSubmit();
   }
 
   return (
@@ -148,7 +164,7 @@ export function SelfHostingPage(props: {
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '8px', alignItems: 'center' }}>
                     <select value={props.selfHostForm.serving_library} onChange={(event) => props.onFormChange({ ...props.selfHostForm, serving_library: event.target.value as ServingLibrary })}>
                       {servingLibraryOptions.map((library) => {
-                        const supported = isServingLibrarySupported(library, platform);
+                        const supported = isServingLibrarySupported(library, platform, props.hfModelMetadata);
                         const installed = supported && props.libraries[library.value];
                         return (
                           <option key={library.value} value={library.value} disabled={!supported}>
@@ -192,12 +208,7 @@ export function SelfHostingPage(props: {
               className="primary-button"
               type="button"
               disabled={props.busy === 'register-self-hosted' || props.hfModelMetadataLoading || !props.hfModelMetadata}
-              onClick={() => {
-                props.onSubmit();
-                if (canShowAnalysis) {
-                  document.getElementById('self-hosting-analysis')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }
-              }}
+              onClick={handleReviewAndDeployClick}
             >
               {props.busy === 'register-self-hosted' ? <LoaderCircle className="spin" size={16} /> : props.hfModelMetadata ? <Search size={16} /> : <Rocket size={16} />}
               {ctaLabel}
@@ -217,7 +228,7 @@ export function SelfHostingPage(props: {
       </div>
 
       {canShowAnalysis ? (
-        <div id="self-hosting-analysis" className="glass-panel" style={{ overflow: 'hidden', minWidth: 0, maxWidth: '100%' }}>
+        <div ref={analysisRef} id="self-hosting-analysis" className="glass-panel" style={{ overflow: 'hidden', minWidth: 0, maxWidth: '100%', scrollMarginTop: '16px' }}>
           {props.analysisPanel}
         </div>
       ) : null}
@@ -259,8 +270,42 @@ function getSupportedPlatform(value: unknown): SupportedPlatform {
   return 'unknown';
 }
 
-function isServingLibrarySupported(library: { platforms: SupportedPlatform[] }, platform: SupportedPlatform): boolean {
-  return platform === 'unknown' || library.platforms.includes(platform);
+function isServingLibrarySupported(library: { value: ServingLibrary; platforms: SupportedPlatform[] }, platform: SupportedPlatform, model: HfModelInfo | null): boolean {
+  const osSupported = platform === 'unknown' || library.platforms.includes(platform);
+  return osSupported && (!model || isLibraryCompatibleWithModel(library.value, model));
+}
+
+function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInfo): boolean {
+  const gguf = isGgufModel(model);
+  if (library === 'ollama' || library === 'llama_cpp') {
+    return gguf;
+  }
+
+  if (library === 'tensorrt') {
+    return hasAnyFileExtension(model, ['.engine', '.plan']);
+  }
+
+  if (library === 'pytorch' || library === 'transformers') {
+    return true;
+  }
+
+  return !gguf;
+}
+
+function isGgufModel(model: HfModelInfo): boolean {
+  const id = String(model.id ?? '').toLowerCase();
+  const tags = (model.tags || []).map((tag) => String(tag).toLowerCase());
+  return id.includes('gguf')
+    || tags.some((tag) => tag.includes('gguf') || tag.includes('llama.cpp') || tag.includes('llamacpp'))
+    || hasAnyFileExtension(model, ['.gguf', '.ggml']);
+}
+
+function hasAnyFileExtension(model: HfModelInfo, extensions: string[]): boolean {
+  return Array.isArray(model.siblings)
+    && model.siblings.some((file) => {
+      const filename = String(file.rfilename ?? '').toLowerCase();
+      return extensions.some((extension) => filename.endsWith(extension));
+    });
 }
 
 interface LocalDeploymentRow {
@@ -320,7 +365,6 @@ function LocalDeploymentCard(props: {
 
 function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalModelDeployment[]): LocalDeploymentRow[] {
   const rows = new Map<string, LocalDeploymentRow>();
-  const deploymentKeys = new Set(deployments.map((deployment) => getLocalDeploymentRowKey(deployment.endpointUrl, deployment.modelId)));
 
   endpoints
     .filter((endpoint) => isLocalEndpoint(endpoint))
@@ -333,9 +377,6 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
       const endpointId = getEndpointId(endpoint, index);
       const modelId = String(endpoint.model_id ?? endpoint.name ?? `local-model-${index + 1}`);
       const rowKey = getLocalDeploymentRowKey(endpointUrl, modelId);
-      if (deploymentKeys.has(rowKey)) {
-        return;
-      }
 
       rows.set(rowKey, {
         endpointId,

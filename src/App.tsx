@@ -1494,7 +1494,7 @@ function App() {
         });
       }
 
-      setLocalDeployments((current) => current.filter((item) => !isSameLocalDeployment(item, deployment)));
+      setLocalDeployments((current) => current.filter((item) => !isSameLocalDeploymentByKey(item, deployment)));
       setLocalModelMetrics((current) => {
         const next = { ...current };
         delete next[deployment.endpointUrl];
@@ -1869,6 +1869,18 @@ function isValidLocalDeployment(value: unknown): value is LocalModelDeployment {
 
 function isSameLocalDeployment(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {
   return left.endpointUrl === right.endpointUrl && left.modelId === right.modelId;
+}
+
+function isSameLocalDeploymentByKey(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {
+  return getLocalDeploymentIdentityKey(left) === getLocalDeploymentIdentityKey(right);
+}
+
+function getLocalDeploymentIdentityKey(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): string {
+  return `${normalizeLocalEndpointUrl(deployment.endpointUrl)}::${deployment.modelId}`;
+}
+
+function normalizeLocalEndpointUrl(endpointUrl: string): string {
+  return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
 }
 
 function getWelcomeName(session: DesktopSession): string {
