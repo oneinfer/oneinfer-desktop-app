@@ -1330,6 +1330,18 @@ function App() {
           dashboard.models,
         )
       ));
+      const localRouteCandidates = payload.attachedEndpointIds.map((endpointId) => (
+        buildAttachedInferenceEndpointPayload(
+          endpointId,
+          routeName,
+          payload.inputModality,
+          payload.modelId,
+          dashboard.inferenceEndpoints,
+          dashboard.instances,
+          localDeployments,
+          dashboard.models,
+        )
+      ));
 
       const createdRoute = await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
         name: routeName,
@@ -1359,7 +1371,7 @@ function App() {
             name: routeName,
             routerEndpointUrl: routerDeployment.endpointUrl,
             routerModelId: routerDeployment.modelId,
-            candidates: attachedInferenceEndpoints,
+            candidates: localRouteCandidates,
           });
           setLocalRouteUrls((current) => ({ ...current, [createdRouteId]: localRoute.endpointUrl }));
         } catch (error) {
@@ -1558,16 +1570,52 @@ function App() {
     }
   }
 
-  function handleCopyRoute(routeId: string, route?: EndpointItem) {
+  async function handleCopyRoute(routeId: string, route?: EndpointItem) {
     if (!session) {
       return;
     }
 
-    const localRouteUrl = localRouteUrls[routeId] ? toOpenAiChatCompletionsUrl(localRouteUrls[routeId]) : getLocalRouteChatUrl(route);
+    let localRouteUrl = localRouteUrls[routeId] ? toOpenAiChatCompletionsUrl(localRouteUrls[routeId]) : null;
+    if (!localRouteUrl && route) {
+      try {
+        const startedRoute = await startLocalRouteFromRecord(routeId, route);
+        localRouteUrl = toOpenAiChatCompletionsUrl(startedRoute.endpointUrl);
+        setLocalRouteUrls((current) => ({ ...current, [routeId]: startedRoute.endpointUrl }));
+      } catch {
+        localRouteUrl = getLocalRouteChatUrl(route);
+      }
+    }
+
     const normalizedBaseUrl = settingsDraft.apiBaseUrl.replace(/\/+$/, '');
     const routeUrl = localRouteUrl || `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
     navigator.clipboard?.writeText(routeUrl);
-    setMessage({ tone: 'success', text: localRouteUrl ? 'Local router URL copied.' : 'Route URL copied.' });
+    setMessage({ tone: 'success', text: localRouteUrl ? 'Local route URL copied.' : 'Route URL copied.' });
+  }
+
+  async function startLocalRouteFromRecord(routeId: string, route: EndpointItem): Promise<{ endpointUrl: string; port: number; routeId: string }> {
+    if (!window.desktopBridge?.startLocalRoute) {
+      throw new Error('Local route server is not available in this app build.');
+    }
+
+    const record = route as Record<string, unknown>;
+    const routingConfig = getRouteRoutingConfig(route);
+    const candidates = getRouteAttachedCandidates(route);
+    const routerEndpointUrl = String(routingConfig.router_endpoint_url ?? record.router_endpoint_url ?? '').trim();
+    if (!routerEndpointUrl) {
+      throw new Error('This route does not include a local router endpoint URL.');
+    }
+
+    if (candidates.length === 0) {
+      throw new Error('This route does not include attached endpoint URLs for local routing.');
+    }
+
+    return window.desktopBridge.startLocalRoute({
+      routeId,
+      name: String(record.name ?? routeId),
+      routerEndpointUrl,
+      routerModelId: String(routingConfig.routing_algorithm ?? ''),
+      candidates,
+    });
   }
 
   async function handleUseEndpointInRoute(endpointId: string, endpointName: string) {
@@ -1845,10 +1893,10 @@ function buildAttachedInferenceEndpointPayload(
   localDeployments: LocalModelDeployment[],
   models: Record<string, unknown>[],
 ) {
-  const endpoint = inferenceEndpoints.find((item) => {
-    const record = item as Record<string, unknown>;
-    return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
-  });
+      const endpoint = inferenceEndpoints.find((item) => {
+        const record = item as Record<string, unknown>;
+        return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
+      });
   const instance = instances.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
@@ -1871,7 +1919,7 @@ function buildAttachedInferenceEndpointPayload(
       : [];
 
   return {
-    endpoint_id: endpoint ? endpointId : localDeployment ? localDeployment.endpointUrl : endpointId,
+    endpoint_id: endpoint ? endpointId : localDeployment ? getLocalDeploymentSelectionId(localDeployment) : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
     endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
     model_id: String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? ''),
@@ -1899,10 +1947,14 @@ function getInferenceEndpointIdFromRecord(endpoint: EndpointItem, index: number)
 
 function getEndpointIdFromPayload(payload: Record<string, unknown>): string | undefined {
   const candidates = [
+    payload.intelligent_endpoint_id,
     payload.inference_endpoint_id,
     payload.endpoint_id,
     payload.id,
+    typeof payload.intelligent_endpoint === 'object' && payload.intelligent_endpoint ? (payload.intelligent_endpoint as Record<string, unknown>).intelligent_endpoint_id : undefined,
+    typeof payload.intelligent_endpoint === 'object' && payload.intelligent_endpoint ? (payload.intelligent_endpoint as Record<string, unknown>).endpoint_id : undefined,
     typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).endpoint_id : undefined,
+    typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).intelligent_endpoint_id : undefined,
     typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).inference_endpoint_id : undefined,
   ];
   const endpointId = candidates.find((value) => typeof value === 'string' && value.trim());
@@ -1915,13 +1967,11 @@ function getLocalRouteChatUrl(route?: EndpointItem): string | null {
   }
 
   const record = route as Record<string, unknown>;
-  const routingConfig = typeof record.routing_config === 'object' && record.routing_config
-    ? record.routing_config as Record<string, unknown>
-    : {};
+  const routingConfig = getRouteRoutingConfig(route);
   const candidates = [
-    routingConfig.router_endpoint_url,
+    routingConfig.local_route_endpoint_url,
     record.router_endpoint_url,
-    record.endpoint_url,
+    record.local_route_endpoint_url,
   ];
   const localEndpointUrl = candidates.find((value) => typeof value === 'string' && isLocalEndpointUrl(value));
   if (!localEndpointUrl) {
@@ -1929,6 +1979,36 @@ function getLocalRouteChatUrl(route?: EndpointItem): string | null {
   }
 
   return toOpenAiChatCompletionsUrl(String(localEndpointUrl));
+}
+
+function getRouteRoutingConfig(route: EndpointItem): Record<string, unknown> {
+  const record = route as Record<string, unknown>;
+  const routingConfig = record.routing_config ?? record.route_config ?? record.config;
+  if (typeof routingConfig === 'object' && routingConfig) {
+    return routingConfig as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function getRouteAttachedCandidates(route: EndpointItem): Record<string, unknown>[] {
+  const record = route as Record<string, unknown>;
+  const attachedEndpoints = record.attached_endpoints ?? record.attachedEndpoints;
+  if (!attachedEndpoints || typeof attachedEndpoints !== 'object') {
+    return [];
+  }
+
+  const groups = attachedEndpoints as Record<string, unknown>;
+  const values = [
+    groups.inference_api,
+    groups.inferenceApi,
+    groups.dedicated,
+    groups.local,
+  ].filter(Boolean);
+
+  return values.flatMap((value) => Array.isArray(value) ? value : [value])
+    .filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null)
+    .filter((candidate) => typeof (candidate.endpoint_url ?? candidate.endpointUrl) === 'string');
 }
 
 function toOpenAiChatCompletionsUrl(endpointUrl: string): string {
