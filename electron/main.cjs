@@ -1167,6 +1167,25 @@ async function waitForOpenAiEndpoint(endpointUrl, timeoutMs = 10 * 60 * 1000, on
   throw new Error(`Timed out waiting for local model server at ${modelsUrl}.${lastError?.message ? ` Last error: ${lastError.message}` : ''}`);
 }
 
+async function waitForOpenAiEndpointOrProcessExit(endpointUrl, child, timeoutMs, onProgress = () => {}, shouldCancel = () => false) {
+  let exitState = null;
+  child.once('exit', (code, signal) => {
+    exitState = { code, signal };
+  });
+
+  return waitForOpenAiEndpoint(endpointUrl, timeoutMs, onProgress, () => {
+    if (shouldCancel()) {
+      return true;
+    }
+
+    if (exitState) {
+      throw new Error(`Local model server exited before it became ready. Exit code: ${exitState.code ?? 'none'}${exitState.signal ? `, signal: ${exitState.signal}` : ''}.`);
+    }
+
+    return false;
+  });
+}
+
 function getVllmLogPath(repoId) {
   const safeId = repoId.replace(/[^a-zA-Z0-9._-]/g, '_');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1574,6 +1593,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  child.oneinferLogPath = logPath;
 
   const pipeOutput = (stream, level) => {
     let buffer = '';
@@ -1616,7 +1636,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
     if (code !== null && code !== 0) {
       onProgress({
         stage: 'error',
-        message: `Transformers server exited with code ${code}. Logs saved to: ${logPath}`,
+        message: `Transformers server exited with code ${code}.`,
         detail: signal ? `Signal: ${signal}` : undefined,
         level: 'error',
       });
@@ -1772,7 +1792,8 @@ async function deployHfModel(payload = {}) {
   };
 
   try {
-    await waitForOpenAiEndpoint(endpointUrl, payload.healthTimeoutMs || 2 * 60 * 1000, progress, shouldCancel);
+    const healthTimeoutMs = payload.healthTimeoutMs || (runtime === 'transformers' ? 20 * 60 * 1000 : 2 * 60 * 1000);
+    await waitForOpenAiEndpointOrProcessExit(endpointUrl, child, healthTimeoutMs, progress, shouldCancel);
     localModelDeployments.set(repoId, deployment);
     localModelDeploymentsInFlight.delete(repoId);
     progress({
@@ -1785,14 +1806,18 @@ async function deployHfModel(payload = {}) {
   } catch (error) {
     stopProcessTree(child.pid);
     localModelDeploymentsInFlight.delete(repoId);
+    const errorDetail = [
+      error instanceof Error ? error.message : String(error),
+      child.oneinferLogPath ? `Logs: ${child.oneinferLogPath}` : '',
+    ].filter(Boolean).join('\n');
 
     progress({
       stage: 'error',
       message: error?.cancelled ? 'Local deployment cancelled.' : 'Local deployment failed.',
-      detail: error instanceof Error ? error.message : String(error),
+      detail: errorDetail,
       level: 'error',
     });
-    throw error;
+    throw new Error(errorDetail);
   }
 }
 

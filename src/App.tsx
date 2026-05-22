@@ -1183,7 +1183,7 @@ function App() {
     }
   }
 
-  async function ensureLocalRouterDeployment(routingAlgorithm: string): Promise<{ endpointId?: string; endpointUrl: string; modelId: string; runtime: ServingLibrary }> {
+  async function ensureLocalRouterDeployment(routingAlgorithm: string, requestedServingLibrary?: ServingLibrary): Promise<{ endpointId?: string; endpointUrl: string; modelId: string; runtime: ServingLibrary }> {
     if (!session) {
       throw new Error('Sign in before deploying a local router model.');
     }
@@ -1210,7 +1210,7 @@ function App() {
       const endpointUrl = String(endpointRecord.endpoint_url ?? '');
       const existingRuntime = normalizeServingLibrary(endpointRecord.serving_library, getLocalRuntimeFromEndpointUrl(endpointUrl));
       if (existingRuntime === 'ollama' && !isOllamaCompatibleModelId(routerModelId)) {
-        throw new Error(`${routerModelId} needs vLLM as its serving library. Ollama only supports GGUF/llama.cpp router models.`);
+        throw new Error(`${routerModelId} is not a GGUF/llama.cpp router model, so Ollama cannot host it. Select Transformers or vLLM.`);
       }
 
       return {
@@ -1226,7 +1226,7 @@ function App() {
     }
 
     const routerPlatform = getSupportedPlatform(dashboard.machineDetails?.platform);
-    const routerRuntime = getRequiredRouterRuntime(routerModelId, routerPlatform);
+    const routerRuntime = requestedServingLibrary || getRequiredRouterRuntime(routerModelId, routerPlatform);
     const unsupportedReason = getRouterRuntimeUnsupportedReason(routerRuntime, routerPlatform, routerModelId);
     if (unsupportedReason) {
       throw new Error(unsupportedReason);
@@ -1237,9 +1237,10 @@ function App() {
     }
 
     setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId} with ${formatLocalRuntime(routerRuntime)}...` });
+    const launchRuntime = routerRuntime as 'vllm' | 'ollama' | 'transformers';
     const deployment = await window.desktopBridge.deployHfModel({
       repoId: routerModelId,
-      runtime: routerRuntime,
+      runtime: launchRuntime,
       progressId: `${routerModelId}-router-${Date.now()}`,
     });
 
@@ -1310,7 +1311,7 @@ function App() {
 
     setBusy('create-intelligent-endpoint');
     try {
-      const routerDeployment = await ensureLocalRouterDeployment(payload.routingAlgorithm);
+      const routerDeployment = await ensureLocalRouterDeployment(payload.routingAlgorithm, payload.routerServingLibrary);
       const registeredLocalDeployments = await ensureSelectedLocalDeploymentsRegistered(payload.attachedEndpointIds);
       const attachedEndpointIds = payload.attachedEndpointIds.map((endpointId) => {
         const localDeployment = registeredLocalDeployments.find((deployment) => getLocalDeploymentSelectionId(deployment) === endpointId);
@@ -1785,6 +1786,8 @@ function App() {
             onDeleteRoute={handleDeleteRoute}
             onCreateSelfHosting={() => setActiveSection('selfHosting')}
             onSetupRouterEndpoint={handleSetupRouterEndpoint}
+            onInstallLibrary={handleInstallLibrary}
+            libraries={libraries}
             localDeployments={localDeployments}
             initialEndpointId={routeInitialEndpointId}
             onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
@@ -1899,14 +1902,6 @@ function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): '
   return null;
 }
 
-function getRequiredRouterRuntime(routerModelId: string, platform: SupportedPlatform): 'vllm' | 'ollama' | 'transformers' {
-  if (isOllamaCompatibleModelId(routerModelId)) {
-    return 'ollama';
-  }
-
-  return platform === 'windows' ? 'transformers' : 'vllm';
-}
-
 type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
 
 function getSupportedPlatform(value: unknown): SupportedPlatform {
@@ -1923,16 +1918,38 @@ function getSupportedPlatform(value: unknown): SupportedPlatform {
   return 'unknown';
 }
 
-function getRouterRuntimeUnsupportedReason(runtime: 'vllm' | 'ollama' | 'transformers', platform: SupportedPlatform, routerModelId: string): string | null {
+function getRouterRuntimeUnsupportedReason(runtime: ServingLibrary, platform: SupportedPlatform, routerModelId: string): string | null {
+  const gguf = isOllamaCompatibleModelId(routerModelId);
+
+  if (!['vllm', 'ollama', 'transformers'].includes(runtime)) {
+    return `${formatLocalRuntime(runtime)} can be installed for local model work, but routing auto-hosting currently supports vLLM, Transformers, and Ollama. Select Transformers for Hugging Face router models or Ollama for GGUF router models.`;
+  }
+
   if (runtime === 'ollama') {
-    return null;
+    return gguf ? null : `${routerModelId} is not a GGUF/llama.cpp router model, so Ollama cannot host it. Select Transformers or vLLM.`;
+  }
+
+  if (runtime === 'transformers') {
+    return gguf ? `${routerModelId} is a GGUF/llama.cpp router model. Select Ollama for this model format.` : null;
+  }
+
+  if (gguf) {
+    return `${routerModelId} is a GGUF/llama.cpp router model. Select Ollama for this model format.`;
   }
 
   if (runtime === 'vllm' && platform === 'windows') {
-    return `${routerModelId} is a Hugging Face Transformers router model. One-click router deployment with vLLM is not supported on this OS. Register this router model as a local PyTorch or Transformers endpoint first, or choose a GGUF router model that can run with Ollama.`;
+    return `${routerModelId} is a Hugging Face Transformers router model. One-click router deployment with vLLM is not supported on this OS. Select Transformers for Windows.`;
   }
 
   return null;
+}
+
+function getRequiredRouterRuntime(routerModelId: string, platform: SupportedPlatform): 'vllm' | 'ollama' | 'transformers' {
+  if (isOllamaCompatibleModelId(routerModelId)) {
+    return 'ollama';
+  }
+
+  return platform === 'windows' ? 'transformers' : 'vllm';
 }
 
 function isLaunchableLocalRuntime(runtime: ServingLibrary): runtime is 'vllm' | 'ollama' {
@@ -1981,6 +1998,7 @@ function normalizeServingLibrary(value: unknown, fallback: ServingLibrary = 'vll
     transformer: 'transformers',
     dynamo: 'dynamo',
   };
+
   return aliases[normalized] ?? fallback;
 }
 

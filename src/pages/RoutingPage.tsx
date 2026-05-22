@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Copy, Info, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Copy, Info, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { DashboardState, EndpointItem, InstanceItem, LocalModelDeployment } from '../types';
+import type { DashboardState, EndpointItem, InstanceItem, LocalModelDeployment, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
 interface CreateRouteDetails {
@@ -13,6 +13,7 @@ interface CreateRouteDetails {
   inputModality: string;
   routingAlgorithm: string;
   routerRuntime: RouterRuntime;
+  routerServingLibrary: ServingLibrary;
   description: string;
 }
 
@@ -28,6 +29,7 @@ const defaultRouteDetails: CreateRouteDetails = {
   inputModality: 'text',
   routingAlgorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
   routerRuntime: 'local',
+  routerServingLibrary: 'transformers',
   description: '',
 };
 
@@ -131,6 +133,17 @@ const endpointSources: Array<{ value: EndpointSource; label: string; emptyText: 
   },
 ];
 
+const routerServingLibraries: Array<{ value: ServingLibrary; label: string; platforms: SupportedPlatform[]; directRuntime: boolean }> = [
+  { value: 'vllm', label: 'vLLM', platforms: ['linux', 'macos'], directRuntime: true },
+  { value: 'sglang', label: 'SGLang', platforms: ['linux', 'macos'], directRuntime: false },
+  { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'], directRuntime: false },
+  { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'], directRuntime: true },
+  { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'], directRuntime: false },
+  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'], directRuntime: false },
+  { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'], directRuntime: true },
+  { value: 'dynamo', label: 'Dynamo', platforms: ['linux'], directRuntime: false },
+];
+
 export function RoutingPage(props: {
   dashboard: DashboardState;
   intelligentEndpointName: string;
@@ -141,6 +154,8 @@ export function RoutingPage(props: {
   onDeleteRoute: (routeId: string, routeName: string) => void;
   onCreateSelfHosting: () => void;
   onSetupRouterEndpoint?: (routerModelId: string) => void | Promise<void>;
+  onInstallLibrary: (library: ServingLibrary) => void | Promise<void>;
+  libraries: Record<ServingLibrary, boolean>;
   localDeployments?: LocalModelDeployment[];
   initialEndpointId?: string | null;
   onInitialEndpointConsumed?: () => void;
@@ -150,6 +165,7 @@ export function RoutingPage(props: {
   const [testRoute, setTestRoute] = useState<{ id: string; name: string } | null>(null);
   const [editRoute, setEditRoute] = useState<{ id: string; name: string } | null>(null);
   const [goalInfo, setGoalInfo] = useState<(typeof routingGoals)[number] | null>(null);
+  const [routerLibraryOpen, setRouterLibraryOpen] = useState(false);
   const [testPrompt, setTestPrompt] = useState('Explain what this route is optimized for in one sentence.');
   const [routeDetails, setRouteDetails] = useState<CreateRouteDetails>(defaultRouteDetails);
   const activeEndpointSources = getActiveEndpointSources(routeDetails);
@@ -192,7 +208,24 @@ export function RoutingPage(props: {
   const selectedAlgorithm = routingAlgorithms.find((algorithm) => algorithm.value === routeDetails.routingAlgorithm) ?? routingAlgorithms[0];
   const effectiveRouterRuntime: RouterRuntime = 'local';
   const selectedRouterModelId = normalizeHfRepoId(routeDetails.routingAlgorithm);
+  const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
+  const recommendedRouterLibrary = getRecommendedRouterServingLibrary(selectedRouterModelId, platform);
+  const selectedRouterLibrary = routerServingLibraries.find((library) => library.value === routeDetails.routerServingLibrary) ?? routerServingLibraries.find((library) => library.value === recommendedRouterLibrary) ?? routerServingLibraries[0];
+  const selectedRouterLibrarySupported = isRouterServingLibrarySupported(selectedRouterLibrary, platform, selectedRouterModelId);
+  const selectedRouterLibraryInstalled = selectedRouterLibrarySupported && props.libraries[selectedRouterLibrary.value];
+  const selectedRouterLibraryBusy = props.busy === `install-${selectedRouterLibrary.value}` || props.busy === 'install-router-stack';
   const routerSetupIssue = getRouterSetupIssue(selectedRouterModelId, props.dashboard, props.localDeployments || []);
+
+  useEffect(() => {
+    if (!selectedRouterModelId) {
+      return;
+    }
+
+    const currentLibrary = routerServingLibraries.find((library) => library.value === routeDetails.routerServingLibrary);
+    if (!currentLibrary || !isRouterServingLibrarySupported(currentLibrary, platform, selectedRouterModelId)) {
+      setRouteDetails((current) => ({ ...current, routerServingLibrary: getRecommendedRouterServingLibrary(selectedRouterModelId, platform) }));
+    }
+  }, [platform, selectedRouterModelId, routeDetails.routerServingLibrary]);
 
   useEffect(() => {
     if (!props.initialEndpointId) {
@@ -268,6 +301,9 @@ export function RoutingPage(props: {
       ...current,
       routingGoal,
       routingAlgorithm: routingGoal === 'custom' ? current.routingAlgorithm : goal.algorithm,
+      routerServingLibrary: routingGoal === 'custom'
+        ? current.routerServingLibrary
+        : getRecommendedRouterServingLibrary(normalizeHfRepoId(goal.algorithm), platform),
     }));
   }
 
@@ -482,6 +518,26 @@ export function RoutingPage(props: {
             <span>{selectedEndpointOptions.length === 0 ? 'Select at least two endpoints for meaningful routing.' : `${selectedEndpointOptions.length} endpoint${selectedEndpointOptions.length === 1 ? '' : 's'} selected.`}</span>
             <small>Algorithm: {selectedAlgorithm.family} / {selectedAlgorithm.label}</small>
             <small>Router runtime: Local</small>
+            <small>Serving library: {selectedRouterLibrary.label}</small>
+          </div>
+          <div className="route-summary">
+            <strong>Router Serving Library</strong>
+            <span>Select the serving library used to host the routing algorithm model on this machine.</span>
+            <RouterServingLibraryDropdown
+              busy={props.busy}
+              libraries={props.libraries}
+              modelId={selectedRouterModelId}
+              onInstall={props.onInstallLibrary}
+              onOpenChange={setRouterLibraryOpen}
+              onSelect={(library) => {
+                setRouteDetails((current) => ({ ...current, routerServingLibrary: library }));
+                setRouterLibraryOpen(false);
+              }}
+              open={routerLibraryOpen}
+              platform={platform}
+              selectedLibrary={routeDetails.routerServingLibrary}
+            />
+            <small>{getRouterServingLibraryHelp(selectedRouterLibrary, platform, selectedRouterModelId)}</small>
           </div>
           {routerSetupIssue ? (
             <div className="route-summary">
@@ -547,7 +603,7 @@ export function RoutingPage(props: {
           <button
             className="primary-button"
             type={routerSetupIssue ? 'button' : 'submit'}
-            disabled={props.busy === 'create-intelligent-endpoint' || props.busy === 'install-router-stack'}
+            disabled={props.busy === 'create-intelligent-endpoint' || props.busy === 'install-router-stack' || !selectedRouterLibrarySupported}
             onClick={routerSetupIssue ? handleSetupRouterEndpoint : undefined}
           >
             {props.busy === 'create-intelligent-endpoint' || props.busy === 'install-router-stack' ? <LoaderCircle className="spin" size={16} /> : <Orbit size={16} />}
@@ -661,6 +717,140 @@ function getSupportedPlatform(value: unknown): SupportedPlatform {
     if (userAgent.includes('linux')) return 'linux';
   }
   return 'unknown';
+}
+
+function RouterServingLibraryDropdown(props: {
+  busy: string | null;
+  libraries: Record<ServingLibrary, boolean>;
+  modelId: string;
+  onInstall: (library: ServingLibrary) => void | Promise<void>;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (library: ServingLibrary) => void;
+  open: boolean;
+  platform: SupportedPlatform;
+  selectedLibrary: ServingLibrary;
+}) {
+  const selectedOption = routerServingLibraries.find((option) => option.value === props.selectedLibrary) ?? routerServingLibraries[0];
+  const selectedSupported = isRouterServingLibrarySupported(selectedOption, props.platform, props.modelId);
+  const selectedInstalled = selectedSupported && props.libraries[selectedOption.value];
+
+  return (
+    <div className="serving-library-dropdown">
+      <button
+        aria-expanded={props.open}
+        className={`serving-library-trigger ${selectedInstalled ? 'installed' : selectedSupported ? 'missing' : 'unsupported'}`}
+        onClick={() => props.onOpenChange(!props.open)}
+        type="button"
+      >
+        <span className="serving-library-trigger-main">
+          <span />
+          <strong>{selectedOption.label}</strong>
+        </span>
+        <span className="serving-library-trigger-meta">
+          {selectedInstalled ? 'Installed' : selectedSupported ? 'Install available' : 'Unsupported'}
+          <ChevronDown size={16} />
+        </span>
+      </button>
+      {props.open ? (
+        <div className="serving-library-menu">
+          {routerServingLibraries.map((option) => {
+            const supported = isRouterServingLibrarySupported(option, props.platform, props.modelId);
+            const installed = supported && props.libraries[option.value];
+            const optionBusy = props.busy === `install-${option.value}` || (option.value === 'transformers' && props.busy === 'install-router-stack');
+            const selected = option.value === props.selectedLibrary;
+            return (
+              <div className={`serving-library-option ${selected ? 'selected' : ''} ${installed ? 'installed' : supported ? 'missing' : 'unsupported'}`} key={option.value}>
+                <button
+                  className="serving-library-option-select"
+                  disabled={!supported}
+                  onClick={() => props.onSelect(option.value)}
+                  type="button"
+                >
+                  <span />
+                  <strong>{option.label}</strong>
+                  <small>{installed ? 'Installed' : supported ? 'Not installed' : 'Unsupported'}</small>
+                </button>
+                {!installed ? (
+                  <button
+                    className="serving-library-option-install"
+                    disabled={!supported || optionBusy}
+                    onClick={() => props.onInstall(option.value)}
+                    type="button"
+                  >
+                    {optionBusy ? <LoaderCircle className="spin" size={12} /> : supported ? 'Install' : 'Unsupported'}
+                  </button>
+                ) : (
+                  <span className="serving-library-option-installed"><CheckCircle2 size={14} /> Installed</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function getRecommendedRouterServingLibrary(modelId: string, platform: SupportedPlatform): ServingLibrary {
+  if (isOllamaCompatibleModelId(modelId)) {
+    return 'ollama';
+  }
+
+  return platform === 'windows' ? 'transformers' : 'vllm';
+}
+
+function isRouterServingLibrarySupported(
+  library: { value: ServingLibrary; platforms: SupportedPlatform[]; directRuntime: boolean },
+  platform: SupportedPlatform,
+  modelId: string,
+): boolean {
+  const osSupported = platform === 'unknown' || library.platforms.includes(platform);
+  if (!osSupported || !library.directRuntime) {
+    return false;
+  }
+
+  const gguf = isOllamaCompatibleModelId(modelId);
+  if (library.value === 'ollama') {
+    return gguf;
+  }
+
+  if (library.value === 'vllm' || library.value === 'transformers') {
+    return !gguf;
+  }
+
+  return false;
+}
+
+function getRouterServingLibraryHelp(
+  library: { value: ServingLibrary; label: string; platforms: SupportedPlatform[]; directRuntime: boolean },
+  platform: SupportedPlatform,
+  modelId: string,
+): string {
+  const osSupported = platform === 'unknown' || library.platforms.includes(platform);
+  if (!osSupported) {
+    return `${library.label} is not supported on this OS for local routing.`;
+  }
+
+  if (!library.directRuntime) {
+    return `${library.label} can be installed or checked, but route auto-hosting currently supports vLLM, Transformers, and Ollama.`;
+  }
+
+  const gguf = isOllamaCompatibleModelId(modelId);
+  if (library.value === 'ollama') {
+    return gguf ? 'Ollama can host GGUF/llama.cpp router models.' : 'Ollama only supports GGUF/llama.cpp router models.';
+  }
+
+  if (library.value === 'transformers') {
+    return gguf ? 'Transformers is for Hugging Face Transformers-format router models, not GGUF.' : 'Transformers installs/uses PyTorch and can host Hugging Face router models locally.';
+  }
+
+  if (library.value === 'vllm') {
+    return platform === 'windows'
+      ? 'vLLM routing auto-hosting is not available on Windows in this app flow.'
+      : 'vLLM can host supported Hugging Face router models on Linux/macOS.';
+  }
+
+  return '';
 }
 
 function getRouteId(endpoint: EndpointItem, index: number): string {
