@@ -2012,6 +2012,7 @@ async function startLocalRoute(payload = {}) {
     };
   }
 
+  const routerEndpointUrl = normalizeOpenAiBaseUrl(payload.routerEndpointUrl || '');
   const candidates = Array.isArray(payload.candidates)
     ? payload.candidates
         .map((candidate) => ({
@@ -2022,17 +2023,18 @@ async function startLocalRoute(payload = {}) {
           authorization: candidate.authorization || candidate.api_key ? `Bearer ${candidate.api_key}` : undefined,
         }))
         .filter((candidate) => candidate.endpointUrl)
+        .filter((candidate) => candidate.endpointUrl !== routerEndpointUrl)
     : [];
 
   if (candidates.length === 0) {
-    throw new Error('Cannot start a fully local route because none of the attached endpoints include a local/OpenAI-compatible endpoint URL.');
+    throw new Error('Cannot start a fully local route because none of the attached candidate endpoints include a callable URL different from the router model URL. Attach deployed model endpoints, not the router endpoint.');
   }
 
   const port = await findAvailablePort(payload.port || 8500);
   const route = {
     routeId,
     name: String(payload.name || routeId),
-    routerEndpointUrl: normalizeOpenAiBaseUrl(payload.routerEndpointUrl || ''),
+    routerEndpointUrl,
     routerModelId: String(payload.routerModelId || ''),
     candidates,
     nextIndex: 0,

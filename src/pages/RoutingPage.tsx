@@ -176,6 +176,11 @@ export function RoutingPage(props: {
   );
   const localDeploymentOptions = (props.localDeployments || [])
     .filter((deployment) => !registeredLocalEndpointKeys.has(getLocalEndpointKey(deployment.endpointUrl, deployment.modelId)))
+    .filter((deployment) => !isRouterEndpointLike({
+      name: deployment.name,
+      model_id: deployment.modelId,
+      endpoint_url: deployment.endpointUrl,
+    }))
     .map((deployment) => ({
       id: getLocalDeploymentEndpointId(deployment),
       endpointName: deployment.name,
@@ -183,6 +188,7 @@ export function RoutingPage(props: {
       source: 'local' as EndpointSource,
     }));
   const inferenceEndpointOptions = props.dashboard.inferenceEndpoints
+    .filter((endpoint) => !isRouterEndpointLike(endpoint))
     .map((endpoint, index) => ({
       id: getInferenceEndpointId(endpoint, index),
       endpointName: getInferenceEndpointName(endpoint, index),
@@ -928,6 +934,22 @@ function getEndpointSource(endpoint: EndpointItem): EndpointSource {
   }
 
   return 'cloud';
+}
+
+function isRouterEndpointLike(endpoint: Record<string, unknown>): boolean {
+  const role = String(endpoint.endpoint_role ?? endpoint.role ?? '').toLowerCase();
+  if (role === 'router') {
+    return true;
+  }
+
+  const text = [
+    endpoint.name,
+    endpoint.endpoint_name,
+    endpoint.model_id,
+    endpoint.modelId,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return text.includes(' router') || text.endsWith('router') || routingAlgorithms.some((algorithm) => normalizeHfRepoId(algorithm.value).toLowerCase() === String(endpoint.model_id ?? endpoint.modelId ?? '').toLowerCase());
 }
 
 function getActiveEndpointSources(routeDetails: CreateRouteDetails): EndpointSource[] {
