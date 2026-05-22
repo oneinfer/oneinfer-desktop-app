@@ -140,7 +140,7 @@ export function RoutingPage(props: {
   onCopyRoute: (routeId: string) => void;
   onDeleteRoute: (routeId: string, routeName: string) => void;
   onCreateSelfHosting: () => void;
-  onSetupRouterEndpoint?: (routerModelId: string) => void;
+  onSetupRouterEndpoint?: (routerModelId: string) => void | Promise<void>;
   localDeployments?: LocalModelDeployment[];
   initialEndpointId?: string | null;
   onInitialEndpointConsumed?: () => void;
@@ -286,6 +286,15 @@ export function RoutingPage(props: {
   function handleCreateSelfHosting() {
     setShowCreateRouteModal(false);
     props.onCreateSelfHosting();
+  }
+
+  function handleSetupRouterEndpoint() {
+    if (!selectedRouterModelId) {
+      return;
+    }
+
+    setShowCreateRouteModal(false);
+    props.onSetupRouterEndpoint?.(selectedRouterModelId);
   }
 
   return (
@@ -478,7 +487,7 @@ export function RoutingPage(props: {
             <div className="route-summary">
               <strong>Router setup required</strong>
               <span>{routerSetupIssue}</span>
-              <button className="secondary-button" onClick={() => props.onSetupRouterEndpoint?.(selectedRouterModelId)} type="button">
+              <button className="secondary-button" onClick={handleSetupRouterEndpoint} type="button">
                 Set up router endpoint
               </button>
             </div>
@@ -535,9 +544,14 @@ export function RoutingPage(props: {
           <div className="form-hint">
             Good descriptions name the domain, task/action, selection preference, and boundary. Example: Prefer local models for private drafts, simple code edits, and low-latency summaries; use cloud endpoints for complex reasoning, long-context debugging, or when local health is poor.
           </div>
-          <button className="primary-button" type="submit" disabled={props.busy === 'create-intelligent-endpoint' || Boolean(routerSetupIssue)}>
-            {props.busy === 'create-intelligent-endpoint' ? <LoaderCircle className="spin" size={16} /> : <Orbit size={16} />}
-            Create Route
+          <button
+            className="primary-button"
+            type={routerSetupIssue ? 'button' : 'submit'}
+            disabled={props.busy === 'create-intelligent-endpoint' || props.busy === 'install-router-stack'}
+            onClick={routerSetupIssue ? handleSetupRouterEndpoint : undefined}
+          >
+            {props.busy === 'create-intelligent-endpoint' || props.busy === 'install-router-stack' ? <LoaderCircle className="spin" size={16} /> : <Orbit size={16} />}
+            {routerSetupIssue ? 'Set up router endpoint' : 'Create Route'}
           </button>
         </form>
       </Modal>

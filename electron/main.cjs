@@ -923,7 +923,7 @@ async function installLibrary(name) {
     tensorrt: ['tensorrt-llm'],
     llama_cpp: ['llama-cpp-python'],
     pytorch: ['torch'],
-    transformers: ['transformers'],
+    transformers: ['torch', 'transformers'],
     dynamo: ['ai-dynamo'],
   };
 

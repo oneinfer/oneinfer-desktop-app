@@ -1364,28 +1364,71 @@ function App() {
     }
   }
 
-  function handleSetupRouterEndpoint(routerModelId: string) {
+  async function handleSetupRouterEndpoint(routerModelId: string) {
     const normalizedRouterModelId = normalizeLocalModelId(routerModelId);
     if (!normalizedRouterModelId) {
       setMessage({ tone: 'error', text: 'Select a valid router model before setup.' });
       return;
     }
 
-    setSelfHostForm((current) => ({
+    setBusy('install-router-stack');
+    try {
+      await ensureTransformerRouterStackInstalled();
+      setSelfHostForm((current) => ({
+        ...current,
+        name: `${normalizedRouterModelId} router`,
+        model_id: '',
+        useHfUrl: true,
+        hfUrl: `https://huggingface.co/${normalizedRouterModelId}`,
+        serving_library: 'transformers',
+        endpoint_url: current.endpoint_url || 'http://localhost:8000/v1',
+      }));
+      setInfraTab('self-hosted');
+      setActiveSection('selfHosting');
+      setMessage({
+        tone: 'info',
+        text: 'PyTorch and Transformers are ready. Router model loaded in Self Hosting; start/register the local endpoint, then return to Routing to create the route.',
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to install the PyTorch/Transformers router stack.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function ensureTransformerRouterStackInstalled(): Promise<void> {
+    if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) {
+      throw new Error('Automatic PyTorch/Transformers installation is not available in this app build.');
+    }
+
+    const currentPyTorch = libraries.pytorch || (await window.desktopBridge.checkLibrary('pytorch'));
+    const currentTransformers = libraries.transformers || (await window.desktopBridge.checkLibrary('transformers'));
+    if (!currentPyTorch || !currentTransformers) {
+      setMessage({ tone: 'info', text: 'Installing PyTorch and Transformers for the local router endpoint...' });
+      await window.desktopBridge.installLibrary('transformers');
+    }
+
+    let pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
+    let transformersInstalled = await window.desktopBridge.checkLibrary('transformers');
+    if (!pytorchInstalled) {
+      await window.desktopBridge.installLibrary('pytorch');
+      pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
+    }
+
+    if (!transformersInstalled || !pytorchInstalled) {
+      transformersInstalled = await window.desktopBridge.checkLibrary('transformers');
+      pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
+    }
+
+    setLibraries((current) => ({
       ...current,
-      name: `${normalizedRouterModelId} router`,
-      model_id: '',
-      useHfUrl: true,
-      hfUrl: `https://huggingface.co/${normalizedRouterModelId}`,
-      serving_library: libraries.transformers ? 'transformers' : 'pytorch',
-      endpoint_url: current.endpoint_url || 'http://localhost:8000/v1',
+      pytorch: pytorchInstalled,
+      transformers: transformersInstalled,
     }));
-    setInfraTab('self-hosted');
-    setActiveSection('selfHosting');
-    setMessage({
-      tone: 'info',
-      text: 'Router model loaded in Self Hosting. Install/register PyTorch or Transformers, then return to Routing to create the route.',
-    });
+
+    if (!pytorchInstalled || !transformersInstalled) {
+      throw new Error('PyTorch and Transformers installation finished, but the app could not import both packages. Restart OneInfer Desktop or check your Python environment.');
+    }
   }
 
   async function ensureServingLibraryInstalled(library: ServingLibrary, reason: string): Promise<void> {
@@ -1567,9 +1610,15 @@ function App() {
     setBusy(`install-${name}`);
     try {
       await window.desktopBridge.installLibrary(name);
-      setMessage({ tone: 'success', text: `${name} installed successfully.` });
       const status = await window.desktopBridge.checkLibrary(name);
-      setLibraries((current) => ({ ...current, [name]: status }));
+      if (name === 'transformers') {
+        const pytorchStatus = await window.desktopBridge.checkLibrary('pytorch');
+        setLibraries((current) => ({ ...current, transformers: status, pytorch: pytorchStatus }));
+        setMessage({ tone: 'success', text: 'Transformers and PyTorch installed successfully.' });
+      } else {
+        setLibraries((current) => ({ ...current, [name]: status }));
+        setMessage({ tone: 'success', text: `${formatLocalRuntime(name)} installed successfully.` });
+      }
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : `Failed to install ${name}.` });
       throw error;
