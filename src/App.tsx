@@ -1825,7 +1825,10 @@ function App() {
             localDeployments={localDeployments}
             localModelMetrics={localModelMetrics}
             onFormChange={setSelfHostForm}
-            onSubmit={handleRegisterSelfHosted}
+            onSubmit={(event) => {
+              event?.preventDefault();
+              return handleDeploySelfHostedModel();
+            }}
             onInstallLibrary={handleInstallLibrary}
             onUseInRoute={handleUseEndpointInRoute}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}

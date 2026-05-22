@@ -41,7 +41,7 @@ export function SelfHostingPage(props: {
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onFormChange: (next: SelfHostFormState) => void;
-  onSubmit: (event?: FormEvent<HTMLFormElement>) => void;
+  onSubmit: (event?: FormEvent<HTMLFormElement>) => Promise<boolean | void> | boolean | void;
   onInstallLibrary: (library: ServingLibrary) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
@@ -191,7 +191,12 @@ export function SelfHostingPage(props: {
                 </label>
                 <label>
                   <span>Local API URL</span>
-                  <input value={props.selfHostForm.endpoint_url} onChange={(event) => props.onFormChange({ ...props.selfHostForm, endpoint_url: event.target.value })} placeholder="http://127.0.0.1:8000/v1" />
+                  <input
+                    value={selectedLibraryLaunchable ? 'Auto assigned when the model starts' : props.selfHostForm.endpoint_url}
+                    onChange={(event) => props.onFormChange({ ...props.selfHostForm, endpoint_url: event.target.value })}
+                    placeholder="http://127.0.0.1:8000/v1"
+                    disabled={selectedLibraryLaunchable}
+                  />
                 </label>
               </>
             ) : null}
