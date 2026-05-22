@@ -60,7 +60,7 @@ export function SelfHostingPage(props: {
   const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
   const canInstallSelectedLibrary = selectedLibrarySupported && selectedLibrary.installable && !selectedLibraryInstalled;
   const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && hasLocalRuntime;
-  const localDeploymentRows = getLocalDeploymentRows(props.dashboard.inferenceEndpoints, props.localDeployments);
+  const localDeploymentRows = getLocalDeploymentRows(props.dashboard.inferenceEndpoints, props.localDeployments, props.localModelMetrics);
   const ctaLabel = props.busy === 'register-self-hosted'
     ? 'Deploying...'
     : props.hfModelMetadata
@@ -367,7 +367,7 @@ function LocalDeploymentCard(props: {
   );
 }
 
-function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalModelDeployment[]): LocalDeploymentRow[] {
+function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalModelDeployment[], metricsMap: Record<string, LocalModelMetrics>): LocalDeploymentRow[] {
   const rows = new Map<string, LocalDeploymentRow>();
 
   endpoints
@@ -395,7 +395,7 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
       });
     });
 
-  deployments.filter((deployment) => !isRouterDeployment(deployment)).forEach((deployment, index) => {
+  deployments.filter((deployment) => !isRouterDeployment(deployment) && isVisibleLocalDeployment(deployment, metricsMap)).forEach((deployment, index) => {
     const rowKey = getLocalDeploymentRowKey(deployment.endpointUrl, deployment.modelId);
     const existing = rows.get(rowKey);
     rows.set(rowKey, {
@@ -424,6 +424,15 @@ function isRouterEndpoint(endpoint: EndpointItem): boolean {
 
 function isRouterDeployment(deployment: LocalModelDeployment): boolean {
   return isRouterText(deployment.name, deployment.modelId);
+}
+
+function isVisibleLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId' | 'name'>, metricsMap: Record<string, LocalModelMetrics>): boolean {
+  const metrics = metricsMap[deployment.endpointUrl] ?? metricsMap[normalizeLocalEndpointUrl(deployment.endpointUrl)];
+  if (metrics?.healthy && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
+    return metrics.modelIds.includes(deployment.modelId);
+  }
+
+  return true;
 }
 
 function isRouterText(name: string, modelId: string): boolean {

@@ -124,7 +124,7 @@ function App() {
   const [selfHostForm, setSelfHostForm] = useState<SelfHostFormState>({
     name: '',
     model_id: '',
-    endpoint_url: 'http://localhost:8000/v1',
+    endpoint_url: 'http://127.0.0.1:8001/v1',
     serving_library: 'vllm',
     useHfUrl: true,
     hfUrl: '',
@@ -823,6 +823,7 @@ function App() {
     setBusy('register-self-hosted');
     try {
       const manualRuntime = selfHostForm.serving_library || getLocalRuntimeFromEndpointUrl(selfHostForm.endpoint_url);
+      await validateSelfHostedEndpointRegistration(selfHostForm.endpoint_url.trim(), modelId, selfHostForm.name.trim() || modelId);
       const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
         provider: 'openai',
@@ -1618,6 +1619,24 @@ function App() {
 
       if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.includes(modelId)) {
         throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} reports: ${metrics.modelIds.join(', ')}. Update the endpoint URL or redeploy the model.`);
+      }
+    }
+  }
+
+  async function validateSelfHostedEndpointRegistration(endpointUrl: string, modelId: string, name: string) {
+    if (!window.desktopBridge?.getLocalModelMetrics || !isLocalEndpointUrl(endpointUrl)) {
+      return;
+    }
+
+    const metrics = await window.desktopBridge.getLocalModelMetrics({ endpointUrl });
+    if (!metrics.healthy) {
+      throw new Error(`${name} is not reachable at ${endpointUrl}. Start the model server first, then register the URL.`);
+    }
+
+    if (Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
+      const normalizedModelIds = metrics.modelIds.map((value) => value.toLowerCase());
+      if (!normalizedModelIds.includes(modelId.toLowerCase())) {
+        throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} is serving: ${metrics.modelIds.join(', ')}. Use the actual server URL for ${modelId}; do not reuse the router URL.`);
       }
     }
   }

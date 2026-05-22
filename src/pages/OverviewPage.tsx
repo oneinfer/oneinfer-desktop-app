@@ -25,10 +25,11 @@ export function OverviewPage(props: {
   const isClaudeBusy = props.busy === 'configure-claude-code';
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isOpenClawBusy = props.busy === 'configure-openclaw';
-  const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => String(endpoint.deployment_target).toLowerCase() === 'local');
-  const localDeploymentKeys = new Set(props.localDeployments.map((deployment) => getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)));
+  const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => String(endpoint.deployment_target).toLowerCase() === 'local' && !isRouterEndpoint(endpoint));
+  const validLocalDeployments = props.localDeployments.filter((deployment) => isVisibleLocalDeployment(deployment, props.localModelMetrics));
+  const localDeploymentKeys = new Set(validLocalDeployments.map((deployment) => getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)));
   const visibleLocalDeployments = [
-    ...props.localDeployments.map((deployment) => ({
+    ...validLocalDeployments.map((deployment) => ({
       ...deployment,
       endpointUrl: normalizeLocalEndpointUrl(deployment.endpointUrl),
     })),
@@ -39,7 +40,7 @@ export function OverviewPage(props: {
       pid: null,
       runtime: normalizeServingLibrary(endpoint.serving_library, String(endpoint.endpoint_url ?? '')),
       deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? new Date().toISOString()),
-    })).filter((deployment) => deployment.endpointUrl && !localDeploymentKeys.has(getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId))),
+    })).filter((deployment) => deployment.endpointUrl && !localDeploymentKeys.has(getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)) && isVisibleLocalDeployment(deployment, props.localModelMetrics)),
   ];
 
   const activePlanId = props.dashboard.activeDeveloperPlan?.planId ?? null;
@@ -220,6 +221,29 @@ function LocalDeploymentSummary(props: { deployment: LocalModelDeployment; metri
 
 function getLocalDeploymentKey(endpointUrl: string, modelId: string): string {
   return `${normalizeLocalEndpointUrl(endpointUrl)}::${modelId}`;
+}
+
+function isVisibleLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId' | 'name'>, metricsMap: Record<string, LocalModelMetrics>): boolean {
+  if (isRouterText(deployment.name, deployment.modelId)) {
+    return false;
+  }
+
+  const metrics = metricsMap[deployment.endpointUrl] ?? metricsMap[normalizeLocalEndpointUrl(deployment.endpointUrl)];
+  if (metrics?.healthy && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
+    return metrics.modelIds.includes(deployment.modelId);
+  }
+
+  return true;
+}
+
+function isRouterEndpoint(endpoint: Record<string, unknown>): boolean {
+  const role = String(endpoint.endpoint_role ?? endpoint.role ?? '').toLowerCase();
+  return role === 'router' || isRouterText(String(endpoint.name ?? ''), String(endpoint.model_id ?? endpoint.modelId ?? ''));
+}
+
+function isRouterText(name: string, modelId: string): boolean {
+  const text = `${name} ${modelId}`.toLowerCase();
+  return text.includes(' router') || text.endsWith('router') || text.includes('arch-router') || text.includes('routellm') || text.includes('router-r1');
 }
 
 function normalizeLocalEndpointUrl(endpointUrl: string): string {
