@@ -1540,15 +1540,16 @@ function App() {
     }
   }
 
-  function handleCopyRoute(routeId: string) {
+  function handleCopyRoute(routeId: string, route?: EndpointItem) {
     if (!session) {
       return;
     }
 
+    const localRouteUrl = getLocalRouteChatUrl(route);
     const normalizedBaseUrl = settingsDraft.apiBaseUrl.replace(/\/+$/, '');
-    const routeUrl = `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
+    const routeUrl = localRouteUrl || `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
     navigator.clipboard?.writeText(routeUrl);
-    setMessage({ tone: 'success', text: 'Route URL copied.' });
+    setMessage({ tone: 'success', text: localRouteUrl ? 'Local router URL copied.' : 'Route URL copied.' });
   }
 
   async function handleUseEndpointInRoute(endpointId: string, endpointName: string) {
@@ -1888,6 +1889,50 @@ function getEndpointIdFromPayload(payload: Record<string, unknown>): string | un
   ];
   const endpointId = candidates.find((value) => typeof value === 'string' && value.trim());
   return endpointId ? String(endpointId) : undefined;
+}
+
+function getLocalRouteChatUrl(route?: EndpointItem): string | null {
+  if (!route) {
+    return null;
+  }
+
+  const record = route as Record<string, unknown>;
+  const routingConfig = typeof record.routing_config === 'object' && record.routing_config
+    ? record.routing_config as Record<string, unknown>
+    : {};
+  const candidates = [
+    routingConfig.router_endpoint_url,
+    record.router_endpoint_url,
+    record.endpoint_url,
+  ];
+  const localEndpointUrl = candidates.find((value) => typeof value === 'string' && isLocalEndpointUrl(value));
+  if (!localEndpointUrl) {
+    return null;
+  }
+
+  return toOpenAiChatCompletionsUrl(String(localEndpointUrl));
+}
+
+function toOpenAiChatCompletionsUrl(endpointUrl: string): string {
+  const normalized = endpointUrl.trim().replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (/\/v1$/i.test(normalized)) {
+    return `${normalized}/chat/completions`;
+  }
+
+  return `${normalized}/v1/chat/completions`;
+}
+
+function isLocalEndpointUrl(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const endpointUrl = String(value).toLowerCase();
+  return endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1') || endpointUrl.includes('0.0.0.0');
 }
 
 function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): 'vllm' | 'ollama' | null {

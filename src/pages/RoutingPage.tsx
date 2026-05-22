@@ -150,7 +150,7 @@ export function RoutingPage(props: {
   busy: string | null;
   onIntelligentEndpointNameChange: (value: string) => void;
   onCreateRoute: (payload: CreateRoutePayload) => boolean | void | Promise<boolean | void>;
-  onCopyRoute: (routeId: string) => void;
+  onCopyRoute: (routeId: string, route?: EndpointItem) => void;
   onDeleteRoute: (routeId: string, routeName: string) => void;
   onCreateSelfHosting: () => void;
   onSetupRouterEndpoint?: (routerModelId: string) => void | Promise<void>;
@@ -385,7 +385,7 @@ export function RoutingPage(props: {
                       <td className="px-4 py-6 text-[0.85rem] text-[var(--muted)]">{formatValue(endpoint.updated_at ?? endpoint.created_at ?? 'Not available')}</td>
                       <td className="px-4 py-6 text-right">
                         <div className="flex justify-end gap-1">
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" onClick={() => props.onCopyRoute(routeId)} type="button" title="Copy route URL">
+                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" onClick={() => props.onCopyRoute(routeId, endpoint)} type="button" title="Copy route URL">
                             <Copy size={14} />
                           </button>
                           <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" onClick={() => setTestRoute({ id: routeId, name: routeName })} type="button" title="Test route">
