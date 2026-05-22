@@ -895,6 +895,11 @@ function App() {
         return false;
       }
 
+      if (selectedRuntime === 'transformers') {
+        setMessage({ tone: 'error', text: 'Transformers router is available for routing models only. Use vLLM or Ollama for one-click model deployment, or start your own Transformers model server on a separate port and register that URL.' });
+        return false;
+      }
+
       await handleRegisterSelfHosted();
       return true;
     }
@@ -1311,6 +1316,7 @@ function App() {
           dashboard.models,
         )
       ));
+      await validateLocalRouteCandidates(routerDeployment.endpointUrl, localRouteCandidates);
 
       const createdRoute = await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
         name: routeName,
@@ -1585,6 +1591,35 @@ function App() {
       routerModelId: String(routingConfig.routing_algorithm ?? ''),
       candidates,
     });
+  }
+
+  async function validateLocalRouteCandidates(routerEndpointUrl: string, candidates: Record<string, unknown>[]) {
+    if (!window.desktopBridge?.getLocalModelMetrics) {
+      return;
+    }
+
+    const normalizedRouterUrl = normalizeLocalEndpointUrl(routerEndpointUrl);
+    for (const candidate of candidates) {
+      const endpointUrl = String(candidate.endpoint_url ?? candidate.endpointUrl ?? '').trim();
+      const modelId = String(candidate.model_id ?? candidate.modelId ?? '').trim();
+      const name = String(candidate.endpoint_name ?? candidate.name ?? modelId ?? 'candidate');
+      if (!endpointUrl) {
+        throw new Error(`${name} does not have a local endpoint URL. Deploy/register the model before attaching it to a local route.`);
+      }
+
+      if (normalizeLocalEndpointUrl(endpointUrl) === normalizedRouterUrl) {
+        throw new Error(`${name} points to the router URL (${endpointUrl}). Attach the actual model server URL, not the router model URL.`);
+      }
+
+      const metrics = await window.desktopBridge.getLocalModelMetrics({ endpointUrl });
+      if (!metrics.healthy) {
+        throw new Error(`${name} is not reachable at ${endpointUrl}. Start/deploy that model before creating the local route.`);
+      }
+
+      if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.includes(modelId)) {
+        throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} reports: ${metrics.modelIds.join(', ')}. Update the endpoint URL or redeploy the model.`);
+      }
+    }
   }
 
   async function handleUseEndpointInRoute(endpointId: string, endpointName: string) {
