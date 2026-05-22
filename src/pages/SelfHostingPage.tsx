@@ -510,7 +510,7 @@ function DeployabilityChecklist(props: {
 }
 
 function isOneClickLaunchable(library: ServingLibrary): boolean {
-  return library === 'vllm' || library === 'ollama';
+  return library === 'vllm' || library === 'ollama' || library === 'transformers';
 }
 
 function normalizeServingLibrary(value: unknown, endpointUrl = ''): ServingLibrary {

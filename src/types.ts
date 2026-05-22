@@ -12,7 +12,7 @@ export interface DesktopSettings {
 
 export type ServingLibrary = 'vllm' | 'sglang' | 'tensorrt' | 'ollama' | 'llama_cpp' | 'pytorch' | 'transformers' | 'dynamo';
 
-export type LaunchableServingLibrary = Extract<ServingLibrary, 'vllm' | 'ollama'>;
+export type LaunchableServingLibrary = Extract<ServingLibrary, 'vllm' | 'ollama' | 'transformers'>;
 
 export interface MachineCpuDetails {
   brand?: string;

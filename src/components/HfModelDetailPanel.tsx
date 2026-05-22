@@ -410,7 +410,7 @@ function hasAnyFileExtension(model: HfModelInfo, extensions: string[]): boolean 
 }
 
 function isOneClickLaunchable(library: ServingLibrary): boolean {
-  return library === 'vllm' || library === 'ollama';
+  return library === 'vllm' || library === 'ollama' || library === 'transformers';
 }
 
 function getSupportedPlatform(value: unknown): SupportedPlatform {

@@ -896,11 +896,6 @@ function App() {
         return false;
       }
 
-      if (selectedRuntime === 'transformers') {
-        setMessage({ tone: 'error', text: 'Transformers router is available for routing models only. Use vLLM or Ollama for one-click model deployment, or start your own Transformers model server on a separate port and register that URL.' });
-        return false;
-      }
-
       await handleRegisterSelfHosted();
       return true;
     }
@@ -2118,8 +2113,8 @@ function getRequiredRouterRuntime(routerModelId: string, platform: SupportedPlat
   return platform === 'windows' ? 'transformers' : 'vllm';
 }
 
-function isLaunchableLocalRuntime(runtime: ServingLibrary): runtime is 'vllm' | 'ollama' {
-  return runtime === 'vllm' || runtime === 'ollama';
+function isLaunchableLocalRuntime(runtime: ServingLibrary): runtime is 'vllm' | 'ollama' | 'transformers' {
+  return runtime === 'vllm' || runtime === 'ollama' || runtime === 'transformers';
 }
 
 function formatLocalRuntime(runtime: ServingLibrary): string {
