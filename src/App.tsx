@@ -1225,8 +1225,8 @@ function App() {
       throw new Error('Local router deployment is not available in this app build.');
     }
 
-    const routerRuntime = getRequiredRouterRuntime(routerModelId);
     const routerPlatform = getSupportedPlatform(dashboard.machineDetails?.platform);
+    const routerRuntime = getRequiredRouterRuntime(routerModelId, routerPlatform);
     const unsupportedReason = getRouterRuntimeUnsupportedReason(routerRuntime, routerPlatform, routerModelId);
     if (unsupportedReason) {
       throw new Error(unsupportedReason);
@@ -1432,6 +1432,11 @@ function App() {
   }
 
   async function ensureServingLibraryInstalled(library: ServingLibrary, reason: string): Promise<void> {
+    if (library === 'transformers') {
+      await ensureTransformerRouterStackInstalled();
+      return;
+    }
+
     if (libraries[library]) {
       return;
     }
@@ -1894,8 +1899,12 @@ function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): '
   return null;
 }
 
-function getRequiredRouterRuntime(routerModelId: string): 'vllm' | 'ollama' {
-  return isOllamaCompatibleModelId(routerModelId) ? 'ollama' : 'vllm';
+function getRequiredRouterRuntime(routerModelId: string, platform: SupportedPlatform): 'vllm' | 'ollama' | 'transformers' {
+  if (isOllamaCompatibleModelId(routerModelId)) {
+    return 'ollama';
+  }
+
+  return platform === 'windows' ? 'transformers' : 'vllm';
 }
 
 type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
@@ -1914,12 +1923,12 @@ function getSupportedPlatform(value: unknown): SupportedPlatform {
   return 'unknown';
 }
 
-function getRouterRuntimeUnsupportedReason(runtime: 'vllm' | 'ollama', platform: SupportedPlatform, routerModelId: string): string | null {
+function getRouterRuntimeUnsupportedReason(runtime: 'vllm' | 'ollama' | 'transformers', platform: SupportedPlatform, routerModelId: string): string | null {
   if (runtime === 'ollama') {
     return null;
   }
 
-  if (platform === 'windows') {
+  if (runtime === 'vllm' && platform === 'windows') {
     return `${routerModelId} is a Hugging Face Transformers router model. One-click router deployment with vLLM is not supported on this OS. Register this router model as a local PyTorch or Transformers endpoint first, or choose a GGUF router model that can run with Ollama.`;
   }
 

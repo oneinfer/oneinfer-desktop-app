@@ -604,13 +604,11 @@ export function RoutingPage(props: {
 type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
 
 function getRouterSetupIssue(routerModelId: string, dashboard: DashboardState, localDeployments: LocalModelDeployment[]): string | null {
+  void routerModelId;
+  void dashboard;
+  void localDeployments;
   if (!routerModelId || hasLocalRouterEndpoint(routerModelId, dashboard, localDeployments)) {
     return null;
-  }
-
-  const platform = getSupportedPlatform(dashboard.machineDetails?.platform);
-  if (platform === 'windows' && !isOllamaCompatibleModelId(routerModelId)) {
-    return `${routerModelId} needs a local PyTorch or Transformers endpoint on Windows before you create this route. vLLM one-click router deployment is not available on this OS.`;
   }
 
   return null;

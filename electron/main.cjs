@@ -1175,6 +1175,36 @@ function getVllmLogPath(repoId) {
   return path.join(logsDir, `vllm-${safeId}-${timestamp}.log`);
 }
 
+function getTransformersLogPath(repoId) {
+  const safeId = repoId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logsDir = path.join(app.getPath('userData'), 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  return path.join(logsDir, `transformers-${safeId}-${timestamp}.log`);
+}
+
+async function getPythonCommandForModule(moduleName) {
+  const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
+  for (const command of candidates) {
+    if (!await commandExists(command)) {
+      continue;
+    }
+
+    const args = command === 'py' ? ['-3', '-c', `import ${moduleName}`] : ['-c', `import ${moduleName}`];
+    try {
+      await runCommand(command, args, { timeoutMs: 10000 });
+      return {
+        command,
+        prefixArgs: command === 'py' ? ['-3'] : [],
+      };
+    } catch {
+      // Try the next Python command.
+    }
+  }
+
+  return null;
+}
+
 function getOllamaCommand() {
   return getMacOllamaCommandPath() || getWindowsOllamaCommandPath() || 'ollama';
 }
@@ -1398,6 +1428,205 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
   return child;
 }
 
+const TRANSFORMERS_OPENAI_SERVER_SCRIPT = String.raw`
+import json
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+repo_id = sys.argv[1]
+port = int(sys.argv[2])
+
+print(f"Loading Transformers model {repo_id}", flush=True)
+import torch
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True)
+model = None
+model_kind = "sequence-classification"
+try:
+    model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True)
+except Exception as sequence_error:
+    print(f"Sequence classification load failed: {sequence_error}", flush=True)
+    model_kind = "causal-lm"
+    model = AutoModelForCausalLM.from_pretrained(repo_id, trust_remote_code=True)
+
+model.eval()
+if hasattr(model, "to"):
+    model.to("cuda" if torch.cuda.is_available() else "cpu")
+
+def response_payload(content, request_id):
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": repo_id,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+    }
+
+def prompt_from_messages(payload):
+    messages = payload.get("messages") or []
+    return "\n".join([str(item.get("content", "")) for item in messages if isinstance(item, dict)]).strip()
+
+def run_model(prompt, payload):
+    if not prompt:
+        prompt = str(payload.get("prompt") or "")
+    if not prompt:
+        prompt = "Route this request."
+
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+
+    with torch.no_grad():
+        if model_kind == "causal-lm":
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=int(payload.get("max_tokens") or 128),
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            generated = output_ids[0][inputs["input_ids"].shape[-1]:]
+            return tokenizer.decode(generated, skip_special_tokens=True).strip() or "ok"
+
+        outputs = model(**inputs)
+        scores = torch.softmax(outputs.logits[0], dim=-1)
+        index = int(torch.argmax(scores).item())
+        label = getattr(model.config, "id2label", {}).get(index, str(index))
+        return json.dumps({"label": label, "score": float(scores[index].item())})
+
+class Handler(BaseHTTPRequestHandler):
+    def send_json(self, status, payload):
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/v1/models":
+            self.send_json(200, {"object": "list", "data": [{"id": repo_id, "object": "model", "owned_by": "oneinfer"}]})
+            return
+        self.send_json(404, {"error": {"message": "Not found"}})
+
+    def do_POST(self):
+        if self.path.rstrip("/") not in ["/v1/chat/completions", "/v1/completions"]:
+            self.send_json(404, {"error": {"message": "Not found"}})
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length).decode("utf-8") if length else "{}"
+        try:
+            payload = json.loads(body or "{}")
+            prompt = prompt_from_messages(payload)
+            content = run_model(prompt, payload)
+            self.send_json(200, response_payload(content, f"chatcmpl-{int(time.time() * 1000)}"))
+        except Exception as error:
+            self.send_json(500, {"error": {"message": str(error)}})
+
+    def log_message(self, format, *args):
+        print(format % args, flush=True)
+
+print(f"Transformers OpenAI-compatible server ready on 127.0.0.1:{port}", flush=True)
+ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+`;
+
+async function startTransformersServer(repoId, port, onProgress = () => {}) {
+  onProgress({
+    stage: 'preparing',
+    message: 'Checking PyTorch and Transformers installation...',
+    detail: 'Looking for a Python environment that can import transformers and torch.',
+  });
+
+  const python = await getPythonCommandForModule('transformers');
+  if (!python) {
+    throw new Error('Transformers is not installed in an available Python environment.');
+  }
+
+  try {
+    await runCommand(python.command, [...python.prefixArgs, '-c', 'import torch; import transformers'], { timeoutMs: 10000 });
+  } catch {
+    throw new Error('PyTorch and Transformers are both required before starting a Transformers router endpoint.');
+  }
+
+  const logPath = getTransformersLogPath(repoId);
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  const args = [...python.prefixArgs, '-u', '-c', TRANSFORMERS_OPENAI_SERVER_SCRIPT, repoId, String(port)];
+
+  function writeLog(line) {
+    const ts = new Date().toISOString();
+    logStream.write(`[${ts}] ${line}\n`);
+  }
+
+  writeLog(`Starting Transformers server: ${python.command} ${args.slice(0, 4).join(' ')} ...`);
+  onProgress({
+    stage: 'starting',
+    message: `Starting Transformers router for ${repoId}...`,
+    detail: `Logs: ${logPath}`,
+  });
+
+  const child = spawn(python.command, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  const pipeOutput = (stream, level) => {
+    let buffer = '';
+    stream.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      lines
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .forEach((line) => {
+          writeLog(line);
+          onProgress({
+            stage: 'loading',
+            message: level === 'error' ? 'Transformers reported output.' : 'Transformers is loading the router model...',
+            detail: line,
+            level,
+          });
+        });
+    });
+  };
+
+  pipeOutput(child.stdout, 'info');
+  pipeOutput(child.stderr, 'info');
+
+  child.once('error', (error) => {
+    writeLog(`ERROR: ${error.message}`);
+    logStream.end();
+    onProgress({
+      stage: 'error',
+      message: 'Failed to start Transformers.',
+      detail: error.message,
+      level: 'error',
+    });
+  });
+
+  child.once('exit', (code, signal) => {
+    writeLog(`Process exited - code: ${code}, signal: ${signal}`);
+    logStream.end();
+    if (code !== null && code !== 0) {
+      onProgress({
+        stage: 'error',
+        message: `Transformers server exited with code ${code}. Logs saved to: ${logPath}`,
+        detail: signal ? `Signal: ${signal}` : undefined,
+        level: 'error',
+      });
+    }
+  });
+
+  child.unref();
+  return child;
+}
+
 function getVllmExitDetail(output) {
   if (output.includes('operator torchvision::nms does not exist')) {
     return {
@@ -1428,7 +1657,7 @@ async function deployHfModel(payload = {}) {
   const progress = (patch) => sendDeploymentProgress({ id: progressId, ...patch });
   const shouldCancel = () => Boolean(localModelDeploymentsInFlight.get(repoId)?.cancelled);
 
-  if (!['vllm', 'ollama'].includes(runtime)) {
+  if (!['vllm', 'ollama', 'transformers'].includes(runtime)) {
     throw new Error(`Unsupported local deployment runtime: ${runtime}`);
   }
 
@@ -1448,7 +1677,7 @@ async function deployHfModel(payload = {}) {
   progress({
     stage: 'preparing',
     message: `Preparing local deployment for ${repoId}.`,
-    detail: `Runtime: ${runtime === 'ollama' ? 'Ollama' : 'vLLM'}`,
+    detail: `Runtime: ${runtime === 'ollama' ? 'Ollama' : runtime === 'transformers' ? 'Transformers' : 'vLLM'}`,
   });
 
   const existingDeployment = localModelDeployments.get(repoId);
@@ -1526,7 +1755,9 @@ async function deployHfModel(payload = {}) {
     detail: endpointUrl,
   });
 
-  const child = await startVllmServer(repoId, port, progress);
+  const child = runtime === 'transformers'
+    ? await startTransformersServer(repoId, port, progress)
+    : await startVllmServer(repoId, port, progress);
   const activeDeployment = localModelDeploymentsInFlight.get(repoId);
   if (activeDeployment) {
     activeDeployment.child = child;

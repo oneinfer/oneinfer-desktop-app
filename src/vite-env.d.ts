@@ -20,7 +20,7 @@ interface DesktopSettings {
 }
 
 type DesktopServingLibrary = 'vllm' | 'sglang' | 'tensorrt' | 'ollama' | 'llama_cpp' | 'pytorch' | 'transformers' | 'dynamo';
-type DesktopLaunchableServingLibrary = Extract<DesktopServingLibrary, 'vllm' | 'ollama'>;
+type DesktopLaunchableServingLibrary = Extract<DesktopServingLibrary, 'vllm' | 'ollama' | 'transformers'>;
 
 interface DesktopState {
   settings: Partial<DesktopSettings>;
