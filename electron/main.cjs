@@ -923,7 +923,7 @@ async function installLibrary(name) {
     tensorrt: ['tensorrt-llm'],
     llama_cpp: ['llama-cpp-python'],
     pytorch: ['torch'],
-    transformers: ['torch', 'transformers'],
+    transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers'],
     dynamo: ['ai-dynamo'],
   };
 
@@ -941,7 +941,7 @@ async function installLibrary(name) {
       throw new Error('pip is not installed. Please install Python and pip first.');
     }
 
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', ...pipInstallPackages[name]], { timeoutMs: 15 * 60 * 1000 });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...pipInstallPackages[name]], { timeoutMs: 15 * 60 * 1000 });
     return 'installed';
   }
 
@@ -1200,6 +1200,19 @@ function getTransformersLogPath(repoId) {
   const logsDir = path.join(app.getPath('userData'), 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
   return path.join(logsDir, `transformers-${safeId}-${timestamp}.log`);
+}
+
+function readLogTail(logPath, maxLines = 40) {
+  try {
+    if (!logPath || !fs.existsSync(logPath)) {
+      return '';
+    }
+
+    const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+    return lines.slice(-maxLines).join('\n');
+  } catch {
+    return '';
+  }
 }
 
 async function getPythonCommandForModule(moduleName) {
@@ -1463,16 +1476,27 @@ from transformers import AutoModelForCausalLM, AutoModelForSequenceClassificatio
 tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True)
 model = None
 model_kind = "sequence-classification"
+device = "cuda" if torch.cuda.is_available() and torch.cuda.mem_get_info()[0] > 4 * 1024 * 1024 * 1024 else "cpu"
+dtype = torch.float16 if device == "cuda" else torch.float32
+print(f"Using device={device}, dtype={dtype}", flush=True)
 try:
-    model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True)
+    model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
 except Exception as sequence_error:
     print(f"Sequence classification load failed: {sequence_error}", flush=True)
     model_kind = "causal-lm"
-    model = AutoModelForCausalLM.from_pretrained(repo_id, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
 
 model.eval()
 if hasattr(model, "to"):
-    model.to("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        model.to(device)
+    except RuntimeError as cuda_error:
+        if device == "cuda":
+            print(f"CUDA load failed, falling back to CPU: {cuda_error}", flush=True)
+            device = "cpu"
+            model.to(device)
+        else:
+            raise
 
 def response_payload(content, request_id):
     return {
@@ -1568,9 +1592,19 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
   }
 
   try {
-    await runCommand(python.command, [...python.prefixArgs, '-c', 'import torch; import transformers'], { timeoutMs: 10000 });
+    await runCommand(python.command, [...python.prefixArgs, '-c', 'import torch; import transformers; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__'], { timeoutMs: 10000 });
   } catch {
-    throw new Error('PyTorch and Transformers are both required before starting a Transformers router endpoint.');
+    const pipCommand = await getPythonPipCommand();
+    if (!pipCommand) {
+      throw new Error('PyTorch and Transformers are required, but pip is not available to repair the Python environment.');
+    }
+
+    onProgress({
+      stage: 'preparing',
+      message: 'Updating PyTorch and Transformers runtime dependencies...',
+      detail: 'Installing torch, transformers>=4.45.0, accelerate, safetensors, sentencepiece, protobuf, huggingface_hub, and tokenizers.',
+    });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers'], { timeoutMs: 15 * 60 * 1000 });
   }
 
   const logPath = getTransformersLogPath(repoId);
@@ -1806,9 +1840,11 @@ async function deployHfModel(payload = {}) {
   } catch (error) {
     stopProcessTree(child.pid);
     localModelDeploymentsInFlight.delete(repoId);
+    const logTail = readLogTail(child.oneinferLogPath);
     const errorDetail = [
       error instanceof Error ? error.message : String(error),
       child.oneinferLogPath ? `Logs: ${child.oneinferLogPath}` : '',
+      logTail ? `Last log lines:\n${logTail}` : '',
     ].filter(Boolean).join('\n');
 
     progress({
