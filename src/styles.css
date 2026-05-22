@@ -1832,6 +1832,235 @@ input:checked + .slider:before {
   min-width: 0;
 }
 
+.serving-library-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.serving-library-dropdown {
+  position: relative;
+  min-width: 0;
+}
+
+.serving-library-trigger {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.serving-library-trigger-main,
+.serving-library-trigger-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.serving-library-trigger-main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serving-library-trigger-main span,
+.serving-library-option-select span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: #ef4444;
+}
+
+.serving-library-trigger.installed .serving-library-trigger-main span,
+.serving-library-option.installed .serving-library-option-select span {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+}
+
+.serving-library-trigger.unsupported .serving-library-trigger-main span,
+.serving-library-option.unsupported .serving-library-option-select span {
+  background: #6b7280;
+}
+
+.serving-library-trigger-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.serving-library-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: #111a24;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.serving-library-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  border-radius: 9px;
+}
+
+.serving-library-option.selected {
+  background: rgba(116, 227, 197, 0.08);
+}
+
+.serving-library-option.unsupported {
+  opacity: 0.55;
+}
+
+.serving-library-option-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "dot name"
+    "dot status";
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  min-width: 0;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.serving-library-option-select:disabled {
+  cursor: not-allowed;
+}
+
+.serving-library-option-select span {
+  grid-area: dot;
+}
+
+.serving-library-option-select strong {
+  grid-area: name;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serving-library-option-select small {
+  grid-area: status;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.serving-library-option-install {
+  min-width: 92px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.serving-library-option-install:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.serving-library-option-installed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #10b981;
+  font-size: 0.76rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.serving-library-select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.serving-library-select-row select {
+  min-width: 0;
+}
+
+.serving-library-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.serving-library-action .ghost-button {
+  min-width: 112px;
+  justify-content: center;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+}
+
+.serving-library-action > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #10b981;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.serving-library-selected-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.serving-library-selected-status span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: #ef4444;
+}
+
+.serving-library-selected-status.installed span {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+}
+
+.serving-library-selected-status.unsupported span {
+  background: #6b7280;
+}
+
 .stat-badge {
   display: flex;
   align-items: center;

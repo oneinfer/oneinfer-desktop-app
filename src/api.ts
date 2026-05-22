@@ -10,6 +10,7 @@ import type {
   InstanceItem,
   MachineDetailsItem,
   ProviderInfoMap,
+  ServingLibrary,
 } from './types';
 
 type AnyRecord = Record<string, unknown>;
@@ -28,6 +29,7 @@ export interface CreateIntelligentEndpointPayload {
     router_runtime?: 'local';
     router_endpoint_id?: string;
     router_endpoint_url?: string;
+    serving_library?: ServingLibrary;
     input_modality: string;
     candidate_models: string[];
     description?: string;
@@ -696,7 +698,7 @@ function normalizeModelItem(item: AnyRecord): AnyRecord {
 }
 
 export async function getHfModelInfo(repoId: string): Promise<AnyRecord> {
-  const url = `https://huggingface.co/api/models/${repoId}`;
+  const url = `https://huggingface.co/api/models/${repoId}?blobs=true`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch Hugging Face model info for ${repoId}`);

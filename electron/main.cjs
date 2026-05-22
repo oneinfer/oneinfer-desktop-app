@@ -686,7 +686,24 @@ async function ensureOpenCodeInstalled() {
   throw new Error(`OpenCode was not found and automatic installation failed.${detail} See ${OPENCODE_SETUP_DOCS_URL}`);
 }
 
+function normalizeServingLibraryName(name) {
+  const normalized = String(name || '').trim().toLowerCase().replace(/[-.\s]+/g, '_');
+  const aliases = {
+    llama: 'llama_cpp',
+    llamacpp: 'llama_cpp',
+    llama_cpp: 'llama_cpp',
+    llama_cpp_python: 'llama_cpp',
+    tensorrt_llm: 'tensorrt',
+    tensor_rt: 'tensorrt',
+    tensor_rt_llm: 'tensorrt',
+    torch: 'pytorch',
+    transformer: 'transformers',
+  };
+  return aliases[normalized] || normalized;
+}
+
 async function isLibraryInstalled(name) {
+  name = normalizeServingLibraryName(name);
   try {
     if (name === 'vllm') {
       if (process.platform === 'win32') {
@@ -730,6 +747,96 @@ async function isLibraryInstalled(name) {
       }
     }
 
+    if (name === 'sglang') {
+      if (await commandExists('sglang')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import sglang'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import sglang'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'tensorrt') {
+      if (await commandExists('trtllm-serve')) return true;
+      if (await commandExists('tensorrt_llm')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'pytorch') {
+      try {
+        await runCommand('python3', ['-c', 'import torch'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import torch'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'llama_cpp') {
+      if (await commandExists('llama-server')) return true;
+      if (await commandExists('llama-cli')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'transformers') {
+      try {
+        await runCommand('python3', ['-c', 'import transformers'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import transformers'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'dynamo') {
+      if (await commandExists('dynamo')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import dynamo'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import dynamo'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
     return await commandExists(name);
   } catch {
     return false;
@@ -738,6 +845,7 @@ async function isLibraryInstalled(name) {
 
 
 async function installLibrary(name) {
+  name = normalizeServingLibraryName(name);
   if (name === 'vllm') {
     if (process.platform === 'win32') {
       return await installWindowsManagedVllm();
@@ -807,6 +915,33 @@ async function installLibrary(name) {
     }
 
     await runCommand('sh', ['-lc', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeoutMs: 15 * 60 * 1000 });
+    return 'installed';
+  }
+
+  const pipInstallPackages = {
+    sglang: ['sglang'],
+    tensorrt: ['tensorrt-llm'],
+    llama_cpp: ['llama-cpp-python'],
+    pytorch: ['torch'],
+    transformers: ['transformers'],
+    dynamo: ['ai-dynamo'],
+  };
+
+  if (Object.prototype.hasOwnProperty.call(pipInstallPackages, name)) {
+    if (process.platform === 'win32' && ['sglang', 'tensorrt', 'dynamo'].includes(name)) {
+      throw new Error(`${name} is not supported for native Windows installs in OneInfer Desktop yet.`);
+    }
+
+    if (isMacOS() && ['tensorrt', 'dynamo'].includes(name)) {
+      throw new Error(`${name} requires a Linux NVIDIA runtime in OneInfer Desktop.`);
+    }
+
+    const pipCommand = await getPythonPipCommand();
+    if (!pipCommand) {
+      throw new Error('pip is not installed. Please install Python and pip first.');
+    }
+
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', ...pipInstallPackages[name]], { timeoutMs: 15 * 60 * 1000 });
     return 'installed';
   }
 

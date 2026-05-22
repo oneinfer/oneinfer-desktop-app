@@ -10,6 +10,10 @@ export interface DesktopSettings {
   apiBaseUrl: string;
 }
 
+export type ServingLibrary = 'vllm' | 'sglang' | 'tensorrt' | 'ollama' | 'llama_cpp' | 'pytorch' | 'transformers' | 'dynamo';
+
+export type LaunchableServingLibrary = Extract<ServingLibrary, 'vllm' | 'ollama'>;
+
 export interface MachineCpuDetails {
   brand?: string;
   manufacturer?: string;
@@ -129,6 +133,7 @@ export interface EndpointItem {
   machine_id?: string;
   machine_name?: string;
   api_format?: string;
+  serving_library?: ServingLibrary | string;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -209,6 +214,7 @@ export interface CreateInferenceFormState {
   temperature: number;
   max_tokens: number;
   endpoint_role?: 'inference' | 'router';
+  serving_library?: ServingLibrary;
 }
 
 export interface HfModelInfo {
@@ -230,7 +236,7 @@ export interface LocalModelDeployment {
   modelId: string;
   name: string;
   pid: number | null;
-  runtime: 'vllm' | 'ollama';
+  runtime: ServingLibrary;
   deployedAt: string;
 }
 

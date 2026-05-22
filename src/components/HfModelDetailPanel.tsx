@@ -11,6 +11,7 @@ import {
   Info,
   Layers,
   LoaderCircle,
+  ChevronDown,
   Rocket,
   Server,
   Tag,
@@ -20,7 +21,8 @@ import {
 } from 'lucide-react';
 
 import type { ValidationResult } from '../helpers/hardwareValidation';
-import type { HfModelInfo, MachineDetailsItem } from '../types';
+import { bytesToGiB, getModelWeightBytes } from '../helpers/modelSizing';
+import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
 import { Banner } from './Common';
 
@@ -28,39 +30,48 @@ export function HfModelDetailPanel(props: {
   model: HfModelInfo | null;
   validation: ValidationResult | null;
   machine: MachineDetailsItem | null;
-  libraries: { vllm: boolean; ollama: boolean };
+  libraries: Record<ServingLibrary, boolean>;
+  selectedLibrary: ServingLibrary;
   busy: string | null;
   message: { tone: 'info' | 'success' | 'error'; text: string } | null;
   deploymentProgress: DesktopDeploymentProgress[];
-  onInstall: (name: 'vllm' | 'ollama') => Promise<void>;
+  onSelectLibrary: (library: ServingLibrary) => void;
+  onInstall: (name: ServingLibrary) => Promise<void>;
   onRegister: () => Promise<boolean | void> | boolean | void;
   onCancelDeploy: () => Promise<boolean | void> | boolean | void;
 }) {
-  const { model, validation, machine, libraries, busy, onInstall, onRegister, onCancelDeploy } = props;
+  const { model, validation, machine, libraries, busy, selectedLibrary, onInstall, onSelectLibrary, onRegister, onCancelDeploy } = props;
   const [localError, setLocalError] = React.useState<string | null>(null);
   const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
+  const [servingLibraryMenuOpen, setServingLibraryMenuOpen] = React.useState(false);
 
   if (!model) return null;
 
-  const totalSize = (model.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
-  const sizeGb = totalSize / (1024 ** 3);
+  const sizeGb = bytesToGiB(getModelWeightBytes(model));
   const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
   const effectiveMinVramGb = validation?.effectiveMinVramGb || sizeGb;
 
   const isVllmBusy = busy === 'install-vllm';
   const isOllamaBusy = busy === 'install-ollama';
   const isRegisterBusy = busy === 'register-self-hosted';
-  const isAnyInstalling = isVllmBusy || isOllamaBusy;
+  const isAnyInstalling = Boolean(busy?.startsWith('install-'));
+  const installingLibraryName = busy?.startsWith('install-') ? formatServingLibraryName(busy.replace('install-', '') as ServingLibrary) : '';
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
   const preferredRuntime = libraries.vllm ? 'vLLM' : libraries.ollama ? 'Ollama' : null;
   const canDeploy = Boolean(preferredRuntime) && validation?.status !== 'insufficient';
 
-  const handleInstall = async (name: 'vllm' | 'ollama') => {
+  const platform = getSupportedPlatform(machine?.platform);
+  const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
+  const selectedSupported = isLibrarySupported(selectedOption.value, platform);
+  const selectedInstalled = libraries[selectedOption.value];
+  const selectedBusy = busy === `install-${selectedOption.value}`;
+
+  const handleInstall = async (name: ServingLibrary) => {
     setLocalError(null);
     setLocalSuccess(null);
     try {
       await onInstall(name);
-      setLocalSuccess(`${name === 'vllm' ? 'vLLM' : 'Ollama'} installed successfully.`);
+      setLocalSuccess(`${formatServingLibraryName(name)} installed successfully.`);
     } catch (error: any) {
       setLocalError(error?.message || 'Installation failed');
     }
@@ -96,7 +107,7 @@ export function HfModelDetailPanel(props: {
       {localSuccess ? <div style={{ marginBottom: '12px' }}><Banner tone="success" text={localSuccess} /></div> : null}
       {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess ? (
         <div style={{ marginBottom: '20px' }}>
-          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${isVllmBusy ? 'vLLM' : 'Ollama'}... Please wait.`} />
+          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${installingLibraryName}... Please wait.`} />
         </div>
       ) : null}
       {props.deploymentProgress.length > 0 ? (
@@ -156,13 +167,29 @@ export function HfModelDetailPanel(props: {
                 <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Serving Libraries</span>
                 <Info size={14} style={{ opacity: 0.4 }} />
               </div>
-              <LibraryStatus
-                name="vLLM (Linux GPU)"
-                installed={libraries.vllm}
-                busy={isVllmBusy}
-                onInstall={() => handleInstall('vllm')}
-              />
-              <LibraryStatus name="Ollama" installed={libraries.ollama} busy={isOllamaBusy} onInstall={() => handleInstall('ollama')} />
+              <div className="serving-library-picker">
+                <ServingLibraryDropdown
+                  busy={busy}
+                  libraries={libraries}
+                  onInstall={handleInstall}
+                  onOpenChange={setServingLibraryMenuOpen}
+                  onSelect={(library) => {
+                    onSelectLibrary(library);
+                    setServingLibraryMenuOpen(false);
+                  }}
+                  open={servingLibraryMenuOpen}
+                  platform={platform}
+                  selectedLibrary={selectedLibrary}
+                />
+                <div className={`serving-library-selected-status ${selectedInstalled ? 'installed' : selectedSupported ? 'missing' : 'unsupported'}`}>
+                  <span />
+                  {selectedInstalled
+                    ? `${selectedOption.label} is installed.`
+                    : selectedSupported
+                      ? `${selectedOption.label} is supported but is not installed.`
+                      : `${selectedOption.label} is not supported on this system.`}
+                </div>
+              </div>
             </div>
 
             {validation ? (
@@ -251,22 +278,119 @@ function DeploymentProgressLog(props: { items: DesktopDeploymentProgress[] }) {
   );
 }
 
-function LibraryStatus(props: { name: string; installed: boolean; busy: boolean; onInstall: () => void; disabled?: boolean; disabledLabel?: string }) {
+type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platforms: SupportedPlatform[] }> = [
+  { value: 'vllm', label: 'vLLM', platforms: ['linux', 'macos'] },
+  { value: 'sglang', label: 'SGLang', platforms: ['linux', 'macos'] },
+  { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'] },
+  { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'dynamo', label: 'Dynamo', platforms: ['linux'] },
+];
+
+function ServingLibraryDropdown(props: {
+  busy: string | null;
+  libraries: Record<ServingLibrary, boolean>;
+  onInstall: (library: ServingLibrary) => void;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (library: ServingLibrary) => void;
+  open: boolean;
+  platform: SupportedPlatform;
+  selectedLibrary: ServingLibrary;
+}) {
+  const selectedOption = servingLibraryOptions.find((option) => option.value === props.selectedLibrary) ?? servingLibraryOptions[0];
+  const selectedSupported = isLibrarySupported(selectedOption.value, props.platform);
+  const selectedInstalled = props.libraries[selectedOption.value];
+
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
-        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: props.installed ? '#10b981' : '#ef4444', boxShadow: props.installed ? '0 0 8px #10b981' : 'none' }} />
-        {props.name}
-      </div>
-      {!props.installed ? (
-        <button className="ghost-button" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={props.onInstall} disabled={props.busy || props.disabled} type="button">
-          {props.busy ? <LoaderCircle className="spin" size={12} /> : props.disabled ? props.disabledLabel || 'Unavailable' : 'Install'}
-        </button>
-      ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
-          <CheckCircle2 size={16} /> Installed
+    <div className="serving-library-dropdown">
+      <button
+        aria-expanded={props.open}
+        className={`serving-library-trigger ${selectedInstalled ? 'installed' : selectedSupported ? 'missing' : 'unsupported'}`}
+        onClick={() => props.onOpenChange(!props.open)}
+        type="button"
+      >
+        <span className="serving-library-trigger-main">
+          <span />
+          <strong>{selectedOption.label}</strong>
+        </span>
+        <span className="serving-library-trigger-meta">
+          {selectedInstalled ? 'Installed' : selectedSupported ? 'Install available' : 'Unsupported'}
+          <ChevronDown size={16} />
+        </span>
+      </button>
+      {props.open ? (
+        <div className="serving-library-menu">
+          {servingLibraryOptions.map((option) => {
+            const supported = isLibrarySupported(option.value, props.platform);
+            const installed = props.libraries[option.value];
+            const optionBusy = props.busy === `install-${option.value}`;
+            const selected = option.value === props.selectedLibrary;
+            return (
+              <div className={`serving-library-option ${selected ? 'selected' : ''} ${installed ? 'installed' : supported ? 'missing' : 'unsupported'}`} key={option.value}>
+                <button
+                  className="serving-library-option-select"
+                  disabled={!supported}
+                  onClick={() => props.onSelect(option.value)}
+                  type="button"
+                >
+                  <span />
+                  <strong>{option.label}</strong>
+                  <small>{installed ? 'Installed' : supported ? 'Not installed' : 'Unsupported'}</small>
+                </button>
+                {!installed ? (
+                  <button
+                    className="serving-library-option-install"
+                    disabled={!supported || optionBusy}
+                    onClick={() => props.onInstall(option.value)}
+                    type="button"
+                  >
+                    {optionBusy ? <LoaderCircle className="spin" size={12} /> : supported ? 'Install' : 'Unsupported'}
+                  </button>
+                ) : (
+                  <span className="serving-library-option-installed"><CheckCircle2 size={14} /> Installed</span>
+                )}
+              </div>
+            );
+          })}
         </div>
-      )}
+      ) : null}
     </div>
   );
+}
+
+function isLibrarySupported(library: ServingLibrary, platform: SupportedPlatform): boolean {
+  const option = servingLibraryOptions.find((item) => item.value === library);
+  return platform === 'unknown' || Boolean(option?.platforms.includes(platform));
+}
+
+function getSupportedPlatform(value: unknown): SupportedPlatform {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('win')) return 'windows';
+  if (normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.includes('linux')) return 'linux';
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('windows')) return 'windows';
+    if (userAgent.includes('mac')) return 'macos';
+    if (userAgent.includes('linux')) return 'linux';
+  }
+  return 'unknown';
+}
+
+function formatServingLibraryName(value: ServingLibrary): string {
+  const labels: Record<ServingLibrary, string> = {
+    vllm: 'vLLM',
+    sglang: 'SGLang',
+    tensorrt: 'TensorRT-LLM',
+    ollama: 'Ollama',
+    llama_cpp: 'llama.cpp',
+    pytorch: 'PyTorch',
+    transformers: 'Transformers',
+    dynamo: 'Dynamo',
+  };
+  return labels[value] ?? value;
 }

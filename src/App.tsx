@@ -38,6 +38,7 @@ import {
 } from './constants';
 import { validateHardwareSupport, type ValidationResult } from './helpers/hardwareValidation';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
+import { bytesToGiB, getModelWeightBytes } from './helpers/modelSizing';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
@@ -56,8 +57,22 @@ import type {
   LocalModelDeployment,
   LocalModelMetrics,
   SectionKey,
+  ServingLibrary,
 } from './types';
 import { getBalance } from './utils/format';
+
+const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
+
+const initialLibraryStatus: Record<ServingLibrary, boolean> = {
+  vllm: false,
+  sglang: false,
+  tensorrt: false,
+  ollama: false,
+  llama_cpp: false,
+  pytorch: false,
+  transformers: false,
+  dynamo: false,
+};
 
 function normalizeHfRepoId(value: string): string {
   const rawValue = value.trim();
@@ -110,6 +125,7 @@ function App() {
     name: '',
     model_id: '',
     endpoint_url: 'http://localhost:8000/v1',
+    serving_library: 'vllm',
     useHfUrl: true,
     hfUrl: '',
   });
@@ -128,7 +144,7 @@ function App() {
   const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
   const [hfModelMetadataLoading, setHfModelMetadataLoading] = useState(false);
   const [hfModelMetadataError, setHfModelMetadataError] = useState<string | null>(null);
-  const [libraries, setLibraries] = useState<{ vllm: boolean; ollama: boolean }>({ vllm: false, ollama: false });
+  const [libraries, setLibraries] = useState<Record<ServingLibrary, boolean>>(initialLibraryStatus);
   const [deploymentProgress, setDeploymentProgress] = useState<DesktopDeploymentProgress[]>([]);
   const [localDeployments, setLocalDeployments] = useState<LocalModelDeployment[]>([]);
   const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
@@ -163,15 +179,17 @@ function App() {
               setHfModelMetadata(info);
             }
 
-            const totalSizeFromSiblings = (info.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
-            const totalSizeFromSafetensors = (info as any).safetensors?.total || 0;
-            const totalSize = totalSizeFromSiblings || totalSizeFromSafetensors;
-            const sizeGb = totalSize > 0 ? totalSize / (1024 ** 3) : 0;
+            const sizeGb = bytesToGiB(getModelWeightBytes(info));
 
-            requirements = {
-              minVramGb: sizeGb > 0 ? Math.ceil(sizeGb * 1.15) + 2 : 4,
-              modelSizeGb: sizeGb > 0 ? Math.ceil(sizeGb) : 2,
-            };
+            if (sizeGb > 0) {
+              requirements = {
+                minVramGb: Math.ceil(sizeGb * 1.15) + 2,
+                modelSizeGb: sizeGb,
+              };
+            } else if (active) {
+              setValidationResult(null);
+              setHfModelMetadataError('Hugging Face did not return model weight sizes, so local deployability cannot be estimated for this repo.');
+            }
           } else if (active) {
             setHfModelMetadata(null);
             setValidationResult(null);
@@ -234,9 +252,11 @@ function App() {
     async function checkLibs() {
       if (!window.desktopBridge?.checkLibrary) return;
       try {
-        const vllm = await window.desktopBridge.checkLibrary('vllm');
-        const ollama = await window.desktopBridge.checkLibrary('ollama');
-        setLibraries({ vllm, ollama });
+        const statuses = await Promise.all(servingLibraries.map(async (library) => [library, await window.desktopBridge.checkLibrary(library)] as const));
+        setLibraries({
+          ...initialLibraryStatus,
+          ...Object.fromEntries(statuses),
+        });
       } catch (error) {
         console.error('[libraries] check failed', error);
       }
@@ -802,6 +822,7 @@ function App() {
 
     setBusy('register-self-hosted');
     try {
+      const manualRuntime = selfHostForm.serving_library || getLocalRuntimeFromEndpointUrl(selfHostForm.endpoint_url);
       const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
         provider: 'openai',
@@ -813,6 +834,7 @@ function App() {
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
+        serving_library: manualRuntime,
       });
       setLocalDeployments((current) => {
         const nextDeployment: LocalModelDeployment = {
@@ -821,7 +843,7 @@ function App() {
           modelId,
           name: selfHostForm.name.trim() || modelId,
           pid: null,
-          runtime: 'vllm',
+          runtime: manualRuntime,
           deployedAt: new Date().toISOString(),
         };
 
@@ -944,6 +966,7 @@ function App() {
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
+        serving_library: deployment.runtime,
       });
 
       const registeredEndpointId = getEndpointIdFromPayload(registeredEndpoint);
@@ -1136,7 +1159,7 @@ function App() {
     }
   }
 
-  async function ensureLocalRouterDeployment(routingAlgorithm: string): Promise<{ endpointId?: string; endpointUrl: string; modelId: string }> {
+  async function ensureLocalRouterDeployment(routingAlgorithm: string): Promise<{ endpointId?: string; endpointUrl: string; modelId: string; runtime: ServingLibrary }> {
     if (!session) {
       throw new Error('Sign in before deploying a local router model.');
     }
@@ -1160,10 +1183,17 @@ function App() {
 
     if (existingRouterEndpoint) {
       const endpointRecord = existingRouterEndpoint as Record<string, unknown>;
+      const endpointUrl = String(endpointRecord.endpoint_url ?? '');
+      const existingRuntime = normalizeServingLibrary(endpointRecord.serving_library, getLocalRuntimeFromEndpointUrl(endpointUrl));
+      if (existingRuntime === 'ollama' && !isOllamaCompatibleModelId(routerModelId)) {
+        throw new Error(`${routerModelId} needs vLLM as its serving library. Ollama only supports GGUF/llama.cpp router models.`);
+      }
+
       return {
         endpointId: getInferenceEndpointIdFromRecord(existingRouterEndpoint, dashboard.inferenceEndpoints.indexOf(existingRouterEndpoint)),
-        endpointUrl: String(endpointRecord.endpoint_url ?? ''),
+        endpointUrl,
         modelId: routerModelId,
+        runtime: existingRuntime,
       };
     }
 
@@ -1171,14 +1201,9 @@ function App() {
       throw new Error('Local router deployment is not available in this app build.');
     }
 
-    const canUseOllamaRouter = libraries.ollama && isOllamaCompatibleModelId(routerModelId);
-    const routerRuntime = canUseOllamaRouter ? 'ollama' : libraries.vllm ? 'vllm' : libraries.ollama ? 'ollama' : null;
-    if (!routerRuntime) {
-      throw new Error('Install Ollama or vLLM before deploying a router model locally.');
-    }
-
-    if (routerRuntime === 'ollama' && !isOllamaCompatibleModelId(routerModelId)) {
-      throw new Error(`${routerModelId} is not Ollama-compatible. Install vLLM or choose a GGUF/Ollama router model.`);
+    const routerRuntime = getRequiredRouterRuntime(routerModelId);
+    if (!libraries[routerRuntime]) {
+      await ensureServingLibraryInstalled(routerRuntime, `${formatLocalRuntime(routerRuntime)} is required for the selected router model.`);
     }
 
     setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId} with ${formatLocalRuntime(routerRuntime)}...` });
@@ -1207,6 +1232,7 @@ function App() {
       temperature: 0.1,
       max_tokens: 1024,
       endpoint_role: 'router',
+      serving_library: routerRuntime,
     });
 
     setLocalDeployments((current) => {
@@ -1232,6 +1258,7 @@ function App() {
       endpointId: getEndpointIdFromPayload(registeredEndpoint),
       endpointUrl: deployment.endpointUrl,
       modelId: deployment.modelId,
+      runtime: deployment.runtime,
     };
   }
 
@@ -1267,6 +1294,7 @@ function App() {
           router_runtime: 'local',
           ...(routerDeployment?.endpointId ? { router_endpoint_id: routerDeployment.endpointId } : {}),
           ...(routerDeployment?.endpointUrl ? { router_endpoint_url: routerDeployment.endpointUrl } : {}),
+          serving_library: routerDeployment.runtime,
           input_modality: payload.inputModality,
           candidate_models: payload.modelId ? [payload.modelId] : [],
           description: payload.description.trim() || undefined,
@@ -1303,6 +1331,24 @@ function App() {
       return false;
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function ensureServingLibraryInstalled(library: ServingLibrary, reason: string): Promise<void> {
+    if (libraries[library]) {
+      return;
+    }
+
+    if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) {
+      throw new Error(`${formatLocalRuntime(library)} is required, but automatic installation is not available in this app build.`);
+    }
+
+    setMessage({ tone: 'info', text: `${reason} Installing ${formatLocalRuntime(library)} before creating the route...` });
+    await window.desktopBridge.installLibrary(library);
+    const installed = await window.desktopBridge.checkLibrary(library);
+    setLibraries((current) => ({ ...current, [library]: installed }));
+    if (!installed) {
+      throw new Error(`${formatLocalRuntime(library)} installation finished, but the app could not verify it on this machine.`);
     }
   }
 
@@ -1352,6 +1398,7 @@ function App() {
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
+        serving_library: deployment.runtime,
       });
       const endpointId = getEndpointIdFromPayload(registeredEndpoint);
       registeredDeployments.push(endpointId ? { ...deployment, endpointId } : deployment);
@@ -1461,7 +1508,7 @@ function App() {
     }
   }
 
-  async function handleInstallLibrary(name: 'vllm' | 'ollama') {
+  async function handleInstallLibrary(name: ServingLibrary) {
     if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) return;
     setBusy(`install-${name}`);
     try {
@@ -1569,9 +1616,11 @@ function App() {
                 validation={validationResult}
                 machine={dashboard.machineDetails}
                 libraries={libraries}
+                selectedLibrary={selfHostForm.serving_library}
                 busy={busy}
                 message={message}
                 deploymentProgress={deploymentProgress}
+                onSelectLibrary={(servingLibrary) => setSelfHostForm((current) => ({ ...current, serving_library: servingLibrary }))}
                 onInstall={handleInstallLibrary}
                 onRegister={handleDeploySelfHostedModel}
                 onCancelDeploy={handleCancelSelfHostedDeployment}
@@ -1581,6 +1630,7 @@ function App() {
             localModelMetrics={localModelMetrics}
             onFormChange={setSelfHostForm}
             onSubmit={handleRegisterSelfHosted}
+            onInstallLibrary={handleInstallLibrary}
             onUseInRoute={handleUseEndpointInRoute}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
@@ -1726,7 +1776,7 @@ function getEndpointIdFromPayload(payload: Record<string, unknown>): string | un
   return endpointId ? String(endpointId) : undefined;
 }
 
-function getPreferredLocalRuntime(libraries: { vllm: boolean; ollama: boolean }): 'vllm' | 'ollama' | null {
+function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): 'vllm' | 'ollama' | null {
   if (libraries.vllm) {
     return 'vllm';
   }
@@ -1738,8 +1788,53 @@ function getPreferredLocalRuntime(libraries: { vllm: boolean; ollama: boolean })
   return null;
 }
 
-function formatLocalRuntime(runtime: 'vllm' | 'ollama'): string {
-  return runtime === 'vllm' ? 'vLLM' : 'Ollama';
+function getRequiredRouterRuntime(routerModelId: string): 'vllm' | 'ollama' {
+  return isOllamaCompatibleModelId(routerModelId) ? 'ollama' : 'vllm';
+}
+
+function formatLocalRuntime(runtime: ServingLibrary): string {
+  const labels: Record<ServingLibrary, string> = {
+    vllm: 'vLLM',
+    sglang: 'SGLang',
+    tensorrt: 'TensorRT-LLM',
+    ollama: 'Ollama',
+    llama_cpp: 'llama.cpp',
+    pytorch: 'PyTorch',
+    transformers: 'Transformers',
+    dynamo: 'Dynamo',
+  };
+  return labels[runtime] ?? runtime;
+}
+
+function getLocalRuntimeFromEndpointUrl(endpointUrl: string): ServingLibrary {
+  try {
+    return new URL(endpointUrl).port === '11434' ? 'ollama' : 'vllm';
+  } catch {
+    return endpointUrl.includes(':11434') ? 'ollama' : 'vllm';
+  }
+}
+
+function normalizeServingLibrary(value: unknown, fallback: ServingLibrary = 'vllm'): ServingLibrary {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases: Record<string, ServingLibrary> = {
+    vllm: 'vllm',
+    sglang: 'sglang',
+    tensorrt: 'tensorrt',
+    tensorrt_llm: 'tensorrt',
+    tensor_rt: 'tensorrt',
+    tensor_rt_llm: 'tensorrt',
+    ollama: 'ollama',
+    llama_cpp: 'llama_cpp',
+    llama_cpp_python: 'llama_cpp',
+    llamacpp: 'llama_cpp',
+    llama: 'llama_cpp',
+    pytorch: 'pytorch',
+    torch: 'pytorch',
+    transformers: 'transformers',
+    transformer: 'transformers',
+    dynamo: 'dynamo',
+  };
+  return aliases[normalized] ?? fallback;
 }
 
 function isOllamaCompatibleModelId(modelId: string): boolean {
@@ -1758,7 +1853,7 @@ function isValidLocalDeployment(value: unknown): value is LocalModelDeployment {
     && typeof record.modelId === 'string'
     && record.modelId.trim().length > 0
     && typeof record.name === 'string'
-    && (record.runtime === 'vllm' || record.runtime === 'ollama')
+    && servingLibraries.includes(record.runtime as ServingLibrary)
     && typeof record.deployedAt === 'string';
 }
 

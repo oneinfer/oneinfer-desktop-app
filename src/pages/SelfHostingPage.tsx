@@ -1,18 +1,32 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
 import type { ValidationResult } from '../helpers/hardwareValidation';
-import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics } from '../types';
+import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
 import { getMachineGpuRows, getMachineSummaryEntries } from '../utils/format';
 
 export interface SelfHostFormState {
   name: string;
   model_id: string;
   endpoint_url: string;
+  serving_library: ServingLibrary;
   useHfUrl: boolean;
   hfUrl: string;
 }
+
+type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platforms: SupportedPlatform[]; installable: boolean }> = [
+  { value: 'vllm', label: 'vLLM', platforms: ['linux', 'macos'], installable: true },
+  { value: 'sglang', label: 'SGLang', platforms: ['linux', 'macos'], installable: true },
+  { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'], installable: true },
+  { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'], installable: true },
+  { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'], installable: true },
+  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'], installable: true },
+  { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'], installable: true },
+  { value: 'dynamo', label: 'Dynamo', platforms: ['linux'], installable: true },
+];
 
 export function SelfHostingPage(props: {
   dashboard: DashboardState;
@@ -21,13 +35,14 @@ export function SelfHostingPage(props: {
   hfModelMetadata: HfModelInfo | null;
   hfModelMetadataLoading: boolean;
   hfModelMetadataError: string | null;
-  libraries: { vllm: boolean; ollama: boolean };
+  libraries: Record<ServingLibrary, boolean>;
   busy: string | null;
   analysisPanel: ReactNode;
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onFormChange: (next: SelfHostFormState) => void;
   onSubmit: (event?: FormEvent<HTMLFormElement>) => void;
+  onInstallLibrary: (library: ServingLibrary) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
@@ -35,7 +50,13 @@ export function SelfHostingPage(props: {
   const canShowAnalysis = Boolean(props.hfModelMetadata);
   const selectedModelValue = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
   const hasModelInput = selectedModelValue.trim().length > 0;
-  const hasLocalRuntime = props.libraries.vllm || props.libraries.ollama;
+  const hasLocalRuntime = Object.values(props.libraries).some(Boolean);
+  const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
+  const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
+  const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform);
+  const selectedLibraryInstalled = props.libraries[selectedLibrary.value];
+  const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
+  const canInstallSelectedLibrary = selectedLibrarySupported && selectedLibrary.installable && !selectedLibraryInstalled;
   const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && hasLocalRuntime;
   const localDeploymentRows = getLocalDeploymentRows(props.dashboard.inferenceEndpoints, props.localDeployments);
   const ctaLabel = props.busy === 'register-self-hosted'
@@ -78,7 +99,7 @@ export function SelfHostingPage(props: {
         <Panel title="Deploy a Local Model" icon={Rocket}>
           <form className="stack-form" onSubmit={props.onSubmit}>
             <div className="form-hint">
-              Run a Hugging Face or catalog model on this machine with vLLM, then register the verified local endpoint with OneInfer.
+              Run a Hugging Face or catalog model on this machine, then register the verified local endpoint with OneInfer.
             </div>
 
             <div className="cc-toggle" style={{ marginBottom: '8px' }}>
@@ -121,10 +142,41 @@ export function SelfHostingPage(props: {
             </button>
 
             {advancedOpen ? (
-              <label>
-                <span>Local API URL</span>
-                <input value={props.selfHostForm.endpoint_url} onChange={(event) => props.onFormChange({ ...props.selfHostForm, endpoint_url: event.target.value })} placeholder="http://127.0.0.1:8000/v1" />
-              </label>
+              <>
+                <label>
+                  <span>Serving Library</span>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '8px', alignItems: 'center' }}>
+                    <select value={props.selfHostForm.serving_library} onChange={(event) => props.onFormChange({ ...props.selfHostForm, serving_library: event.target.value as ServingLibrary })}>
+                      {servingLibraryOptions.map((library) => {
+                        const supported = isServingLibrarySupported(library, platform);
+                        const installed = props.libraries[library.value];
+                        return (
+                          <option key={library.value} value={library.value} disabled={!supported}>
+                            {library.label}{supported ? installed ? ' - installed' : '' : ' - unsupported'}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    {canInstallSelectedLibrary ? (
+                      <button className="ghost-button" type="button" onClick={() => props.onInstallLibrary(selectedLibrary.value)} disabled={selectedLibraryBusy} style={{ whiteSpace: 'nowrap' }}>
+                        {selectedLibraryBusy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}
+                        Install
+                      </button>
+                    ) : null}
+                  </div>
+                  <small className="field-help" style={{ color: selectedLibrarySupported ? 'var(--muted)' : 'var(--danger)' }}>
+                    {selectedLibrarySupported
+                      ? selectedLibraryInstalled
+                        ? `${selectedLibrary.label} is installed on this machine.`
+                        : `${selectedLibrary.label} is supported but is not installed.`
+                      : `${selectedLibrary.label} is not supported on this system.`}
+                  </small>
+                </label>
+                <label>
+                  <span>Local API URL</span>
+                  <input value={props.selfHostForm.endpoint_url} onChange={(event) => props.onFormChange({ ...props.selfHostForm, endpoint_url: event.target.value })} placeholder="http://127.0.0.1:8000/v1" />
+                </label>
+              </>
             ) : null}
 
             <DeployabilityChecklist
@@ -133,8 +185,7 @@ export function SelfHostingPage(props: {
               metadataReady={Boolean(props.hfModelMetadata)}
               metadataError={props.hfModelMetadataError}
               validationResult={props.validationResult}
-              vllmInstalled={props.libraries.vllm}
-              ollamaInstalled={props.libraries.ollama}
+              libraries={props.libraries}
             />
 
             <button
@@ -192,6 +243,24 @@ export function SelfHostingPage(props: {
       </Panel>
     </div>
   );
+}
+
+function getSupportedPlatform(value: unknown): SupportedPlatform {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('win')) return 'windows';
+  if (normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.includes('linux')) return 'linux';
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('windows')) return 'windows';
+    if (userAgent.includes('mac')) return 'macos';
+    if (userAgent.includes('linux')) return 'linux';
+  }
+  return 'unknown';
+}
+
+function isServingLibrarySupported(library: { platforms: SupportedPlatform[] }, platform: SupportedPlatform): boolean {
+  return platform === 'unknown' || library.platforms.includes(platform);
 }
 
 interface LocalDeploymentRow {
@@ -273,7 +342,7 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
         endpointUrl: normalizeLocalEndpointUrl(endpointUrl),
         modelId,
         name: String(endpoint.name ?? endpoint.model_id ?? `Local model ${index + 1}`),
-        runtime: endpointUrl.includes(':11434') ? 'ollama' : 'vllm',
+        runtime: normalizeServingLibrary(endpoint.serving_library, endpointUrl),
         deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? 'Registered endpoint'),
         registered: true,
         pid: null,
@@ -324,16 +393,14 @@ function DeployabilityChecklist(props: {
   metadataReady: boolean;
   metadataError: string | null;
   validationResult: ValidationResult | null;
-  vllmInstalled: boolean;
-  ollamaInstalled: boolean;
+  libraries: Record<ServingLibrary, boolean>;
 }) {
-  const runtimeInstalled = props.vllmInstalled || props.ollamaInstalled;
-  const runtimeLabel = props.vllmInstalled ? 'vLLM installed' : props.ollamaInstalled ? 'Ollama installed' : 'Local runtime required';
-  const runtimeDetail = props.vllmInstalled
-    ? 'Ready to launch an OpenAI-compatible local server with vLLM.'
-    : props.ollamaInstalled
-      ? 'Ready to launch an OpenAI-compatible local server with Ollama.'
-      : 'Install Ollama on Mac or vLLM on Linux GPU before deployment.';
+  const installedLibraries = servingLibraryOptions.filter((library) => props.libraries[library.value]).map((library) => library.label);
+  const runtimeInstalled = installedLibraries.length > 0;
+  const runtimeLabel = runtimeInstalled ? `${installedLibraries.join(', ')} installed` : 'Local runtime required';
+  const runtimeDetail = runtimeInstalled
+    ? 'Ready to register an OpenAI-compatible local server. One-click launch is currently available for vLLM and Ollama.'
+    : 'Install or start a supported local serving library before deployment.';
 
   return (
     <div style={{ display: 'grid', gap: '8px', padding: '12px', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -356,6 +423,29 @@ function DeployabilityChecklist(props: {
       />
     </div>
   );
+}
+
+function normalizeServingLibrary(value: unknown, endpointUrl = ''): ServingLibrary {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases: Record<string, ServingLibrary> = {
+    vllm: 'vllm',
+    sglang: 'sglang',
+    tensor_rt: 'tensorrt',
+    tensorrt: 'tensorrt',
+    tensorrt_llm: 'tensorrt',
+    tensor_rt_llm: 'tensorrt',
+    ollama: 'ollama',
+    llama_cpp: 'llama_cpp',
+    llama_cpp_python: 'llama_cpp',
+    llamacpp: 'llama_cpp',
+    llama: 'llama_cpp',
+    pytorch: 'pytorch',
+    torch: 'pytorch',
+    transformers: 'transformers',
+    transformer: 'transformers',
+    dynamo: 'dynamo',
+  };
+  return aliases[normalized] ?? (endpointUrl.includes(':11434') ? 'ollama' : 'vllm');
 }
 
 function ReadinessRow(props: { ok: boolean; warning?: boolean; pending?: boolean; label: string; detail?: string }) {

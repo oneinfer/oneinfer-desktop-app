@@ -2,7 +2,7 @@ import { Blocks, Bot, Copy, LoaderCircle, Orbit, Server, Sparkles, Terminal, Zap
 
 import { EmptyState, MiniTable, Panel } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
-import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey } from '../types';
+import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 import { PlanRow } from './BandwidthPage';
 
@@ -37,7 +37,7 @@ export function OverviewPage(props: {
       modelId: String(endpoint.model_id ?? `local-model-${index}`),
       name: String(endpoint.name ?? endpoint.model_id ?? `Local model ${index + 1}`),
       pid: null,
-      runtime: String(endpoint.endpoint_url ?? '').includes(':11434') ? 'ollama' as const : 'vllm' as const,
+      runtime: normalizeServingLibrary(endpoint.serving_library, String(endpoint.endpoint_url ?? '')),
       deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? new Date().toISOString()),
     })).filter((deployment) => deployment.endpointUrl && !localDeploymentKeys.has(getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId))),
   ];
@@ -224,6 +224,29 @@ function getLocalDeploymentKey(endpointUrl: string, modelId: string): string {
 
 function normalizeLocalEndpointUrl(endpointUrl: string): string {
   return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
+}
+
+function normalizeServingLibrary(value: unknown, endpointUrl = ''): ServingLibrary {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases: Record<string, ServingLibrary> = {
+    vllm: 'vllm',
+    sglang: 'sglang',
+    tensorrt: 'tensorrt',
+    tensorrt_llm: 'tensorrt',
+    tensor_rt: 'tensorrt',
+    tensor_rt_llm: 'tensorrt',
+    ollama: 'ollama',
+    llama_cpp: 'llama_cpp',
+    llama_cpp_python: 'llama_cpp',
+    llamacpp: 'llama_cpp',
+    llama: 'llama_cpp',
+    pytorch: 'pytorch',
+    torch: 'pytorch',
+    transformers: 'transformers',
+    transformer: 'transformers',
+    dynamo: 'dynamo',
+  };
+  return aliases[normalized] ?? (endpointUrl.includes(':11434') ? 'ollama' : 'vllm');
 }
 
 function LocalAccessPanel(props: { deployment: LocalModelDeployment; metrics?: LocalModelMetrics }) {

@@ -56,6 +56,7 @@ export const defaultInferenceForm: CreateInferenceFormState = {
   top_p: 0.9,
   temperature: 0.7,
   max_tokens: 4096,
+  serving_library: 'vllm',
 };
 
 export const sections: Array<{ key: SectionKey; label: string; icon: typeof Sparkles }> = [

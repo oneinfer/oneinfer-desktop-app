@@ -19,6 +19,9 @@ interface DesktopSettings {
   claudeCodeProvider: 'oneinfer' | 'anthropic';
 }
 
+type DesktopServingLibrary = 'vllm' | 'sglang' | 'tensorrt' | 'ollama' | 'llama_cpp' | 'pytorch' | 'transformers' | 'dynamo';
+type DesktopLaunchableServingLibrary = Extract<DesktopServingLibrary, 'vllm' | 'ollama'>;
+
 interface DesktopState {
   settings: Partial<DesktopSettings>;
   session: DesktopSession | null;
@@ -31,7 +34,7 @@ interface DesktopLocalModelDeployment {
   modelId: string;
   name: string;
   pid: number | null;
-  runtime: 'vllm' | 'ollama';
+  runtime: DesktopServingLibrary;
   deployedAt: string;
 }
 
@@ -70,7 +73,7 @@ interface DesktopHfDeploymentResult {
   endpointUrl: string;
   modelId: string;
   pid: number | null;
-  runtime: 'vllm' | 'ollama';
+  runtime: DesktopLaunchableServingLibrary;
 }
 
 interface DesktopLocalModelMetrics {
@@ -141,12 +144,12 @@ interface Window {
       apiBaseUrl?: string;
       session?: DesktopSession;
     }) => Promise<DesktopOpenClawResult>;
-    checkLibrary: (name: 'vllm' | 'ollama') => Promise<boolean>;
-    installLibrary: (name: 'vllm' | 'ollama') => Promise<void>;
+    checkLibrary: (name: DesktopServingLibrary) => Promise<boolean>;
+    installLibrary: (name: DesktopServingLibrary) => Promise<void>;
     deployHfModel: (payload: {
       repoId: string;
       port?: number;
-      runtime?: 'vllm' | 'ollama';
+      runtime?: DesktopLaunchableServingLibrary;
       healthTimeoutMs?: number;
       progressId?: string;
     }) => Promise<DesktopHfDeploymentResult>;
@@ -156,7 +159,7 @@ interface Window {
     deleteLocalModel: (payload: {
       endpointUrl: string;
       modelId?: string;
-      runtime?: 'vllm' | 'ollama' | string;
+      runtime?: DesktopServingLibrary | string;
     }) => Promise<{ deleted: boolean; message: string }>;
     getLocalModelMetrics: (payload: {
       endpointUrl: string;
