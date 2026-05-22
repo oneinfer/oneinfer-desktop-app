@@ -923,7 +923,7 @@ async function installLibrary(name) {
     tensorrt: ['tensorrt-llm'],
     llama_cpp: ['llama-cpp-python'],
     pytorch: ['torch'],
-    transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers'],
+    transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5'],
     dynamo: ['ai-dynamo'],
   };
 
@@ -1591,8 +1591,9 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
     throw new Error('Transformers is not installed in an available Python environment.');
   }
 
+  const transformersPreflight = 'import torch; import transformers; import numpy; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__; from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer';
   try {
-    await runCommand(python.command, [...python.prefixArgs, '-c', 'import torch; import transformers; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__'], { timeoutMs: 10000 });
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
   } catch {
     const pipCommand = await getPythonPipCommand();
     if (!pipCommand) {
@@ -1601,10 +1602,11 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
 
     onProgress({
       stage: 'preparing',
-      message: 'Updating PyTorch and Transformers runtime dependencies...',
-      detail: 'Installing torch, transformers>=4.45.0, accelerate, safetensors, sentencepiece, protobuf, huggingface_hub, and tokenizers.',
+      message: 'Repairing PyTorch, Transformers, NumPy, SciPy, and scikit-learn...',
+      detail: 'Fixing the Python runtime used by Transformers router models.',
     });
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers'], { timeoutMs: 15 * 60 * 1000 });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5'], { timeoutMs: 20 * 60 * 1000 });
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
   }
 
   const logPath = getTransformersLogPath(repoId);
