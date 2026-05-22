@@ -57,13 +57,12 @@ export function HfModelDetailPanel(props: {
   const isAnyInstalling = Boolean(busy?.startsWith('install-'));
   const installingLibraryName = busy?.startsWith('install-') ? formatServingLibraryName(busy.replace('install-', '') as ServingLibrary) : '';
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
-  const preferredRuntime = libraries.vllm ? 'vLLM' : libraries.ollama ? 'Ollama' : null;
-  const canDeploy = Boolean(preferredRuntime) && validation?.status !== 'insufficient';
-
   const platform = getSupportedPlatform(machine?.platform);
   const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
   const selectedSupported = isLibrarySupported(selectedOption.value, platform);
-  const selectedInstalled = libraries[selectedOption.value];
+  const selectedInstalled = selectedSupported && libraries[selectedOption.value];
+  const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
+  const canDeploy = Boolean(preferredRuntime) && validation?.status !== 'insufficient';
   const selectedBusy = busy === `install-${selectedOption.value}`;
 
   const handleInstall = async (name: ServingLibrary) => {
@@ -242,7 +241,7 @@ export function HfModelDetailPanel(props: {
         ) : null}
         <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canDeploy} type="button">
           {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
-          {preferredRuntime ? `Deploy with ${preferredRuntime}` : 'Install Ollama or vLLM to Deploy'}
+          {preferredRuntime ? `Deploy with ${preferredRuntime}` : selectedSupported ? `Install ${selectedOption.label} to Deploy` : `${selectedOption.label} not supported`}
         </button>
       </div>
     </section>
@@ -280,15 +279,15 @@ function DeploymentProgressLog(props: { items: DesktopDeploymentProgress[] }) {
 
 type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
 
-const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platforms: SupportedPlatform[] }> = [
-  { value: 'vllm', label: 'vLLM', platforms: ['linux', 'macos'] },
-  { value: 'sglang', label: 'SGLang', platforms: ['linux', 'macos'] },
-  { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'] },
-  { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'] },
-  { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'] },
-  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'] },
-  { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'] },
-  { value: 'dynamo', label: 'Dynamo', platforms: ['linux'] },
+const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platforms: SupportedPlatform[]; launchable: boolean }> = [
+  { value: 'vllm', label: 'vLLM', platforms: ['linux', 'macos'], launchable: true },
+  { value: 'sglang', label: 'SGLang', platforms: ['linux', 'macos'], launchable: false },
+  { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'], launchable: false },
+  { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'], launchable: true },
+  { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'], launchable: false },
+  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'], launchable: false },
+  { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'], launchable: false },
+  { value: 'dynamo', label: 'Dynamo', platforms: ['linux'], launchable: false },
 ];
 
 function ServingLibraryDropdown(props: {
@@ -303,7 +302,7 @@ function ServingLibraryDropdown(props: {
 }) {
   const selectedOption = servingLibraryOptions.find((option) => option.value === props.selectedLibrary) ?? servingLibraryOptions[0];
   const selectedSupported = isLibrarySupported(selectedOption.value, props.platform);
-  const selectedInstalled = props.libraries[selectedOption.value];
+  const selectedInstalled = selectedSupported && props.libraries[selectedOption.value];
 
   return (
     <div className="serving-library-dropdown">
@@ -326,7 +325,7 @@ function ServingLibraryDropdown(props: {
         <div className="serving-library-menu">
           {servingLibraryOptions.map((option) => {
             const supported = isLibrarySupported(option.value, props.platform);
-            const installed = props.libraries[option.value];
+            const installed = supported && props.libraries[option.value];
             const optionBusy = props.busy === `install-${option.value}`;
             const selected = option.value === props.selectedLibrary;
             return (
@@ -364,7 +363,7 @@ function ServingLibraryDropdown(props: {
 
 function isLibrarySupported(library: ServingLibrary, platform: SupportedPlatform): boolean {
   const option = servingLibraryOptions.find((item) => item.value === library);
-  return platform === 'unknown' || Boolean(option?.platforms.includes(platform));
+  return Boolean(option?.launchable) && (platform === 'unknown' || Boolean(option?.platforms.includes(platform)));
 }
 
 function getSupportedPlatform(value: unknown): SupportedPlatform {

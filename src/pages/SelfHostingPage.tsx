@@ -54,7 +54,7 @@ export function SelfHostingPage(props: {
   const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
   const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform);
-  const selectedLibraryInstalled = props.libraries[selectedLibrary.value];
+  const selectedLibraryInstalled = selectedLibrarySupported && props.libraries[selectedLibrary.value];
   const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
   const canInstallSelectedLibrary = selectedLibrarySupported && selectedLibrary.installable && !selectedLibraryInstalled;
   const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && hasLocalRuntime;
@@ -149,7 +149,7 @@ export function SelfHostingPage(props: {
                     <select value={props.selfHostForm.serving_library} onChange={(event) => props.onFormChange({ ...props.selfHostForm, serving_library: event.target.value as ServingLibrary })}>
                       {servingLibraryOptions.map((library) => {
                         const supported = isServingLibrarySupported(library, platform);
-                        const installed = props.libraries[library.value];
+                        const installed = supported && props.libraries[library.value];
                         return (
                           <option key={library.value} value={library.value} disabled={!supported}>
                             {library.label}{supported ? installed ? ' - installed' : '' : ' - unsupported'}

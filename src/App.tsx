@@ -888,15 +888,21 @@ function App() {
       return false;
     }
 
+    const selectedRuntime = selfHostForm.serving_library;
+    if (!isLaunchableLocalRuntime(selectedRuntime)) {
+      setMessage({ tone: 'error', text: `${formatLocalRuntime(selectedRuntime)} can be registered as an existing local endpoint, but one-click Hugging Face deployment is not supported yet. Start the server yourself, enter its local API URL, then register it.` });
+      return false;
+    }
+
     const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
-    const localRuntime = getPreferredLocalRuntime(libraries);
-    if (!localRuntime) {
-      setMessage({ tone: 'error', text: 'Install vLLM for Transformers models, or Ollama for GGUF/llama.cpp models.' });
+    const localRuntime = selectedRuntime;
+    if (!libraries[localRuntime]) {
+      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.` });
       return false;
     }
 
     if (localRuntime === 'ollama' && !isOllamaCompatibleRepo) {
-      setMessage({ tone: 'error', text: `${repoId} is not a GGUF/llama.cpp model, so Ollama cannot deploy it. Install vLLM to run this model locally.` });
+      setMessage({ tone: 'error', text: `${repoId} is not a GGUF/llama.cpp model, so Ollama cannot deploy it. Select vLLM for one-click Transformers deployment, or choose a GGUF model for Ollama.` });
       return false;
     }
 
@@ -1790,6 +1796,10 @@ function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): '
 
 function getRequiredRouterRuntime(routerModelId: string): 'vllm' | 'ollama' {
   return isOllamaCompatibleModelId(routerModelId) ? 'ollama' : 'vllm';
+}
+
+function isLaunchableLocalRuntime(runtime: ServingLibrary): runtime is 'vllm' | 'ollama' {
+  return runtime === 'vllm' || runtime === 'ollama';
 }
 
 function formatLocalRuntime(runtime: ServingLibrary): string {
