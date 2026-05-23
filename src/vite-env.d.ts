@@ -150,6 +150,7 @@ interface Window {
       repoId: string;
       port?: number;
       runtime?: DesktopLaunchableServingLibrary;
+      role?: 'model' | 'router';
       healthTimeoutMs?: number;
       progressId?: string;
     }) => Promise<DesktopHfDeploymentResult>;

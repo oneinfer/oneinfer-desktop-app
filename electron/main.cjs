@@ -1486,6 +1486,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 repo_id = sys.argv[1]
 port = int(sys.argv[2])
+serve_role = sys.argv[3] if len(sys.argv) > 3 else "model"
 
 print(f"Loading Transformers model {repo_id}", flush=True)
 import torch
@@ -1502,6 +1503,8 @@ try:
     print("Loaded model as causal-lm", flush=True)
 except Exception as causal_error:
     print(f"Causal LM load failed: {causal_error}", flush=True)
+    if serve_role != "router":
+        raise
     model_kind = "sequence-classification"
     model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
     print("Loaded model as sequence-classification", flush=True)
@@ -1649,7 +1652,7 @@ print(f"Transformers OpenAI-compatible server ready on 127.0.0.1:{port}", flush=
 ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 `;
 
-async function startTransformersServer(repoId, port, onProgress = () => {}) {
+async function startTransformersServer(repoId, port, onProgress = () => {}, options = {}) {
   onProgress({
     stage: 'preparing',
     message: 'Checking PyTorch and Transformers installation...',
@@ -1683,7 +1686,8 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
 
   const logPath = getTransformersLogPath(repoId);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-  const args = [...python.prefixArgs, '-u', '-c', TRANSFORMERS_OPENAI_SERVER_SCRIPT, repoId, String(port)];
+  const serveRole = options.role === 'router' ? 'router' : 'model';
+  const args = [...python.prefixArgs, '-u', '-c', TRANSFORMERS_OPENAI_SERVER_SCRIPT, repoId, String(port), serveRole];
 
   function writeLog(line) {
     const ts = new Date().toISOString();
@@ -1693,7 +1697,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
   writeLog(`Starting Transformers server: ${python.command} ${args.slice(0, 4).join(' ')} ...`);
   onProgress({
     stage: 'starting',
-    message: `Starting Transformers server for ${repoId}...`,
+    message: `Starting Transformers ${serveRole === 'router' ? 'router' : 'model'} server for ${repoId}...`,
     detail: `Logs: ${logPath}`,
   });
 
@@ -1917,7 +1921,7 @@ async function deployHfModel(payload = {}) {
   });
 
   const child = runtime === 'transformers'
-    ? await startTransformersServer(repoId, port, progress)
+    ? await startTransformersServer(repoId, port, progress, { role: payload.role })
     : await startVllmServer(repoId, port, progress);
   const activeDeployment = localModelDeploymentsInFlight.get(repoId);
   if (activeDeployment) {

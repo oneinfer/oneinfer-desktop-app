@@ -1251,6 +1251,7 @@ function App() {
     const deployment = await window.desktopBridge.deployHfModel({
       repoId: routerModelId,
       runtime: launchRuntime,
+      role: 'router',
       progressId: `${routerModelId}-router-${Date.now()}`,
     });
 
