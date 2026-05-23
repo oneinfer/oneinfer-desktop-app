@@ -39,6 +39,7 @@ import {
 import { validateHardwareSupport, type ModelRequirements, type ValidationResult } from './helpers/hardwareValidation';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
 import { getModelMemoryBreakdown } from './helpers/modelSizing';
+import { getServingLibraryCompatibility } from './helpers/servingCompatibility';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
@@ -909,6 +910,23 @@ function App() {
 
     if (localRuntime === 'ollama' && !isOllamaCompatibleRepo) {
       setMessage({ tone: 'error', text: `${repoId} is not a GGUF/llama.cpp model, so Ollama cannot deploy it. Select vLLM for one-click Transformers deployment, or choose a GGUF model for Ollama.` });
+      return false;
+    }
+
+    if (hfModelMetadata) {
+      const compatibility = getServingLibraryCompatibility(localRuntime, hfModelMetadata);
+      if (!compatibility.supported) {
+        setMessage({
+          tone: 'error',
+          text: `${repoId} cannot be deployed with ${formatLocalRuntime(localRuntime)}. ${compatibility.reason ?? 'Select a compatible serving library for this model.'}`,
+        });
+        return false;
+      }
+    }
+
+    const hardwareBlockReason = getLocalDeploymentHardwareBlockReason(localRuntime, validationResult, dashboard.machineDetails);
+    if (hardwareBlockReason) {
+      setMessage({ tone: 'error', text: hardwareBlockReason });
       return false;
     }
 
@@ -2132,6 +2150,37 @@ function formatLocalRuntime(runtime: ServingLibrary): string {
     dynamo: 'Dynamo',
   };
   return labels[runtime] ?? runtime;
+}
+
+function getLocalDeploymentHardwareBlockReason(
+  runtime: ServingLibrary,
+  validation: ValidationResult | null,
+  machine: DashboardState['machineDetails']
+): string | null {
+  if (!validation || validation.status !== 'warning') {
+    return null;
+  }
+
+  const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
+  const totalRamGb = machine?.memory?.totalGb ?? 0;
+  const hasInsufficientVram = totalVramGb < validation.effectiveMinVramGb;
+
+  if (!hasInsufficientVram) {
+    return null;
+  }
+
+  if ((runtime === 'vllm' || runtime === 'sglang' || runtime === 'dynamo') && totalVramGb < validation.effectiveMinVramGb) {
+    return `${formatLocalRuntime(runtime)} needs enough GPU VRAM for this model. Required: ${validation.effectiveMinVramGb.toFixed(1)}GB VRAM, available: ${totalVramGb.toFixed(1)}GB.`;
+  }
+
+  if (runtime === 'transformers') {
+    const cpuUnsafe = validation.modelWeightGb >= 8 || (totalRamGb > 0 && validation.modelWeightGb > totalRamGb * 0.45);
+    if (cpuUnsafe) {
+      return `This model is too large for reliable one-click CPU Transformers hosting on this machine. Required: about ${validation.effectiveMinVramGb.toFixed(1)}GB VRAM, available: ${totalVramGb.toFixed(1)}GB VRAM, system RAM: ${totalRamGb.toFixed(1)}GB. Choose a smaller model, a quantized/GGUF model, or a machine with more VRAM.`;
+    }
+  }
+
+  return null;
 }
 
 function getLocalRuntimeFromEndpointUrl(endpointUrl: string): ServingLibrary {

@@ -22,6 +22,7 @@ import {
 
 import type { ValidationResult } from '../helpers/hardwareValidation';
 import { getModelMemoryBreakdown } from '../helpers/modelSizing';
+import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
 import { Banner } from './Common';
@@ -63,6 +64,7 @@ export function HfModelDetailPanel(props: {
   const platform = getSupportedPlatform(machine?.platform);
   const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
   const selectedSupported = isLibrarySupported(selectedOption.value, platform, model);
+  const selectedCompatibility = getServingLibraryCompatibility(selectedOption.value, model);
   const selectedInstalled = selectedSupported && libraries[selectedOption.value];
   const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
   const selectedLaunchable = isOneClickLaunchable(selectedOption.value);
@@ -113,6 +115,11 @@ export function HfModelDetailPanel(props: {
       {props.message ? <div style={{ marginBottom: '12px' }}><Banner tone={props.message.tone} text={props.message.text} /></div> : null}
       {localError ? <div style={{ marginBottom: '12px' }}><Banner tone="error" text={localError} /></div> : null}
       {localSuccess ? <div style={{ marginBottom: '12px' }}><Banner tone="success" text={localSuccess} /></div> : null}
+      {!selectedSupported ? (
+        <div style={{ marginBottom: '12px' }}>
+          <Banner tone="error" text={selectedCompatibility.reason || `${selectedOption.label} is not compatible with this model or operating system.`} />
+        </div>
+      ) : null}
       {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess ? (
         <div style={{ marginBottom: '20px' }}>
           <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${installingLibraryName}... Please wait.`} />
@@ -377,36 +384,7 @@ function isLibrarySupported(library: ServingLibrary, platform: SupportedPlatform
 }
 
 function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInfo): boolean {
-  const gguf = isGgufModel(model);
-  if (library === 'ollama' || library === 'llama_cpp') {
-    return gguf;
-  }
-
-  if (library === 'tensorrt') {
-    return hasAnyFileExtension(model, ['.engine', '.plan']);
-  }
-
-  if (library === 'pytorch' || library === 'transformers') {
-    return true;
-  }
-
-  return !gguf;
-}
-
-function isGgufModel(model: HfModelInfo): boolean {
-  const id = String(model.id ?? '').toLowerCase();
-  const tags = (model.tags || []).map((tag) => String(tag).toLowerCase());
-  return id.includes('gguf')
-    || tags.some((tag) => tag.includes('gguf') || tag.includes('llama.cpp') || tag.includes('llamacpp'))
-    || hasAnyFileExtension(model, ['.gguf', '.ggml']);
-}
-
-function hasAnyFileExtension(model: HfModelInfo, extensions: string[]): boolean {
-  return Array.isArray(model.siblings)
-    && model.siblings.some((file) => {
-      const filename = String(file.rfilename ?? '').toLowerCase();
-      return extensions.some((extension) => filename.endsWith(extension));
-    });
+  return isServingLibraryCompatibleWithModel(library, model);
 }
 
 function isOneClickLaunchable(library: ServingLibrary): boolean {

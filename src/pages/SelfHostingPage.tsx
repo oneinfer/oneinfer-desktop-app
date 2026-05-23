@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, 
 
 import { DataList, MiniTable, Panel } from '../components/Common';
 import type { ValidationResult } from '../helpers/hardwareValidation';
+import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
 import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
 import { getMachineGpuRows, getMachineSummaryEntries } from '../utils/format';
 
@@ -55,6 +56,7 @@ export function SelfHostingPage(props: {
   const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
   const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform, props.hfModelMetadata);
+  const selectedLibraryCompatibility = props.hfModelMetadata ? getServingLibraryCompatibility(selectedLibrary.value, props.hfModelMetadata) : null;
   const selectedLibraryInstalled = selectedLibrarySupported && props.libraries[selectedLibrary.value];
   const selectedLibraryLaunchable = isOneClickLaunchable(selectedLibrary.value);
   const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
@@ -186,7 +188,7 @@ export function SelfHostingPage(props: {
                       ? selectedLibraryInstalled
                         ? `${selectedLibrary.label} is installed on this machine.`
                         : `${selectedLibrary.label} is supported but is not installed.`
-                      : `${selectedLibrary.label} is not supported on this system.`}
+                      : selectedLibraryCompatibility?.reason || `${selectedLibrary.label} is not supported on this system.`}
                   </small>
                 </label>
                 <label>
@@ -285,36 +287,7 @@ function isServingLibrarySupported(library: { value: ServingLibrary; platforms: 
 }
 
 function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInfo): boolean {
-  const gguf = isGgufModel(model);
-  if (library === 'ollama' || library === 'llama_cpp') {
-    return gguf;
-  }
-
-  if (library === 'tensorrt') {
-    return hasAnyFileExtension(model, ['.engine', '.plan']);
-  }
-
-  if (library === 'pytorch' || library === 'transformers') {
-    return true;
-  }
-
-  return !gguf;
-}
-
-function isGgufModel(model: HfModelInfo): boolean {
-  const id = String(model.id ?? '').toLowerCase();
-  const tags = (model.tags || []).map((tag) => String(tag).toLowerCase());
-  return id.includes('gguf')
-    || tags.some((tag) => tag.includes('gguf') || tag.includes('llama.cpp') || tag.includes('llamacpp'))
-    || hasAnyFileExtension(model, ['.gguf', '.ggml']);
-}
-
-function hasAnyFileExtension(model: HfModelInfo, extensions: string[]): boolean {
-  return Array.isArray(model.siblings)
-    && model.siblings.some((file) => {
-      const filename = String(file.rfilename ?? '').toLowerCase();
-      return extensions.some((extension) => filename.endsWith(extension));
-    });
+  return isServingLibraryCompatibleWithModel(library, model);
 }
 
 interface LocalDeploymentRow {
@@ -502,7 +475,7 @@ function DeployabilityChecklist(props: {
       <ReadinessRow
         ok={props.validationResult?.status === 'supported' || props.validationResult?.status === 'warning'}
         warning={props.validationResult?.status === 'warning'}
-        label={props.validationResult ? props.validationResult.status === 'insufficient' ? 'Hardware not deployable' : 'Hardware can run this model' : 'Hardware check pending'}
+        label={props.validationResult ? props.validationResult.status === 'insufficient' ? 'Hardware not deployable' : props.validationResult.status === 'warning' ? 'Hardware warning' : 'Hardware can run this model' : 'Hardware check pending'}
         detail={props.validationResult?.message}
       />
       <ReadinessRow

@@ -1573,6 +1573,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/v1/models":
             self.send_json(200, {"object": "list", "data": [{"id": repo_id, "object": "model", "owned_by": "oneinfer"}]})
             return
+        if self.path.rstrip("/") == "/metrics":
+            raw = "\n".join([
+                "# HELP oneinfer_transformers_requests_total Total requests handled by the local Transformers server.",
+                "# TYPE oneinfer_transformers_requests_total counter",
+                "oneinfer_transformers_requests_total 0",
+                "# HELP oneinfer_transformers_server_ready Whether the local Transformers server is ready.",
+                "# TYPE oneinfer_transformers_server_ready gauge",
+                "oneinfer_transformers_server_ready 1",
+                "",
+            ]).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         self.send_json(404, {"error": {"message": "Not found"}})
 
     def do_POST(self):
@@ -1621,7 +1637,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
     onProgress({
       stage: 'preparing',
       message: 'Repairing PyTorch, Transformers, NumPy, SciPy, and scikit-learn...',
-      detail: 'Fixing the Python runtime used by Transformers router models.',
+      detail: 'Fixing the Python runtime used by local Transformers models.',
     });
     await removeTorchvisionIfBroken(pipCommand, python, onProgress);
     await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 20 * 60 * 1000 });
@@ -1641,7 +1657,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
   writeLog(`Starting Transformers server: ${python.command} ${args.slice(0, 4).join(' ')} ...`);
   onProgress({
     stage: 'starting',
-    message: `Starting Transformers router for ${repoId}...`,
+    message: `Starting Transformers server for ${repoId}...`,
     detail: `Logs: ${logPath}`,
   });
 
@@ -1662,9 +1678,13 @@ async function startTransformersServer(repoId, port, onProgress = () => {}) {
         .filter(Boolean)
         .forEach((line) => {
           writeLog(line);
+          const isHttpProbe = /^"GET \/(v1\/models|metrics) HTTP\/1\.[01]" \d{3}/.test(line);
+          if (isHttpProbe) {
+            return;
+          }
           onProgress({
             stage: 'loading',
-            message: level === 'error' ? 'Transformers reported output.' : 'Transformers is loading the router model...',
+            message: level === 'error' ? 'Transformers reported output.' : 'Transformers is loading the local model...',
             detail: line,
             level,
           });
@@ -1724,6 +1744,35 @@ function getVllmExitDetail(output) {
     message: null,
     detail: null,
   };
+}
+
+function getTransformersFailureDetail(errorMessage, logTail) {
+  const output = `${errorMessage || ''}\n${logTail || ''}`;
+  const unknownModelTypeMatch = output.match(/model type [`'"]([^`'"]+)[`'"][\s\S]{0,240}Transformers does not recognize/i)
+    || output.match(/KeyError:\s*['"]([^'"]+)['"]/i);
+  if (unknownModelTypeMatch) {
+    const modelType = unknownModelTypeMatch[1];
+    return {
+      message: `Transformers does not recognize model type "${modelType}".`,
+      detail: 'This Hugging Face repo uses a custom or newer architecture that the installed Transformers runtime cannot load with AutoModel. Choose a standard text-generation model, a GGUF model with Ollama, or add a custom runtime for this architecture.',
+    };
+  }
+
+  if (/Timed out waiting for local model server/i.test(output)) {
+    return {
+      message: 'Timed out while loading the Transformers model.',
+      detail: 'The model did not finish loading before the local server health check expired. This usually means the model is too large for this machine, is loading on CPU, or is still downloading large weights. Use a much smaller model, a GPU-capable runtime, or a quantized/GGUF model.',
+    };
+  }
+
+  if (/out of memory|cuda memory|allocation|paging file|not enough memory/i.test(output)) {
+    return {
+      message: 'Transformers ran out of memory while loading the model.',
+      detail: 'Select a smaller model, use a quantized model, or deploy on a machine with enough VRAM/RAM.',
+    };
+  }
+
+  return { message: null, detail: null };
 }
 
 async function deployHfModel(payload = {}) {
@@ -1863,7 +1912,12 @@ async function deployHfModel(payload = {}) {
     stopProcessTree(child.pid);
     localModelDeploymentsInFlight.delete(repoId);
     const logTail = readLogTail(child.oneinferLogPath);
+    const runtimeDetail = runtime === 'transformers'
+      ? getTransformersFailureDetail(error instanceof Error ? error.message : String(error), logTail)
+      : { message: null, detail: null };
     const errorDetail = [
+      runtimeDetail.message,
+      runtimeDetail.detail,
       error instanceof Error ? error.message : String(error),
       child.oneinferLogPath ? `Logs: ${child.oneinferLogPath}` : '',
       logTail ? `Last log lines:\n${logTail}` : '',
