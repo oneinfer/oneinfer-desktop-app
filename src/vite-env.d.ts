@@ -161,6 +161,11 @@ interface Window {
       routerModelId?: string;
       candidates: Array<Record<string, unknown>>;
     }) => Promise<{ endpointUrl: string; port: number; routeId: string }>;
+    stopLocalRoute: (payload: {
+      routeId?: string;
+      endpointUrl?: string;
+      candidateEndpointUrl?: string;
+    }) => Promise<{ stopped: boolean; routeIds: string[]; message: string }>;
     cancelHfDeployment: (payload: {
       repoId: string;
     }) => Promise<{ cancelled: boolean; message: string }>;

@@ -2191,6 +2191,36 @@ async function startLocalRoute(payload = {}) {
   };
 }
 
+async function stopLocalRoute(payload = {}) {
+  const routeId = String(payload.routeId || '').trim();
+  const endpointUrl = normalizeOpenAiBaseUrl(payload.endpointUrl || '');
+  const candidateEndpointUrl = normalizeOpenAiBaseUrl(payload.candidateEndpointUrl || '');
+  const stoppedRouteIds = [];
+
+  for (const [existingRouteId, route] of [...localRouteDeployments.entries()]) {
+    const routeMatches = (routeId && existingRouteId === routeId)
+      || (endpointUrl && route.endpointUrl === endpointUrl)
+      || (candidateEndpointUrl && route.candidates.some((candidate) => candidate.endpointUrl === candidateEndpointUrl));
+
+    if (!routeMatches) {
+      continue;
+    }
+
+    await new Promise((resolve) => {
+      route.server?.close?.(() => resolve());
+      setTimeout(resolve, 1000);
+    });
+    localRouteDeployments.delete(existingRouteId);
+    stoppedRouteIds.push(existingRouteId);
+  }
+
+  return {
+    stopped: stoppedRouteIds.length > 0,
+    routeIds: stoppedRouteIds,
+    message: stoppedRouteIds.length > 0 ? 'Local route stopped.' : 'No matching local route was running.',
+  };
+}
+
 async function deleteLocalModel(payload = {}) {
   const endpointUrl = String(payload.endpointUrl || '').trim();
   const modelId = String(payload.modelId || '').trim();
@@ -2211,6 +2241,10 @@ async function deleteLocalModel(payload = {}) {
     const [repoId, deployment] = matchedEntry;
     stopProcessTree(deployment.pid);
     localModelDeployments.delete(repoId);
+  }
+
+  if (endpointUrl) {
+    await stopLocalRoute({ candidateEndpointUrl: endpointUrl });
   }
 
   if (runtime === 'ollama' && modelId && await isLibraryInstalled('ollama')) {
@@ -3590,6 +3624,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
   ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
   ipcMain.handle('app:start-local-route', async (_event, payload) => startLocalRoute(payload));
+  ipcMain.handle('app:stop-local-route', async (_event, payload) => stopLocalRoute(payload));
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
   ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));

@@ -1554,6 +1554,12 @@ function App() {
 
     setBusy(`delete-route:${routeId}`);
     try {
+      await window.desktopBridge?.stopLocalRoute?.({ routeId }).catch(() => undefined);
+      setLocalRouteUrls((current) => {
+        const next = { ...current };
+        delete next[routeId];
+        return next;
+      });
       await deleteIntelligentEndpoint(settingsDraft.apiBaseUrl, session, routeId);
       setMessage({ tone: 'success', text: 'Route deleted.' });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });

@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   installLibrary: (name) => ipcRenderer.invoke('app:install-library', name),
   deployHfModel: (payload) => ipcRenderer.invoke('app:deploy-hf-model', payload),
   startLocalRoute: (payload) => ipcRenderer.invoke('app:start-local-route', payload),
+  stopLocalRoute: (payload) => ipcRenderer.invoke('app:stop-local-route', payload),
   cancelHfDeployment: (payload) => ipcRenderer.invoke('app:cancel-hf-deployment', payload),
   deleteLocalModel: (payload) => ipcRenderer.invoke('app:delete-local-model', payload),
   getLocalModelMetrics: (payload) => ipcRenderer.invoke('app:get-local-model-metrics', payload),
