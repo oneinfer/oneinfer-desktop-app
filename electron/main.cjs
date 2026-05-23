@@ -1493,16 +1493,18 @@ from transformers import AutoModelForCausalLM, AutoModelForSequenceClassificatio
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True)
 model = None
-model_kind = "sequence-classification"
+model_kind = "causal-lm"
 device = "cuda" if torch.cuda.is_available() and torch.cuda.mem_get_info()[0] > 4 * 1024 * 1024 * 1024 else "cpu"
 dtype = torch.float16 if device == "cuda" else torch.float32
 print(f"Using device={device}, dtype={dtype}", flush=True)
 try:
-    model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
-except Exception as sequence_error:
-    print(f"Sequence classification load failed: {sequence_error}", flush=True)
-    model_kind = "causal-lm"
     model = AutoModelForCausalLM.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
+    print("Loaded model as causal-lm", flush=True)
+except Exception as causal_error:
+    print(f"Causal LM load failed: {causal_error}", flush=True)
+    model_kind = "sequence-classification"
+    model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
+    print("Loaded model as sequence-classification", flush=True)
 
 model.eval()
 if hasattr(model, "to"):
