@@ -1906,6 +1906,7 @@ function App() {
             onInstallLibrary={handleInstallLibrary}
             libraries={libraries}
             localDeployments={localDeployments}
+            localModelMetrics={localModelMetrics}
             initialEndpointId={routeInitialEndpointId}
             onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
           />

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { CheckCircle2, ChevronDown, Copy, Info, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { DashboardState, EndpointItem, InstanceItem, LocalModelDeployment, ServingLibrary } from '../types';
+import type { DashboardState, EndpointItem, InstanceItem, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
 interface CreateRouteDetails {
@@ -157,6 +157,7 @@ export function RoutingPage(props: {
   onInstallLibrary: (library: ServingLibrary) => void | Promise<void>;
   libraries: Record<ServingLibrary, boolean>;
   localDeployments?: LocalModelDeployment[];
+  localModelMetrics?: Record<string, LocalModelMetrics>;
   initialEndpointId?: string | null;
   onInitialEndpointConsumed?: () => void;
 }) {
@@ -186,20 +187,30 @@ export function RoutingPage(props: {
       endpointName: deployment.name,
       modelName: deployment.modelId,
       source: 'local' as EndpointSource,
+      endpointUrl: deployment.endpointUrl,
+      available: getLocalEndpointMetrics(props.localModelMetrics, deployment.endpointUrl)?.healthy !== false,
     }));
   const inferenceEndpointOptions = props.dashboard.inferenceEndpoints
     .filter((endpoint) => !isRouterEndpointLike(endpoint))
-    .map((endpoint, index) => ({
-      id: getInferenceEndpointId(endpoint, index),
-      endpointName: getInferenceEndpointName(endpoint, index),
-      modelName: getInferenceEndpointModelName(endpoint, index),
-      source: getEndpointSource(endpoint),
-    }))
+    .map((endpoint, index) => {
+      const endpointUrl = String(endpoint.endpoint_url ?? '');
+      const source = getEndpointSource(endpoint);
+      return {
+        id: getInferenceEndpointId(endpoint, index),
+        endpointName: getInferenceEndpointName(endpoint, index),
+        modelName: getInferenceEndpointModelName(endpoint, index),
+        source,
+        endpointUrl,
+        available: source !== 'local' || getLocalEndpointMetrics(props.localModelMetrics, endpointUrl)?.healthy !== false,
+      };
+    })
     .concat(props.dashboard.instances.map((instance, index) => ({
       id: getCloudInstanceEndpointId(instance, index),
       endpointName: getCloudInstanceEndpointName(instance, index),
       modelName: getCloudInstanceModelName(instance),
       source: 'cloud' as EndpointSource,
+      endpointUrl: '',
+      available: true,
     })))
     .concat(localDeploymentOptions)
     .filter((endpoint) => activeEndpointSources.includes(endpoint.source));
@@ -500,9 +511,13 @@ export function RoutingPage(props: {
                 ) : null}
                 {inferenceEndpointOptions.map((endpoint) => {
                   const selected = routeDetails.attachedEndpointIds.includes(endpoint.id);
+                  const statusLabel = endpoint.source === 'local'
+                    ? endpoint.available ? 'online' : 'offline'
+                    : 'ready';
                   return (
                     <button
                       className={`route-endpoint-option${selected ? ' active' : ''}`}
+                      disabled={!endpoint.available}
                       key={endpoint.id}
                       onClick={() => toggleEndpoint(endpoint.id)}
                       type="button"
@@ -512,7 +527,7 @@ export function RoutingPage(props: {
                         <strong>{endpoint.endpointName}</strong>
                         <small>{endpoint.modelName} · {formatEndpointSource(endpoint.source)} · {endpoint.id}</small>
                       </span>
-                      <span className="status-pill active">ready</span>
+                      <span className={`status-pill ${endpoint.available ? 'active' : 'soft'}`}>{statusLabel}</span>
                     </button>
                   );
                 })}
@@ -886,6 +901,19 @@ function getLocalDeploymentEndpointId(deployment: LocalModelDeployment): string 
 
 function getLocalEndpointKey(endpointUrl: string, modelId: string): string {
   return `${endpointUrl}::${modelId}`;
+}
+
+function getLocalEndpointMetrics(metricsMap: Record<string, LocalModelMetrics> | undefined, endpointUrl: string): LocalModelMetrics | undefined {
+  if (!metricsMap || !endpointUrl) {
+    return undefined;
+  }
+
+  const normalizedEndpointUrl = normalizeLocalEndpointUrl(endpointUrl);
+  return metricsMap[endpointUrl] ?? metricsMap[normalizedEndpointUrl];
+}
+
+function normalizeLocalEndpointUrl(endpointUrl: string): string {
+  return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
 }
 
 function getCloudInstanceEndpointId(instance: InstanceItem, index: number): string {
