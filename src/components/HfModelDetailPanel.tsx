@@ -388,7 +388,7 @@ function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInf
 }
 
 function isOneClickLaunchable(library: ServingLibrary): boolean {
-  return library === 'vllm' || library === 'ollama' || library === 'transformers';
+  return library === 'vllm' || library === 'ollama' || library === 'transformers' || library === 'pytorch';
 }
 
 function getSupportedPlatform(value: unknown): SupportedPlatform {

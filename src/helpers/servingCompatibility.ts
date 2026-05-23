@@ -20,6 +20,7 @@ const TRANSFORMERS_MODEL_TYPES = new Set([
   'gpt_neox',
   'gptj',
   'granite',
+  'hrm_text',
   'llama',
   'mistral',
   'mixtral',
@@ -98,7 +99,15 @@ export function getServingLibraryCompatibility(library: ServingLibrary, model: H
   }
 
   if (library === 'pytorch') {
-    return { supported: true };
+    const modelType = getModelType(model);
+    if (!modelType || TRANSFORMERS_MODEL_TYPES.has(modelType)) {
+      return { supported: true, reason: 'PyTorch is available through the Transformers serving runtime for this model.' };
+    }
+
+    return {
+      supported: false,
+      reason: `PyTorch alone is not an OpenAI-compatible serving server for model type "${modelType}". Select Transformers when available.`,
+    };
   }
 
   return { supported: true };

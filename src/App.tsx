@@ -891,7 +891,8 @@ function App() {
     }
 
     const selectedRuntime = selfHostForm.serving_library;
-    if (!isLaunchableLocalRuntime(selectedRuntime)) {
+    const requestedRuntime = selectedRuntime === 'pytorch' ? 'transformers' : selectedRuntime;
+    if (!isLaunchableLocalRuntime(requestedRuntime)) {
       if (!libraries[selectedRuntime]) {
         setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(selectedRuntime)} before registering this local endpoint.` });
         return false;
@@ -902,9 +903,12 @@ function App() {
     }
 
     const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
-    const localRuntime = selectedRuntime;
+    const localRuntime = requestedRuntime;
     if (!libraries[localRuntime]) {
-      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.` });
+      const dependencyNote = selectedRuntime === 'pytorch' && localRuntime === 'transformers'
+        ? ' PyTorch is the model backend, but OneInfer needs the Transformers serving runtime to expose an OpenAI-compatible local server.'
+        : '';
+      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.${dependencyNote}` });
       return false;
     }
 
