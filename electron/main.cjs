@@ -1535,6 +1535,23 @@ def prompt_from_messages(payload):
     messages = payload.get("messages") or []
     return "\n".join([str(item.get("content", "")) for item in messages if isinstance(item, dict)]).strip()
 
+def build_generation_inputs(prompt, payload, device):
+    messages = payload.get("messages") or []
+    if messages and hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
+        try:
+            input_ids = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                truncation=True,
+            ).to(device)
+            return {"input_ids": input_ids}
+        except Exception as template_error:
+            print(f"Chat template formatting failed, using plain prompt: {template_error}", flush=True)
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+    return {key: value.to(device) for key, value in inputs.items()}
+
 def run_model(prompt, payload):
     if not prompt:
         prompt = str(payload.get("prompt") or "")
@@ -1542,16 +1559,33 @@ def run_model(prompt, payload):
         prompt = "Route this request."
 
     device = next(model.parameters()).device
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
-    inputs = {key: value.to(device) for key, value in inputs.items()}
+    inputs = build_generation_inputs(prompt, payload, device)
 
     with torch.no_grad():
         if model_kind == "causal-lm":
-            output_ids = model.generate(
+            max_new_tokens = max(1, min(int(payload.get("max_tokens") or 128), 512))
+            temperature = float(payload.get("temperature") or 0)
+            eos_token_id = tokenizer.eos_token_id
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_token_id
+            generation_args = {
                 **inputs,
-                max_new_tokens=int(payload.get("max_tokens") or 128),
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
+                "max_new_tokens": max_new_tokens,
+                "repetition_penalty": float(payload.get("repetition_penalty") or 1.12),
+                "no_repeat_ngram_size": int(payload.get("no_repeat_ngram_size") or 4),
+                "eos_token_id": eos_token_id,
+                "pad_token_id": pad_token_id,
+            }
+            if temperature > 0:
+                generation_args.update({
+                    "do_sample": True,
+                    "temperature": temperature,
+                    "top_p": float(payload.get("top_p") or 0.9),
+                })
+            else:
+                generation_args["do_sample"] = False
+
+            output_ids = model.generate(
+                **generation_args,
             )
             generated = output_ids[0][inputs["input_ids"].shape[-1]:]
             return tokenizer.decode(generated, skip_special_tokens=True).strip() or "ok"
