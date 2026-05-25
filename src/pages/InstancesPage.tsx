@@ -1,5 +1,5 @@
-import { useEffect, type FormEvent } from 'react';
-import { Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
+import { useEffect, useState, type FormEvent } from 'react';
+import { ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
 
 import { Modal } from '../components/Common';
 import type { CreateInstanceFormState, DashboardState, EndpointItem } from '../types';
@@ -17,6 +17,7 @@ export function InstancesPage(props: {
   onDelete: (instanceId: string, provider: string) => void;
   onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
 }) {
+  const [detailsGpu, setDetailsGpu] = useState<GpuCardOption | null>(null);
   const providers = getProviderOptions(props.dashboard.providerInfo);
   const validProviderName = providers.some((provider) => provider.value === props.instanceForm.provider_name)
     ? props.instanceForm.provider_name
@@ -34,6 +35,7 @@ export function InstancesPage(props: {
   const diskPricePerHour = calculateDiskPricePerHour(props.instanceForm.disk_size);
   const totalPricePerHour = gpuPricePerHour + diskPricePerHour;
   const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints);
+  const gpuCards = getGpuCardOptions(props.dashboard.providerInfo, props.dashboard.gpuSpecs);
 
   useEffect(() => {
     if (!props.showCreateInstanceModal || providers.length === 0) {
@@ -81,6 +83,23 @@ export function InstancesPage(props: {
     props.onModalChange(true);
   }
 
+  function openCreateModalForGpu(gpu: GpuCardOption) {
+    const provider = getSelectedProviderData(props.dashboard.providerInfo, gpu.providerName);
+    const matchingGpu = provider.instances.find((instance) => instance.gpu_id === gpu.gpuId) ?? provider.instances[0];
+    const image = provider.images[0];
+
+    props.onFormChange({
+      ...props.instanceForm,
+      provider_name: gpu.providerName,
+      gpu_id: matchingGpu?.gpu_id ?? gpu.gpuId,
+      gpu_num: Math.max(Math.min(props.instanceForm.gpu_num || 1, matchingGpu?.gpu_num ?? 1), 1),
+      region: matchingGpu?.regions?.[0] ?? '',
+      image_url: image?.image_url ?? props.instanceForm.image_url,
+      startup_script: image?.start_command ?? props.instanceForm.startup_script,
+    });
+    props.onModalChange(true);
+  }
+
   return (
     <div className="flex flex-col">
       <header className="mb-0.5 flex h-8 shrink-0 items-center justify-between">
@@ -90,19 +109,21 @@ export function InstancesPage(props: {
         </button>
       </header>
 
-      <div className="glass-panel mb-5 mt-4 flex shrink-0 items-center rounded-[0.875rem] px-5 py-3 text-[0.9rem] text-[var(--muted)]">
-        Loaded {providers.length} providers and {props.dashboard.gpuSpecs.length} GPU specs for instance setup.
+      <div className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {gpuCards.length === 0 ? (
+          <div className="glass-panel col-span-full p-6 text-[0.95rem] text-[var(--muted)]">No GPUs found.</div>
+        ) : null}
+        {gpuCards.map((gpu) => (
+          <GpuMarketplaceCard
+            gpu={gpu}
+            key={gpu.cardId}
+            onDetails={setDetailsGpu}
+          />
+        ))}
       </div>
 
-      <div className="glass-panel w-full overflow-hidden">
-        {props.dashboard.instances.length === 0 ? (
-          <div className="p-10 text-center">
-            <p className="mb-5 text-base text-[var(--muted)]">No instances returned yet. Create a new instance to get started.</p>
-            <button className="primary-button mx-auto" onClick={openCreateModal} type="button">
-              Create Instance
-            </button>
-          </div>
-        ) : (
+      {props.dashboard.instances.length > 0 ? (
+        <div className="glass-panel w-full overflow-hidden">
           <div className="table-shell">
             <table className="w-full border-collapse">
               <thead>
@@ -142,8 +163,8 @@ export function InstancesPage(props: {
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
 
       <div className="glass-panel mt-5 p-5">
         <div className="panel-header" style={{ marginBottom: '12px' }}>
@@ -344,6 +365,40 @@ export function InstancesPage(props: {
           </div>
         </form>
       </Modal>
+
+      <Modal title={detailsGpu?.name ?? 'GPU details'} isOpen={Boolean(detailsGpu)} onClose={() => setDetailsGpu(null)}>
+        {detailsGpu ? (
+          <div className="space-y-5">
+            <div className="rounded-[1rem] border border-white/[0.06] bg-white/[0.02] p-5">
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.08em] text-[var(--muted)]">{detailsGpu.brand}</div>
+                  <h3 className="m-0 mt-1 text-xl font-semibold">{detailsGpu.name}</h3>
+                </div>
+                <span className="status-pill soft">{detailsGpu.providerName}</span>
+              </div>
+              <div className="grid gap-3 text-sm sm:grid-cols-2">
+                <DetailStat label="Best price" value={detailsGpu.bestPriceLabel} />
+                <DetailStat label="VRAM" value={detailsGpu.vram || 'N/A'} />
+                <DetailStat label="CPU" value={detailsGpu.cpuInfo || 'N/A'} />
+                <DetailStat label="RAM" value={detailsGpu.ram || 'N/A'} />
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 text-xs uppercase tracking-[0.08em] text-[var(--muted)]">Regions</div>
+              <div className="flex flex-wrap gap-2">
+                {detailsGpu.regions.length === 0 ? <span className="text-sm text-[var(--muted)]">No regions listed.</span> : null}
+                {detailsGpu.regions.map((region) => (
+                  <span className="gpu-region-pill" key={region}>{region}</span>
+                ))}
+              </div>
+            </div>
+            <button className="primary-button w-full justify-center" type="button" onClick={() => { openCreateModalForGpu(detailsGpu); setDetailsGpu(null); }}>
+              Create Instance
+            </button>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
@@ -485,7 +540,87 @@ type ProviderGpuOption = {
   label: string;
   regions: string[];
   pricePerHourUsd: number;
+  chipId: string;
+  cpuId: string;
+  brand: string;
+  vram: string;
+  cpuInfo: string;
+  ram: string;
 };
+
+type GpuCardOption = {
+  cardId: string;
+  gpuId: string;
+  chipId: string;
+  cpuId: string;
+  name: string;
+  brand: string;
+  providerName: string;
+  bestPriceLabel: string;
+  pricePerHourUsd: number | null;
+  regions: string[];
+  vram: string;
+  cpuInfo: string;
+  ram: string;
+  isNew: boolean;
+};
+
+function GpuMarketplaceCard(props: {
+  gpu: GpuCardOption;
+  onDetails: (gpu: GpuCardOption) => void;
+}) {
+  return (
+    <div className="gpu-market-card">
+      {props.gpu.isNew ? (
+        <div className="gpu-new-ribbon"><span>NEW</span></div>
+      ) : null}
+      <div className="gpu-card-header">
+        <div className="gpu-card-title">
+          <img
+            alt="NVIDIA"
+            className="nvidia-mark"
+            src="https://i.ibb.co/fGV3cccB/nvidia-small-logo-1.png"
+          />
+          <h3>{props.gpu.name.replace(/nvidia/gi, '').trim()}</h3>
+        </div>
+        <button className="gpu-details-button" type="button" onClick={() => props.onDetails(props.gpu)}>
+          Details
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      <div className="gpu-card-regions">
+        {props.gpu.regions.slice(0, 2).map((region) => (
+          <span className="gpu-region-pill" key={region}>{region}</span>
+        ))}
+        {props.gpu.regions.length > 2 ? (
+          <span className="gpu-region-pill">+{props.gpu.regions.length - 2} more</span>
+        ) : null}
+      </div>
+
+      <div className="gpu-card-spacer" />
+
+      <div className="gpu-spec-row">
+        <span>VRAM</span>
+        <strong>{props.gpu.vram || 'N/A'}</strong>
+      </div>
+
+      <div className="gpu-price-row">
+        <span>Best Price</span>
+        <strong>{props.gpu.bestPriceLabel}</strong>
+      </div>
+    </div>
+  );
+}
+
+function DetailStat(props: { label: string; value: string }) {
+  return (
+    <div className="rounded-[0.875rem] border border-white/[0.06] bg-white/[0.03] p-3">
+      <div className="text-xs text-[var(--muted)]">{props.label}</div>
+      <div className="mt-1 font-semibold">{props.value}</div>
+    </div>
+  );
+}
 
 function getProviderOptions(providerInfo: DashboardState['providerInfo']) {
   return Object.keys(providerInfo).map((key) => ({
@@ -515,6 +650,8 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
     .map((instance) => {
       const gpu = typeof instance.gpu === 'object' && instance.gpu ? instance.gpu as Record<string, unknown> : {};
       const cpu = typeof instance.cpu === 'object' && instance.cpu ? instance.cpu as Record<string, unknown> : {};
+      const ram = getNestedRecord(instance, 'ram', 'RAM');
+      const vram = getNestedRecord(instance, 'vram', 'VRAM');
       const regions = Array.isArray(instance.regions) ? instance.regions.filter((region): region is string => typeof region === 'string') : [];
       const gpuNum = typeof gpu.number_of_gpus === 'number' ? gpu.number_of_gpus : 1;
       const cpuCores = typeof cpu.number_of_cores === 'number' ? cpu.number_of_cores : null;
@@ -526,6 +663,12 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
         name: String(instance.name ?? instance.instance_name ?? 'GPU'),
         regions,
         pricePerHourUsd: price !== null ? price / 100 : 0,
+        chipId: String(instance.chip_id ?? ''),
+        cpuId: String(instance.cpu_id ?? ''),
+        brand: String(instance.manufacturer ?? 'NVIDIA'),
+        vram: formatGbValue(vram.size_in_gigabytes),
+        cpuInfo: cpuCores ? `${cpuCores} cores` : '',
+        ram: formatGbValue(ram.size_in_gigabytes),
         label: [
           String(instance.name ?? instance.instance_name ?? 'GPU'),
           `${gpuNum} GPU`,
@@ -536,6 +679,102 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
     });
 
   return { images, instances };
+}
+
+function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpecs: DashboardState['gpuSpecs']): GpuCardOption[] {
+  const allGpuInstances = Object.entries(providerInfo).flatMap(([providerName, provider]) => {
+    const instances = Array.isArray(provider.instances) ? provider.instances as Array<Record<string, unknown>> : [];
+    return instances.map((instance) => ({ ...instance, providerName }));
+  });
+
+  const specOptions = gpuSpecs.map((spec) => {
+    const specChipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');
+    const matchingInstances = allGpuInstances.filter((instance) => String(instance.chip_id ?? '') === specChipId);
+    const matchingInstance = matchingInstances.find((instance) => Number(instance.price_per_hour ?? 0) > 0) ?? matchingInstances[0];
+    if (!matchingInstance) {
+      return createGpuCardFromSpec(spec);
+    }
+
+    return createGpuCardFromProviderInstance(matchingInstance, String(spec.modelName ?? spec.gpu_name ?? spec.display_name ?? matchingInstance.name ?? 'GPU'));
+  });
+
+  const specChipIds = new Set(gpuSpecs.map((spec) => String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '')));
+  const orphanOptions = allGpuInstances
+    .filter((instance) => !specChipIds.has(String(instance.chip_id ?? '')))
+    .filter((instance, index, self) => index === self.findIndex((item) => String(item.chip_id ?? item.gpu_id) === String(instance.chip_id ?? instance.gpu_id)))
+    .map((instance) => createGpuCardFromProviderInstance(instance, String(instance.name ?? 'GPU')));
+
+  return [...specOptions, ...orphanOptions]
+    .filter((gpu) => gpu.gpuId || gpu.chipId)
+    .sort((left, right) => (right.pricePerHourUsd ?? -1) - (left.pricePerHourUsd ?? -1));
+}
+
+function createGpuCardFromProviderInstance(instance: Record<string, unknown>, displayName: string): GpuCardOption {
+  const cpu = getNestedRecord(instance, 'cpu');
+  const ram = getNestedRecord(instance, 'ram', 'RAM');
+  const vram = getNestedRecord(instance, 'vram', 'VRAM');
+  const price = typeof instance.price_per_hour === 'number' ? instance.price_per_hour / 100 : null;
+  const regions = Array.isArray(instance.regions) ? instance.regions.filter((region): region is string => typeof region === 'string') : [];
+  const chipId = String(instance.chip_id ?? '');
+  const gpuId = String(instance.gpu_id ?? chipId);
+
+  return {
+    cardId: `${chipId || gpuId}-${String(instance.providerName ?? 'provider')}`,
+    gpuId,
+    chipId,
+    cpuId: String(instance.cpu_id ?? ''),
+    name: displayName,
+    brand: String(instance.manufacturer ?? 'NVIDIA'),
+    providerName: String(instance.providerName ?? ''),
+    bestPriceLabel: price !== null ? `${formatUsd(price)}/gpu/hr` : 'N/A',
+    pricePerHourUsd: price,
+    regions,
+    vram: formatGbValue(vram.size_in_gigabytes),
+    cpuInfo: typeof cpu.number_of_cores === 'number' ? `${cpu.number_of_cores} cores` : '',
+    ram: formatGbValue(ram.size_in_gigabytes),
+    isNew: isNewGpu({ chipId, name: displayName }),
+  };
+}
+
+function createGpuCardFromSpec(spec: Record<string, unknown>): GpuCardOption {
+  const chipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');
+  const memorySpecs = getNestedRecord(spec, 'memory_specs');
+  const name = String(spec.modelName ?? spec.gpu_name ?? spec.display_name ?? 'GPU');
+
+  return {
+    cardId: chipId || name,
+    gpuId: chipId,
+    chipId,
+    cpuId: '',
+    name,
+    brand: String(spec.manufacturer ?? 'NVIDIA'),
+    providerName: '',
+    bestPriceLabel: 'N/A',
+    pricePerHourUsd: null,
+    regions: [],
+    vram: formatGbValue(memorySpecs.size_gb),
+    cpuInfo: '',
+    ram: '',
+    isNew: isNewGpu({ chipId, name, launchDate: String(spec.launchDate ?? spec.launch_date ?? '') }),
+  };
+}
+
+function getNestedRecord(record: Record<string, unknown>, ...keys: string[]): Record<string, unknown> {
+  const value = keys.map((key) => record[key]).find((item) => item && typeof item === 'object' && !Array.isArray(item));
+  return (value ?? {}) as Record<string, unknown>;
+}
+
+function formatGbValue(value: unknown): string {
+  return typeof value === 'number' && value > 0 ? `${value}GB` : '';
+}
+
+function isNewGpu(gpu: { chipId: string; name: string; launchDate?: string }) {
+  if (gpu.launchDate && !Number.isNaN(new Date(gpu.launchDate).getTime())) {
+    return new Date(gpu.launchDate) > new Date('2024-01-01');
+  }
+
+  const text = `${gpu.chipId} ${gpu.name}`.toLowerCase();
+  return ['h100', 'h200', 'b200', 'mi300', 'l40s', '4090'].some((chip) => text.includes(chip));
 }
 
 function calculateDiskPricePerHour(diskSize: number) {

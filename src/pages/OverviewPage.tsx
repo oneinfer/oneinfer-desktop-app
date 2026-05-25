@@ -47,7 +47,7 @@ export function OverviewPage(props: {
   const activePlan = props.dashboard.developerPlans?.find((p) => p.planId === activePlanId);
 
   return (
-    <>
+    <div className="overview-page">
       {activePlan ? (
         <div style={{ marginBottom: '20px' }}>
           <PlanRow plan={activePlan} isCurrent={true} />
@@ -189,10 +189,10 @@ export function OverviewPage(props: {
         </main>
       </div>
 
-      <div className="section-grid dashboard-row compact-row hardware-full-row" style={{ marginTop: '20px' }}>
+      <div className="section-grid dashboard-row compact-row hardware-full-row overview-hardware-row">
         <HardwareWidget machine={props.dashboard.machineDetails} />
       </div>
-    </>
+    </div>
   );
 }
 

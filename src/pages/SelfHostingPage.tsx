@@ -14,6 +14,7 @@ export interface SelfHostFormState {
   serving_library: ServingLibrary;
   useHfUrl: boolean;
   hfUrl: string;
+  hfAccessToken: string;
 }
 
 type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
@@ -63,6 +64,9 @@ export function SelfHostingPage(props: {
   const canInstallSelectedLibrary = selectedLibrarySupported && selectedLibrary.installable && !selectedLibraryInstalled;
   const isDeployable = props.validationResult?.status !== 'insufficient' && Boolean(props.hfModelMetadata) && hasLocalRuntime;
   const localDeploymentRows = getLocalDeploymentRows(props.dashboard.inferenceEndpoints, props.localDeployments, props.localModelMetrics);
+  const showHfAccessTokenInput = props.selfHostForm.useHfUrl
+    && hasModelInput
+    && (Boolean(props.selfHostForm.hfAccessToken) || isHfAuthMetadataError(props.hfModelMetadataError));
   const ctaLabel = props.busy === 'register-self-hosted'
     ? 'Deploying...'
     : props.hfModelMetadata
@@ -143,10 +147,25 @@ export function SelfHostingPage(props: {
                 </select>
               </label>
             ) : (
-              <label>
-                <span>Model</span>
-                <input value={props.selfHostForm.hfUrl} onChange={(event) => updateModel({ hfUrl: event.target.value })} placeholder="owner/model or Hugging Face URL" />
-              </label>
+              <>
+                <label>
+                  <span>Model</span>
+                  <input value={props.selfHostForm.hfUrl} onChange={(event) => updateModel({ hfUrl: event.target.value })} placeholder="owner/model or Hugging Face URL" />
+                </label>
+                {showHfAccessTokenInput ? (
+                  <label>
+                    <span>Hugging Face Access Token</span>
+                    <input
+                      type="password"
+                      value={props.selfHostForm.hfAccessToken}
+                      onChange={(event) => props.onFormChange({ ...props.selfHostForm, hfAccessToken: event.target.value })}
+                      placeholder="hf_..."
+                      autoComplete="off"
+                    />
+                    <small className="field-help">Required for private or gated Hugging Face repositories.</small>
+                  </label>
+                ) : null}
+              </>
             )}
 
             <label>
@@ -265,6 +284,10 @@ export function SelfHostingPage(props: {
       </Panel>
     </div>
   );
+}
+
+function isHfAuthMetadataError(value: string | null) {
+  return /401|403|private|gated|restricted|auth|token|permission/i.test(value || '');
 }
 
 function getSupportedPlatform(value: unknown): SupportedPlatform {

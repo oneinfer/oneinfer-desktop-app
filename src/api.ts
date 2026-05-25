@@ -697,11 +697,18 @@ function normalizeModelItem(item: AnyRecord): AnyRecord {
   };
 }
 
-export async function getHfModelInfo(repoId: string): Promise<AnyRecord> {
+export async function getHfModelInfo(repoId: string, accessToken?: string): Promise<AnyRecord> {
   const url = `https://huggingface.co/api/models/${repoId}?blobs=true`;
-  const response = await fetch(url);
+  const token = accessToken?.trim();
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   if (!response.ok) {
-    throw new Error(`Failed to fetch Hugging Face model info for ${repoId}`);
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`Hugging Face returned HTTP ${response.status} for ${repoId}. Enter a Hugging Face access token for private or gated repositories.`);
+    }
+
+    throw new Error(`Failed to fetch Hugging Face model info for ${repoId} (HTTP ${response.status}).`);
   }
   return await response.json() as AnyRecord;
 }

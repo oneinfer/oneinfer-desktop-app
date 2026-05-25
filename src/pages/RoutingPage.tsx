@@ -21,16 +21,36 @@ type EndpointSource = 'local' | 'cloud' | 'openbandwidth' | 'closed_source_api';
 type RoutingGoal = 'balanced' | 'fastest' | 'lowest_cost' | 'highest_quality' | 'reliability' | 'custom';
 type RouterRuntime = 'local';
 
+const defaultRoutingAlgorithm = 'https://huggingface.co/katanemo/Arch-Router-1.5B';
+
+const routingAlgorithmDescriptions: Record<string, string> = {
+  'https://huggingface.co/katanemo/Arch-Router-1.5B': 'Use for balanced production routing across mixed endpoint pools where prompt complexity, expected quality, latency, and cost all need to be considered before selecting the best model.',
+  'https://huggingface.co/routellm/bert': 'Use for low-latency text routing when requests need a lightweight classifier to choose between faster and stronger endpoints with minimal router overhead.',
+  'https://huggingface.co/routellm/bert_gpt4_augmented': 'Use for quality-aware text routing with BERT scoring tuned from GPT-4 preference signals, especially when separating simple prompts from prompts that need a stronger model.',
+  'https://huggingface.co/routellm/bert_mmlu_augmented': 'Use for academic, factual, and knowledge-heavy prompts where BERT routing should favor endpoints that perform better on MMLU-style reasoning and evaluation tasks.',
+  'https://huggingface.co/routellm/causal_llm': 'Use for flexible prompt-aware routing when a generative router should inspect the request more deeply before choosing the most suitable endpoint.',
+  'https://huggingface.co/routellm/causal_llm_gpt4_augmented': 'Use for complex instruction routing where GPT-4-augmented preferences help decide when to escalate from efficient endpoints to stronger reasoning models.',
+  'https://huggingface.co/routellm/causal_llm_mmlu_augmented': 'Use for complex knowledge, benchmark-style, and reasoning prompts where a causal router should favor endpoints with stronger MMLU-style capability.',
+  'https://huggingface.co/routellm/mf': 'Use for cost-sensitive routing across known model pairs where matrix factorization can efficiently rank endpoint preferences and send simple work to cheaper capable models.',
+  'https://huggingface.co/routellm/mf_gpt4_augmented': 'Use for cost and quality tradeoffs where GPT-4-augmented preference data helps the route choose affordable endpoints for simple tasks and stronger endpoints for difficult prompts.',
+  'https://huggingface.co/routellm/mf_mmlu_augmented': 'Use for factual and reasoning workloads where matrix factorization should account for MMLU-style performance while still keeping routing lightweight and cost aware.',
+  'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct': 'Use for quality-sensitive instruction routing where a Qwen-based router should direct harder prompts to stronger models and keep simpler prompts on efficient endpoints.',
+  'https://huggingface.co/ulab-ai/Router-R1-Qwen2.5-3B-Instruct-Alpha0.9': 'Use for Qwen-based Router-R1 routing with a stronger preference toward high-quality endpoints, suitable when correctness matters more than minimizing cost or latency.',
+  'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct': 'Use for instruction-following route decisions with a Llama-based router that balances endpoint capability, prompt difficulty, and response quality.',
+  'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct-Alpha0.9': 'Use for Llama-based Router-R1 routing with a higher quality bias, suitable for support, coding, and reasoning workflows that should avoid underpowered endpoints.',
+  'https://huggingface.co/llm-semantic-router/mmbert32k-modality-router-merged': 'Use for semantic and modality-aware routing across text and multimodal endpoint pools, especially when requests should be matched by input type before model quality or cost.',
+};
+
 const defaultRouteDetails: CreateRouteDetails = {
   endpointSources: ['local'],
   routingGoal: 'balanced',
   modelId: '',
   attachedEndpointIds: [],
   inputModality: 'text',
-  routingAlgorithm: 'https://huggingface.co/katanemo/Arch-Router-1.5B',
+  routingAlgorithm: defaultRoutingAlgorithm,
   routerRuntime: 'local',
   routerServingLibrary: 'transformers',
-  description: '',
+  description: routingAlgorithmDescriptions[defaultRoutingAlgorithm],
 };
 
 export interface CreateRoutePayload extends CreateRouteDetails {
@@ -53,7 +73,10 @@ const routingAlgorithms = [
   { value: 'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct', label: 'Router-R1 Llama 3.2 3B Instruct', family: 'Router-R1' },
   { value: 'https://huggingface.co/ulab-ai/Router-R1-Llama-3.2-3B-Instruct-Alpha0.9', label: 'Router-R1 Llama 3.2 3B Instruct Alpha 0.9', family: 'Router-R1' },
   { value: 'https://huggingface.co/llm-semantic-router/mmbert32k-modality-router-merged', label: 'MMBERT32K Modality Router Merged', family: 'vLLM Semantic Router / MoM' },
-];
+].map((algorithm) => ({
+  ...algorithm,
+  description: routingAlgorithmDescriptions[algorithm.value],
+}));
 
 const routingGoals: Array<{ value: RoutingGoal; title: string; text: string; algorithm: string; algorithmLabel: string; explanation: string }> = [
   {
@@ -314,14 +337,18 @@ export function RoutingPage(props: {
 
   function updateRoutingGoal(routingGoal: RoutingGoal) {
     const goal = routingGoals.find((item) => item.value === routingGoal) ?? routingGoals[0];
-    setRouteDetails((current) => ({
-      ...current,
-      routingGoal,
-      routingAlgorithm: routingGoal === 'custom' ? current.routingAlgorithm : goal.algorithm,
-      routerServingLibrary: routingGoal === 'custom'
-        ? current.routerServingLibrary
-        : getRecommendedRouterServingLibrary(normalizeHfRepoId(goal.algorithm), platform),
-    }));
+    setRouteDetails((current) => {
+      const routingAlgorithm = routingGoal === 'custom' ? current.routingAlgorithm : goal.algorithm;
+      return {
+        ...current,
+        routingGoal,
+        routingAlgorithm,
+        routerServingLibrary: routingGoal === 'custom'
+          ? current.routerServingLibrary
+          : getRecommendedRouterServingLibrary(normalizeHfRepoId(routingAlgorithm), platform),
+        description: routingAlgorithmDescriptions[routingAlgorithm] ?? current.description,
+      };
+    });
   }
 
   function toggleEndpoint(endpointId: string) {
@@ -578,7 +605,16 @@ export function RoutingPage(props: {
                 <span>Routing Algorithm</span>
                 <select
                   value={routeDetails.routingAlgorithm}
-                  onChange={(event) => setRouteDetails((current) => ({ ...current, routingGoal: 'custom', routingAlgorithm: event.target.value }))}
+                  onChange={(event) => {
+                    const routingAlgorithm = event.target.value;
+                    setRouteDetails((current) => ({
+                      ...current,
+                      routingGoal: 'custom',
+                      routingAlgorithm,
+                      routerServingLibrary: getRecommendedRouterServingLibrary(normalizeHfRepoId(routingAlgorithm), platform),
+                      description: routingAlgorithmDescriptions[routingAlgorithm] ?? current.description,
+                    }));
+                  }}
                 >
                   {routingAlgorithms.map((algorithm) => (
                     <option key={algorithm.value} value={algorithm.value}>{algorithm.family} / {algorithm.label}</option>

@@ -997,6 +997,19 @@ function normalizeLocalModelId(value, runtime = 'vllm') {
   return normalizeHfRepoId(rawValue);
 }
 
+function getHfAuthenticatedEnv(accessToken) {
+  const token = String(accessToken || '').trim();
+  if (!token) {
+    return process.env;
+  }
+
+  return {
+    ...process.env,
+    HF_TOKEN: token,
+    HUGGING_FACE_HUB_TOKEN: token,
+  };
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1282,7 +1295,7 @@ function getOllamaModelName(repoId) {
   return `hf.co/${value}`;
 }
 
-async function ensureOllamaServer(endpointUrl, onProgress = () => {}) {
+async function ensureOllamaServer(endpointUrl, onProgress = () => {}, options = {}) {
   try {
     await waitForOpenAiEndpoint(endpointUrl, 3000, onProgress, () => false);
     return null;
@@ -1301,7 +1314,7 @@ async function ensureOllamaServer(endpointUrl, onProgress = () => {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
     env: {
-      ...process.env,
+      ...getHfAuthenticatedEnv(options.hfAccessToken),
       OLLAMA_HOST: '127.0.0.1:11434',
     },
   });
@@ -1320,7 +1333,7 @@ async function ensureOllamaServer(endpointUrl, onProgress = () => {}) {
   return child;
 }
 
-async function startOllamaModel(repoId, onProgress = () => {}) {
+async function startOllamaModel(repoId, onProgress = () => {}, options = {}) {
   if (!await isLibraryInstalled('ollama')) {
     throw new Error('Ollama is not installed. Install Ollama before deploying on macOS.');
   }
@@ -1328,14 +1341,17 @@ async function startOllamaModel(repoId, onProgress = () => {}) {
   const endpointUrl = 'http://127.0.0.1:11434/v1';
   const modelName = getOllamaModelName(repoId);
 
-  const child = await ensureOllamaServer(endpointUrl, onProgress);
+  const child = await ensureOllamaServer(endpointUrl, onProgress, options);
   onProgress({
     stage: 'loading',
     message: `Pulling Ollama model ${modelName}...`,
     detail: modelName.startsWith('hf.co/') ? 'Ollama can pull Hugging Face GGUF models with hf.co/... names.' : undefined,
   });
   try {
-    await runCommand(getOllamaCommand(), ['pull', modelName], { timeoutMs: 30 * 60 * 1000 });
+    await runCommand(getOllamaCommand(), ['pull', modelName], {
+      timeoutMs: 30 * 60 * 1000,
+      env: getHfAuthenticatedEnv(options.hfAccessToken),
+    });
   } catch (error) {
     const message = formatCommandError(error);
     if (message.includes('Repository is not GGUF') || message.includes('not compatible with llama.cpp')) {
@@ -1359,7 +1375,7 @@ async function startOllamaModel(repoId, onProgress = () => {}) {
   };
 }
 
-async function startVllmServer(repoId, port, onProgress = () => {}) {
+async function startVllmServer(repoId, port, onProgress = () => {}, options = {}) {
   let command = 'vllm';
   let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
 
@@ -1408,6 +1424,7 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
   const child = spawn(command, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    env: getHfAuthenticatedEnv(options.hfAccessToken),
   });
   const recentOutput = [];
 
@@ -1704,6 +1721,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
   const child = spawn(python.command, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    env: getHfAuthenticatedEnv(options.hfAccessToken),
   });
   child.oneinferLogPath = logPath;
 
@@ -1818,6 +1836,7 @@ function getTransformersFailureDetail(errorMessage, logTail) {
 async function deployHfModel(payload = {}) {
   const runtime = payload.runtime || 'vllm';
   const repoId = normalizeLocalModelId(payload.repoId, runtime);
+  const hfAccessToken = String(payload.hfAccessToken || payload.hfToken || '').trim();
   const progressId = String(payload.progressId || `${repoId}-${Date.now()}`);
   const progress = (patch) => sendDeploymentProgress({ id: progressId, ...patch });
   const shouldCancel = () => Boolean(localModelDeploymentsInFlight.get(repoId)?.cancelled);
@@ -1868,7 +1887,7 @@ async function deployHfModel(payload = {}) {
   if (runtime === 'ollama') {
     try {
       assertDeploymentNotCancelled(repoId);
-      const ollamaDeployment = await startOllamaModel(repoId, progress);
+      const ollamaDeployment = await startOllamaModel(repoId, progress, { hfAccessToken });
       const activeDeployment = localModelDeploymentsInFlight.get(repoId);
       if (activeDeployment) {
         activeDeployment.child = ollamaDeployment.child;
@@ -1921,8 +1940,8 @@ async function deployHfModel(payload = {}) {
   });
 
   const child = runtime === 'transformers'
-    ? await startTransformersServer(repoId, port, progress, { role: payload.role })
-    : await startVllmServer(repoId, port, progress);
+    ? await startTransformersServer(repoId, port, progress, { role: payload.role, hfAccessToken })
+    : await startVllmServer(repoId, port, progress, { hfAccessToken });
   const activeDeployment = localModelDeploymentsInFlight.get(repoId);
   if (activeDeployment) {
     activeDeployment.child = child;

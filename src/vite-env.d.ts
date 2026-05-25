@@ -153,6 +153,7 @@ interface Window {
       role?: 'model' | 'router';
       healthTimeoutMs?: number;
       progressId?: string;
+      hfAccessToken?: string;
     }) => Promise<DesktopHfDeploymentResult>;
     startLocalRoute: (payload: {
       routeId?: string;

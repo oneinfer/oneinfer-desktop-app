@@ -129,6 +129,7 @@ function App() {
     serving_library: 'vllm',
     useHfUrl: true,
     hfUrl: '',
+    hfAccessToken: '',
   });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
   const [apiKeyName, setApiKeyName] = useState('');
@@ -176,7 +177,7 @@ function App() {
           const repoId = normalizeHfRepoId(targetModelId);
 
           if (repoId && repoId.includes('/')) {
-            const info = await getHfModelInfo(repoId) as HfModelInfo;
+            const info = await getHfModelInfo(repoId, selfHostForm.hfAccessToken) as HfModelInfo;
             if (active) {
               setHfModelMetadata(info);
             }
@@ -261,7 +262,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models, session]);
+  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.hfAccessToken, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models, session]);
 
   useEffect(() => {
     async function checkLibs() {
@@ -957,6 +958,7 @@ function App() {
         repoId,
         runtime: localRuntime,
         progressId,
+        hfAccessToken: selfHostForm.hfAccessToken.trim() || undefined,
       });
 
       setSelfHostForm((current) => ({
@@ -1800,8 +1802,8 @@ function App() {
             <span>{getGreeting()}, {getWelcomeName(session)}</span>
           </div>
           <div className="top-credit-pill">
-            <span>Available Credits</span>
             <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
+            <span>Available Credits</span>
           </div>
         </div>
       ) : null}
