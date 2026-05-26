@@ -2,13 +2,14 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { LoaderCircle } from 'lucide-react';
 
 import {
-  attachEndpoint,
   createApiKey,
   createInferenceEndpoint,
   createInstance,
   createIntelligentEndpoint,
   deleteApiKey,
   deleteInstance,
+  deleteInferenceEndpoint,
+  deleteIntelligentEndpoint,
   getActiveDeveloperPlan,
   getCredits,
   getDeveloperPlans,
@@ -32,30 +33,47 @@ import {
   createLoadedSections,
   defaultClaudeCodeProvider,
   defaultDashboardState,
-  defaultInferenceForm,
   defaultInstanceForm,
   defaultSettings,
 } from './constants';
-import { validateHardwareSupport, type ValidationResult } from './helpers/hardwareValidation';
+import { getAcceleratorMemorySummary, validateHardwareSupport, type ModelRequirements, type ValidationResult } from './helpers/hardwareValidation';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
+import { getModelMemoryBreakdown } from './helpers/modelSizing';
+import { getServingLibraryCompatibility } from './helpers/servingCompatibility';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
 import { InstancesPage } from './pages/InstancesPage';
 import { OverviewPage } from './pages/OverviewPage';
-import { RoutingPage } from './pages/RoutingPage';
+import { RoutingPage, type CreateRoutePayload } from './pages/RoutingPage';
 import { SelfHostingPage, type SelfHostFormState } from './pages/SelfHostingPage';
 import { SettingsPage, type SettingsTab } from './pages/SettingsPage';
 import type {
-  CreateInferenceFormState,
   CreateInstanceFormState,
   DashboardState,
   DesktopSession,
+  EndpointItem,
   HfModelInfo,
+  InstanceItem,
   LocalModelDeployment,
   LocalModelMetrics,
   SectionKey,
+  ServingLibrary,
 } from './types';
+import { getBalance } from './utils/format';
+
+const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
+
+const initialLibraryStatus: Record<ServingLibrary, boolean> = {
+  vllm: false,
+  sglang: false,
+  tensorrt: false,
+  ollama: false,
+  llama_cpp: false,
+  pytorch: false,
+  transformers: false,
+  dynamo: false,
+};
 
 function normalizeHfRepoId(value: string): string {
   const rawValue = value.trim();
@@ -70,6 +88,19 @@ function normalizeHfRepoId(value: string): string {
   }
 
   return rawValue.includes('/') ? rawValue : '';
+}
+
+function normalizeLocalModelId(value: string): string {
+  const rawValue = value.trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('hf.co/')) {
+    return rawValue;
+  }
+
+  return normalizeHfRepoId(rawValue) || rawValue;
 }
 
 function App() {
@@ -94,20 +125,16 @@ function App() {
   const [selfHostForm, setSelfHostForm] = useState<SelfHostFormState>({
     name: '',
     model_id: '',
-    endpoint_url: 'http://localhost:8000/v1',
+    endpoint_url: 'http://127.0.0.1:8001/v1',
+    serving_library: 'vllm',
     useHfUrl: true,
     hfUrl: '',
+    hfAccessToken: '',
   });
   const [instanceForm, setInstanceForm] = useState<CreateInstanceFormState>(defaultInstanceForm);
   const [apiKeyName, setApiKeyName] = useState('');
   const [apiKeyEnvironment] = useState('production');
   const [intelligentEndpointName, setIntelligentEndpointName] = useState('');
-  const [inferenceForm, setInferenceForm] = useState<CreateInferenceFormState>(defaultInferenceForm);
-  const [attachForm, setAttachForm] = useState({
-    intelligentEndpointId: '',
-    endpointType: 'inference_api',
-    endpointId: '',
-  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
   const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw'>('claude-code');
@@ -119,10 +146,13 @@ function App() {
   const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
   const [hfModelMetadataLoading, setHfModelMetadataLoading] = useState(false);
   const [hfModelMetadataError, setHfModelMetadataError] = useState<string | null>(null);
-  const [libraries, setLibraries] = useState<{ vllm: boolean; ollama: boolean }>({ vllm: false, ollama: false });
+  const [libraries, setLibraries] = useState<Record<ServingLibrary, boolean>>(initialLibraryStatus);
   const [deploymentProgress, setDeploymentProgress] = useState<DesktopDeploymentProgress[]>([]);
   const [localDeployments, setLocalDeployments] = useState<LocalModelDeployment[]>([]);
+  const [localRouteUrls, setLocalRouteUrls] = useState<Record<string, string>>({});
   const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
+  const [routeInitialEndpointId, setRouteInitialEndpointId] = useState<string | null>(null);
+  const [routeInitialViewId, setRouteInitialViewId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -139,7 +169,7 @@ function App() {
         return;
       }
 
-      let requirements = { minVramGb: 0, modelSizeGb: 0 };
+      let requirements: ModelRequirements = { minVramGb: 0, modelSizeGb: 0 };
       setHfModelMetadataLoading(true);
       setHfModelMetadataError(null);
 
@@ -148,20 +178,25 @@ function App() {
           const repoId = normalizeHfRepoId(targetModelId);
 
           if (repoId && repoId.includes('/')) {
-            const info = await getHfModelInfo(repoId) as HfModelInfo;
+            const info = await getHfModelInfo(repoId, selfHostForm.hfAccessToken) as HfModelInfo;
             if (active) {
               setHfModelMetadata(info);
             }
 
-            const totalSizeFromSiblings = (info.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
-            const totalSizeFromSafetensors = (info as any).safetensors?.total || 0;
-            const totalSize = totalSizeFromSiblings || totalSizeFromSafetensors;
-            const sizeGb = totalSize > 0 ? totalSize / (1024 ** 3) : 0;
+            const memoryBreakdown = getModelMemoryBreakdown(info);
+            const sizeGb = memoryBreakdown.modelWeightGb;
 
-            requirements = {
-              minVramGb: sizeGb > 0 ? Math.ceil(sizeGb * 1.15) + 2 : 4,
-              modelSizeGb: sizeGb > 0 ? Math.ceil(sizeGb) : 2,
-            };
+            if (sizeGb > 0) {
+              requirements = {
+                minVramGb: memoryBreakdown.totalVramGb,
+                modelSizeGb: sizeGb,
+                kvCacheGb: memoryBreakdown.kvCacheGb,
+                servingOverheadGb: memoryBreakdown.servingOverheadGb,
+              };
+            } else if (active) {
+              setValidationResult(null);
+              setHfModelMetadataError('Hugging Face did not return model weight sizes, so local deployability cannot be estimated for this repo.');
+            }
           } else if (active) {
             setHfModelMetadata(null);
             setValidationResult(null);
@@ -190,9 +225,19 @@ function App() {
           };
           setHfModelMetadata(virtualMetadata);
 
+          const catalogModelWeightGb = Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0);
+          const catalogContextLength = Number(catalogModel.modelContextLength || catalogModel.model_context_length || 0);
+          const catalogMemoryBreakdown = getModelMemoryBreakdown(virtualMetadata, {
+            modelWeightGb: catalogModelWeightGb,
+            contextLength: catalogContextLength || undefined,
+          });
+          const catalogMinVramGb = Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0);
+
           requirements = {
-            minVramGb: Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0),
-            modelSizeGb: Number(catalogModel.modelSizeGb || catalogModel.model_size_gb || 0),
+            minVramGb: catalogMinVramGb || catalogMemoryBreakdown.totalVramGb,
+            modelSizeGb: catalogMemoryBreakdown.modelWeightGb,
+            kvCacheGb: catalogMemoryBreakdown.kvCacheGb,
+            servingOverheadGb: catalogMemoryBreakdown.servingOverheadGb,
           };
         } else if (active) {
           setHfModelMetadata(null);
@@ -218,15 +263,17 @@ function App() {
     return () => {
       active = false;
     };
-  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models, session]);
+  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.hfAccessToken, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models, session]);
 
   useEffect(() => {
     async function checkLibs() {
       if (!window.desktopBridge?.checkLibrary) return;
       try {
-        const vllm = await window.desktopBridge.checkLibrary('vllm');
-        const ollama = await window.desktopBridge.checkLibrary('ollama');
-        setLibraries({ vllm, ollama });
+        const statuses = await Promise.all(servingLibraries.map(async (library) => [library, await window.desktopBridge.checkLibrary(library)] as const));
+        setLibraries({
+          ...initialLibraryStatus,
+          ...Object.fromEntries(statuses),
+        });
       } catch (error) {
         console.error('[libraries] check failed', error);
       }
@@ -236,6 +283,16 @@ function App() {
       checkLibs();
     }
   }, [activeSection, session]);
+
+  useEffect(() => {
+    if (booting || !session) {
+      return;
+    }
+
+    persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments).catch((error) => {
+      console.error('[state] failed to persist local deployments', error);
+    });
+  }, [booting, session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments]);
 
   useEffect(() => {
     if (!window.desktopBridge?.onDeploymentProgress) {
@@ -262,6 +319,7 @@ function App() {
             endpointUrl: deployment.endpointUrl,
             healthy: false,
             modelCount: 0,
+            modelIds: [],
             uptimeSeconds: null,
             requestsRunning: null,
             requestsWaiting: null,
@@ -311,6 +369,7 @@ function App() {
     nextSession: DesktopSession | null,
     nextApiBaseUrl: string,
     nextClaudeCodeProvider: 'oneinfer' | 'anthropic',
+    nextLocalDeployments: LocalModelDeployment[] = localDeployments,
   ) {
     if (!window.desktopBridge) {
       return;
@@ -322,6 +381,7 @@ function App() {
         apiBaseUrl: nextApiBaseUrl,
         claudeCodeProvider: nextClaudeCodeProvider,
       },
+      localDeployments: nextLocalDeployments,
     });
   }
 
@@ -370,6 +430,7 @@ function App() {
           getInstances(currentBaseUrl, currentSession),
           getDeveloperPlans(currentBaseUrl),
           getActiveDeveloperPlan(currentBaseUrl, currentSession),
+          listIntelligentEndpoints(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
@@ -383,9 +444,18 @@ function App() {
           }),
           developerPlans: results[4].status === 'fulfilled' ? results[4].value : current.developerPlans,
           activeDeveloperPlan: results[5].status === 'fulfilled' ? results[5].value : current.activeDeveloperPlan,
+          intelligentEndpoints: results[6].status === 'fulfilled' ? results[6].value : current.intelligentEndpoints,
         }));
 
-        announcePartialFailures('Overview', results, shouldBeSilent);
+        announcePartialFailures('Overview', results, shouldBeSilent, [
+          'profile',
+          'credits',
+          'inference endpoints',
+          'instances',
+          'developer plans',
+          'active developer plan',
+          'routes',
+        ]);
       }
 
       if (section === 'instances') {
@@ -402,7 +472,7 @@ function App() {
           gpuSpecs: results[2].status === 'fulfilled' ? results[2].value : current.gpuSpecs,
         }));
 
-        announcePartialFailures('Instances', results, shouldBeSilent);
+        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs']);
       }
 
       if (section === 'apiKeys') {
@@ -414,20 +484,32 @@ function App() {
         const results = await Promise.allSettled([
           listIntelligentEndpoints(currentBaseUrl, currentSession),
           listInferenceEndpoints(currentBaseUrl, currentSession),
+          listModels(currentBaseUrl),
         ]);
 
         setDashboard((current) => ({
           ...current,
           intelligentEndpoints: results[0].status === 'fulfilled' ? results[0].value : current.intelligentEndpoints,
           inferenceEndpoints: results[1].status === 'fulfilled' ? results[1].value : current.inferenceEndpoints,
+          models: results[2].status === 'fulfilled' ? results[2].value : current.models,
         }));
 
-        announcePartialFailures('Routing', results, shouldBeSilent);
+        announcePartialFailures('Routing', results, shouldBeSilent, ['routes', 'inference endpoints', 'models']);
       }
 
       if (section === 'selfHosting') {
-        const models = await listModels(currentBaseUrl);
-        setDashboard((current) => ({ ...current, models }));
+        const results = await Promise.allSettled([
+          listModels(currentBaseUrl),
+          listInferenceEndpoints(currentBaseUrl, currentSession),
+        ]);
+
+        setDashboard((current) => ({
+          ...current,
+          models: results[0].status === 'fulfilled' ? results[0].value : current.models,
+          inferenceEndpoints: results[1].status === 'fulfilled' ? results[1].value : current.inferenceEndpoints,
+        }));
+
+        announcePartialFailures('Self Hosting', results, shouldBeSilent, ['models', 'inference endpoints']);
         if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Models catalog synced.' });
         }
@@ -445,7 +527,7 @@ function App() {
           activeDeveloperPlan: results[1].status === 'fulfilled' ? results[1].value : current.activeDeveloperPlan,
         }));
 
-        announcePartialFailures('Bandwidth', results, shouldBeSilent);
+        announcePartialFailures('Bandwidth', results, shouldBeSilent, ['developer plans', 'active developer plan']);
       }
 
       setLoadedSections((current) => ({ ...current, [section]: true }));
@@ -459,10 +541,19 @@ function App() {
     }
   }
 
-  function announcePartialFailures(label: string, results: PromiseSettledResult<unknown>[], silent: boolean) {
-    const failed = results.filter((result) => result.status === 'rejected').length;
+  function announcePartialFailures(label: string, results: PromiseSettledResult<unknown>[], silent: boolean, names: string[] = []) {
+    const failures = results
+      .map((result, index) => ({ result, name: names[index] || `request ${index + 1}` }))
+      .filter((item): item is { result: PromiseRejectedResult; name: string } => item.result.status === 'rejected');
+    const failed = failures.length;
     if (failed > 0) {
-      setMessage({ tone: 'error', text: `${label} loaded with ${failed} partial failure${failed > 1 ? 's' : ''}.` });
+      console.warn(`[${label}] partial load failure`, failures.map((failure) => ({
+        name: failure.name,
+        reason: failure.result.reason instanceof Error ? failure.result.reason.message : String(failure.result.reason),
+      })));
+      if (!silent) {
+        setMessage({ tone: 'error', text: `${label} loaded with ${failed} partial failure${failed > 1 ? 's' : ''}: ${failures.map((failure) => failure.name).join(', ')}.` });
+      }
     } else if (!silent) {
       setMessage({ tone: 'success', text: `${label} synced.` });
     }
@@ -488,6 +579,9 @@ function App() {
       setSettingsDraft({ apiBaseUrl: nextBaseUrl });
       setClaudeCodeProvider(nextClaudeCodeProvider);
       setSession(storedState?.session ?? null);
+      if (Array.isArray(storedState?.localDeployments)) {
+        setLocalDeployments(storedState.localDeployments.filter(isValidLocalDeployment));
+      }
       setLoadedSections(createLoadedSections());
       setEmail(storedState?.session?.email ?? '');
       setAppVersion(version ?? '');
@@ -774,7 +868,9 @@ function App() {
 
     setBusy('register-self-hosted');
     try {
-      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+      const manualRuntime = selfHostForm.serving_library || getLocalRuntimeFromEndpointUrl(selfHostForm.endpoint_url);
+      await validateSelfHostedEndpointRegistration(selfHostForm.endpoint_url.trim(), modelId, selfHostForm.name.trim() || modelId);
+      const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
         provider: 'openai',
         model_id: modelId,
@@ -785,8 +881,26 @@ function App() {
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
+        serving_library: manualRuntime,
+      });
+      setLocalDeployments((current) => {
+        const nextDeployment: LocalModelDeployment = {
+          endpointId: getEndpointIdFromPayload(registeredEndpoint),
+          endpointUrl: selfHostForm.endpoint_url.trim(),
+          modelId,
+          name: selfHostForm.name.trim() || modelId,
+          pid: null,
+          runtime: manualRuntime,
+          deployedAt: new Date().toISOString(),
+        };
+
+        return [
+          nextDeployment,
+          ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
+        ];
       });
       setMessage({ tone: 'success', text: 'Local inference endpoint registered.' });
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to register endpoint.' });
       throw error;
@@ -821,8 +935,47 @@ function App() {
       return false;
     }
 
-    if (!libraries.vllm) {
-      setMessage({ tone: 'error', text: 'vLLM must be installed before deploying a Hugging Face model locally.' });
+    const selectedRuntime = selfHostForm.serving_library;
+    const requestedRuntime = selectedRuntime === 'pytorch' ? 'transformers' : selectedRuntime;
+    if (!isLaunchableLocalRuntime(requestedRuntime)) {
+      if (!libraries[selectedRuntime]) {
+        setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(selectedRuntime)} before registering this local endpoint.` });
+        return false;
+      }
+
+      await handleRegisterSelfHosted();
+      return true;
+    }
+
+    const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
+    const localRuntime = requestedRuntime;
+    if (!libraries[localRuntime]) {
+      const dependencyNote = selectedRuntime === 'pytorch' && localRuntime === 'transformers'
+        ? ' PyTorch is the model backend, but OneInfer needs the Transformers serving runtime to expose an OpenAI-compatible local server.'
+        : '';
+      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.${dependencyNote}` });
+      return false;
+    }
+
+    if (localRuntime === 'ollama' && !isOllamaCompatibleRepo) {
+      setMessage({ tone: 'error', text: `${repoId} is not a GGUF/llama.cpp model, so Ollama cannot deploy it. Select vLLM for one-click Transformers deployment, or choose a GGUF model for Ollama.` });
+      return false;
+    }
+
+    if (hfModelMetadata) {
+      const compatibility = getServingLibraryCompatibility(localRuntime, hfModelMetadata);
+      if (!compatibility.supported) {
+        setMessage({
+          tone: 'error',
+          text: `${repoId} cannot be deployed with ${formatLocalRuntime(localRuntime)}. ${compatibility.reason ?? 'Select a compatible serving library for this model.'}`,
+        });
+        return false;
+      }
+    }
+
+    const hardwareBlockReason = getLocalDeploymentHardwareBlockReason(localRuntime, validationResult, dashboard.machineDetails);
+    if (hardwareBlockReason) {
+      setMessage({ tone: 'error', text: hardwareBlockReason });
       return false;
     }
 
@@ -840,35 +993,35 @@ function App() {
         id: progressId,
         stage: 'preparing',
         message: `Preparing to deploy ${repoId}.`,
-        detail: 'Checking runtime, choosing a port, then starting vLLM.',
+        detail: `Checking runtime, choosing a port, then starting ${formatLocalRuntime(localRuntime)}.`,
         level: 'info',
         timestamp: Date.now(),
       }]);
-      setMessage({ tone: 'info', text: `Starting ${repoId} with vLLM on your local GPU...` });
+      setMessage({ tone: 'info', text: `Starting ${repoId} with ${formatLocalRuntime(localRuntime)} on this machine...` });
       const deployment = await window.desktopBridge.deployHfModel({
         repoId,
-        runtime: 'vllm',
+        runtime: localRuntime,
         progressId,
+        hfAccessToken: selfHostForm.hfAccessToken.trim() || undefined,
       });
 
       setSelfHostForm((current) => ({
         ...current,
         endpoint_url: deployment.endpointUrl,
       }));
+      const deployedAt = new Date().toISOString();
+      const localDeploymentRecord: LocalModelDeployment = {
+        endpointUrl: deployment.endpointUrl,
+        modelId: deployment.modelId,
+        name: selfHostForm.name.trim() || repoId,
+        pid: deployment.pid,
+        runtime: deployment.runtime,
+        deployedAt,
+      };
+      let nextLocalDeployments = upsertLocalDeployment(localDeployments, localDeploymentRecord);
       setLocalDeployments((current) => {
-        const nextDeployment: LocalModelDeployment = {
-          endpointUrl: deployment.endpointUrl,
-          modelId: deployment.modelId,
-          name: selfHostForm.name.trim() || repoId,
-          pid: deployment.pid,
-          runtime: deployment.runtime,
-          deployedAt: new Date().toISOString(),
-        };
-
-        return [
-          nextDeployment,
-          ...current.filter((item) => item.endpointUrl !== deployment.endpointUrl && item.modelId !== deployment.modelId),
-        ];
+        nextLocalDeployments = upsertLocalDeployment(current, localDeploymentRecord);
+        return nextLocalDeployments;
       });
 
       const registeringProgress: DesktopDeploymentProgress = {
@@ -881,7 +1034,7 @@ function App() {
       };
       setDeploymentProgress((current) => [...current, registeringProgress].slice(-80));
 
-      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+      const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name.trim() || repoId,
         provider: 'openai',
         model_id: deployment.modelId,
@@ -892,7 +1045,23 @@ function App() {
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
+        serving_library: deployment.runtime,
       });
+
+      const registeredEndpointId = getEndpointIdFromPayload(registeredEndpoint);
+      if (registeredEndpointId) {
+        nextLocalDeployments = nextLocalDeployments.map((item) => (
+          item.endpointUrl === deployment.endpointUrl && item.modelId === deployment.modelId
+            ? { ...item, endpointId: registeredEndpointId }
+            : item
+        ));
+        setLocalDeployments((current) => current.map((item) => (
+          item.endpointUrl === deployment.endpointUrl && item.modelId === deployment.modelId
+            ? { ...item, endpointId: registeredEndpointId }
+            : item
+        )));
+      }
+      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments);
 
       const registeredProgress: DesktopDeploymentProgress = {
         id: progressId,
@@ -904,19 +1073,24 @@ function App() {
       };
       setDeploymentProgress((current) => [...current, registeredProgress].slice(-80));
       setMessage({ tone: 'success', text: `Deployed ${deployment.modelId} locally and registered ${deployment.endpointUrl}.` });
+      await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
       return true;
     } catch (error) {
+      const rawErrorMessage = error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.';
+      const errorMessage = rawErrorMessage.includes('Unsupported local deployment runtime: ollama')
+        ? 'Ollama deploy support is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then deploy again.'
+        : rawErrorMessage;
       const errorProgress: DesktopDeploymentProgress = {
         id: `${repoId}-${Date.now()}`,
         stage: 'error',
         message: 'Deployment flow stopped.',
-        detail: error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.',
+        detail: errorMessage,
         level: 'error',
         timestamp: Date.now(),
       };
       setDeploymentProgress((current) => [...current, errorProgress].slice(-80));
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.' });
+      setMessage({ tone: 'error', text: errorMessage });
       return false;
     } finally {
       setBusy(null);
@@ -1071,29 +1245,300 @@ function App() {
     }
   }
 
-  async function handleCreateIntelligentEndpoint(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function ensureLocalRouterDeployment(routingAlgorithm: string, requestedServingLibrary?: ServingLibrary): Promise<{ endpointId?: string; endpointUrl: string; modelId: string; runtime: ServingLibrary }> {
     if (!session) {
-      return;
+      throw new Error('Sign in before deploying a local router model.');
+    }
+
+    const routerModelId = normalizeLocalModelId(routingAlgorithm);
+    if (!routerModelId) {
+      throw new Error('Select a valid local router model before deploying locally.');
+    }
+
+    const existingRouterEndpoint = dashboard.inferenceEndpoints.find((endpoint, index) => {
+      const record = endpoint as Record<string, unknown>;
+      const endpointModelId = String(record.model_id ?? record.modelId ?? '');
+      const endpointRole = String(record.endpoint_role ?? record.role ?? '').toLowerCase();
+      const endpointUrl = String(record.endpoint_url ?? '').toLowerCase();
+      const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
+      return endpointModelId === routerModelId
+        && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'))
+        && (!endpointRole || endpointRole === 'router' || endpointRole === 'model' || String(record.name ?? '').toLowerCase().includes('router'))
+        && Boolean(getInferenceEndpointIdFromRecord(endpoint, index));
+    });
+
+    if (existingRouterEndpoint) {
+      const endpointRecord = existingRouterEndpoint as Record<string, unknown>;
+      const endpointUrl = String(endpointRecord.endpoint_url ?? '');
+      const existingRuntime = normalizeServingLibrary(endpointRecord.serving_library, getLocalRuntimeFromEndpointUrl(endpointUrl));
+      if (existingRuntime === 'ollama' && !isOllamaCompatibleModelId(routerModelId)) {
+        throw new Error(`${routerModelId} is not a GGUF/llama.cpp router model, so Ollama cannot host it. Select Transformers or vLLM.`);
+      }
+
+      return {
+        endpointId: getInferenceEndpointIdFromRecord(existingRouterEndpoint, dashboard.inferenceEndpoints.indexOf(existingRouterEndpoint)),
+        endpointUrl,
+        modelId: routerModelId,
+        runtime: existingRuntime,
+      };
+    }
+
+    if (!window.desktopBridge?.deployHfModel) {
+      throw new Error('Local router deployment is not available in this app build.');
+    }
+
+    const routerPlatform = getSupportedPlatform(dashboard.machineDetails?.platform);
+    const routerRuntime = requestedServingLibrary || getRequiredRouterRuntime(routerModelId, routerPlatform);
+    const unsupportedReason = getRouterRuntimeUnsupportedReason(routerRuntime, routerPlatform, routerModelId);
+    if (unsupportedReason) {
+      throw new Error(unsupportedReason);
+    }
+
+    if (!libraries[routerRuntime]) {
+      await ensureServingLibraryInstalled(routerRuntime, `${formatLocalRuntime(routerRuntime)} is required for the selected router model.`);
+    }
+
+    setMessage({ tone: 'info', text: `Deploying local router model ${routerModelId} with ${formatLocalRuntime(routerRuntime)}...` });
+    const launchRuntime = routerRuntime as 'vllm' | 'ollama' | 'transformers';
+    const deployment = await window.desktopBridge.deployHfModel({
+      repoId: routerModelId,
+      runtime: launchRuntime,
+      role: 'router',
+      progressId: `${routerModelId}-router-${Date.now()}`,
+    });
+
+    const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
+    const detectedMachineName = typeof dashboard.machineDetails?.machineName === 'string'
+      ? dashboard.machineDetails.machineName
+      : typeof dashboard.machineDetails?.hostname === 'string'
+        ? dashboard.machineDetails.hostname
+        : '';
+
+    const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+      name: `${routerModelId} router`,
+      provider: 'openai',
+      model_id: deployment.modelId,
+      deployment_target: 'local',
+      endpoint_url: deployment.endpointUrl,
+      machine_id: detectedMachineId,
+      machine_name: detectedMachineName,
+      top_p: 0.9,
+      temperature: 0.1,
+      max_tokens: 1024,
+      endpoint_role: 'router',
+      serving_library: routerRuntime,
+    });
+
+    await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
+
+    return {
+      endpointId: getEndpointIdFromPayload(registeredEndpoint),
+      endpointUrl: deployment.endpointUrl,
+      modelId: deployment.modelId,
+      runtime: deployment.runtime,
+    };
+  }
+
+  async function handleCreateRoute(payload: CreateRoutePayload) {
+    if (!session) {
+      return false;
+    }
+
+    const routeName = payload.name.trim();
+    if (!routeName) {
+      setMessage({ tone: 'error', text: 'Route name is required.' });
+      return false;
+    }
+
+    if (payload.attachedEndpointIds.length === 0) {
+      setMessage({ tone: 'error', text: 'Select at least one endpoint for this route.' });
+      return false;
     }
 
     setBusy('create-intelligent-endpoint');
     try {
-      await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, intelligentEndpointName);
-      setMessage({ tone: 'success', text: 'Intelligent endpoint created.' });
+      const routerDeployment = await ensureLocalRouterDeployment(payload.routingAlgorithm, payload.routerServingLibrary);
+      const registeredLocalDeployments = await ensureSelectedLocalDeploymentsRegistered(payload.attachedEndpointIds);
+      const attachedEndpointIds = payload.attachedEndpointIds.map((endpointId) => {
+        const localDeployment = registeredLocalDeployments.find((deployment) => getLocalDeploymentSelectionId(deployment) === endpointId);
+        return localDeployment?.endpointId || endpointId;
+      });
+      const attachedInferenceEndpoints = attachedEndpointIds.map((endpointId) => (
+        buildAttachedInferenceEndpointPayload(
+          endpointId,
+          routeName,
+          payload.inputModality,
+          payload.modelId,
+          dashboard.inferenceEndpoints,
+          dashboard.instances,
+          localDeployments,
+          dashboard.models,
+        )
+      ));
+      const localRouteCandidates = payload.attachedEndpointIds.map((endpointId) => (
+        buildAttachedInferenceEndpointPayload(
+          endpointId,
+          routeName,
+          payload.inputModality,
+          payload.modelId,
+          dashboard.inferenceEndpoints,
+          dashboard.instances,
+          localDeployments,
+          dashboard.models,
+        )
+      ));
+      await validateLocalRouteCandidates(routerDeployment.endpointUrl, localRouteCandidates);
+
+      const createdRoute = await createIntelligentEndpoint(settingsDraft.apiBaseUrl, session, {
+        name: routeName,
+        routing_config: {
+          routing_algorithm: payload.routingAlgorithm,
+          router_runtime: 'local',
+          ...(routerDeployment?.endpointId ? { router_endpoint_id: routerDeployment.endpointId } : {}),
+          ...(routerDeployment?.endpointUrl ? { router_endpoint_url: routerDeployment.endpointUrl } : {}),
+          serving_library: routerDeployment.runtime,
+          input_modality: payload.inputModality,
+          candidate_models: payload.modelId ? [payload.modelId] : [],
+          description: payload.description.trim() || undefined,
+        },
+        ...(attachedEndpointIds.length > 0
+          ? {
+              attached_endpoints: {
+                inference_api: attachedInferenceEndpoints,
+              },
+            }
+          : {}),
+      });
+      const createdRouteId = getEndpointIdFromPayload(createdRoute) || routeName;
+      if (window.desktopBridge?.startLocalRoute) {
+        try {
+          const localRoute = await window.desktopBridge.startLocalRoute({
+            routeId: createdRouteId,
+            name: routeName,
+            routerEndpointUrl: routerDeployment.endpointUrl,
+            routerModelId: routerDeployment.modelId,
+            candidates: localRouteCandidates,
+          });
+          setLocalRouteUrls((current) => ({ ...current, [createdRouteId]: localRoute.endpointUrl }));
+        } catch (error) {
+          setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Route created, but local route server could not start.' });
+          return false;
+        }
+      }
+
+      setMessage({
+        tone: 'success',
+        text: attachedEndpointIds.length > 0 ? 'Local route created with router and inference endpoints attached.' : 'Route created with route config.',
+      });
       setIntelligentEndpointName('');
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
+      return true;
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create intelligent endpoint.' });
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create route.' });
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
-  async function handleCreateInferenceEndpoint(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) {
+  async function handleSetupRouterEndpoint(routerModelId: string) {
+    const normalizedRouterModelId = normalizeLocalModelId(routerModelId);
+    if (!normalizedRouterModelId) {
+      setMessage({ tone: 'error', text: 'Select a valid router model before setup.' });
       return;
+    }
+
+    setBusy('install-router-stack');
+    try {
+      await ensureTransformerRouterStackInstalled();
+      setSelfHostForm((current) => ({
+        ...current,
+        name: `${normalizedRouterModelId} router`,
+        model_id: '',
+        useHfUrl: true,
+        hfUrl: `https://huggingface.co/${normalizedRouterModelId}`,
+        serving_library: 'transformers',
+        endpoint_url: current.endpoint_url || 'http://localhost:8000/v1',
+      }));
+      setInfraTab('self-hosted');
+      setActiveSection('selfHosting');
+      setMessage({
+        tone: 'info',
+        text: 'PyTorch and Transformers are ready. Router model loaded in Self Hosting; start/register the local endpoint, then return to Routing to create the route.',
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to install the PyTorch/Transformers router stack.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function ensureTransformerRouterStackInstalled(): Promise<void> {
+    if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) {
+      throw new Error('Automatic PyTorch/Transformers installation is not available in this app build.');
+    }
+
+    const currentPyTorch = libraries.pytorch || (await window.desktopBridge.checkLibrary('pytorch'));
+    const currentTransformers = libraries.transformers || (await window.desktopBridge.checkLibrary('transformers'));
+    if (!currentPyTorch || !currentTransformers) {
+      setMessage({ tone: 'info', text: 'Installing PyTorch and Transformers for the local router endpoint...' });
+      await window.desktopBridge.installLibrary('transformers');
+    }
+
+    let pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
+    let transformersInstalled = await window.desktopBridge.checkLibrary('transformers');
+    if (!pytorchInstalled) {
+      await window.desktopBridge.installLibrary('pytorch');
+      pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
+    }
+
+    if (!transformersInstalled || !pytorchInstalled) {
+      transformersInstalled = await window.desktopBridge.checkLibrary('transformers');
+      pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
+    }
+
+    setLibraries((current) => ({
+      ...current,
+      pytorch: pytorchInstalled,
+      transformers: transformersInstalled,
+    }));
+
+    if (!pytorchInstalled || !transformersInstalled) {
+      throw new Error('PyTorch and Transformers installation finished, but the app could not import both packages. Restart OneInfer Desktop or check your Python environment.');
+    }
+  }
+
+  async function ensureServingLibraryInstalled(library: ServingLibrary, reason: string): Promise<void> {
+    if (library === 'transformers') {
+      await ensureTransformerRouterStackInstalled();
+      return;
+    }
+
+    if (libraries[library]) {
+      return;
+    }
+
+    if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) {
+      throw new Error(`${formatLocalRuntime(library)} is required, but automatic installation is not available in this app build.`);
+    }
+
+    setMessage({ tone: 'info', text: `${reason} Installing ${formatLocalRuntime(library)} before creating the route...` });
+    await window.desktopBridge.installLibrary(library);
+    const installed = await window.desktopBridge.checkLibrary(library);
+    setLibraries((current) => ({ ...current, [library]: installed }));
+    if (!installed) {
+      throw new Error(`${formatLocalRuntime(library)} installation finished, but the app could not verify it on this machine.`);
+    }
+  }
+
+  async function ensureSelectedLocalDeploymentsRegistered(endpointIds: string[]): Promise<LocalModelDeployment[]> {
+    if (!session) {
+      return [];
+    }
+
+    const selectedLocalDeployments = localDeployments.filter((deployment) => endpointIds.includes(getLocalDeploymentSelectionId(deployment)));
+    if (selectedLocalDeployments.length === 0) {
+      return [];
     }
 
     const detectedMachineId = typeof dashboard.machineDetails?.machineId === 'string' ? dashboard.machineDetails.machineId : '';
@@ -1103,65 +1548,252 @@ function App() {
         ? dashboard.machineDetails.hostname
         : '';
 
-    const payload: CreateInferenceFormState = {
-      ...inferenceForm,
-      endpoint_url: inferenceForm.deployment_target === 'local' ? inferenceForm.endpoint_url.trim() : '',
-      machine_id: inferenceForm.deployment_target === 'local' ? (inferenceForm.machine_id.trim() || detectedMachineId) : '',
-      machine_name: inferenceForm.deployment_target === 'local' ? (inferenceForm.machine_name.trim() || detectedMachineName) : '',
-    };
+    const registeredDeployments: LocalModelDeployment[] = [];
+    for (const deployment of selectedLocalDeployments) {
+      if (deployment.endpointId) {
+        registeredDeployments.push(deployment);
+        continue;
+      }
 
-    if (payload.deployment_target === 'local' && !payload.endpoint_url) {
-      setMessage({ tone: 'error', text: 'Local deployment URL is required.' });
-      return;
+      const existingEndpoint = dashboard.inferenceEndpoints.find((endpoint) => {
+        const endpointUrl = String(endpoint.endpoint_url ?? '');
+        return endpointUrl === deployment.endpointUrl;
+      });
+      const existingEndpointId = existingEndpoint ? getInferenceEndpointIdFromRecord(existingEndpoint, dashboard.inferenceEndpoints.indexOf(existingEndpoint)) : '';
+      if (existingEndpointId) {
+        const nextDeployment = { ...deployment, endpointId: existingEndpointId };
+        registeredDeployments.push(nextDeployment);
+        continue;
+      }
+
+      const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
+        name: deployment.name,
+        provider: 'openai',
+        model_id: deployment.modelId,
+        deployment_target: 'local',
+        endpoint_url: deployment.endpointUrl,
+        machine_id: detectedMachineId,
+        machine_name: detectedMachineName,
+        top_p: 0.9,
+        temperature: 0.7,
+        max_tokens: 4096,
+        serving_library: deployment.runtime,
+      });
+      const endpointId = getEndpointIdFromPayload(registeredEndpoint);
+      registeredDeployments.push(endpointId ? { ...deployment, endpointId } : deployment);
     }
 
-    setBusy('create-inference-endpoint');
-    try {
-      await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, payload);
-      setMessage({ tone: 'success', text: payload.deployment_target === 'local' ? 'Local inference endpoint registered.' : 'Inference API endpoint created.' });
-      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
-    } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create inference endpoint.' });
-    } finally {
-      setBusy(null);
+    if (registeredDeployments.some((deployment) => deployment.endpointId)) {
+      setLocalDeployments((current) => current.map((deployment) => {
+        const registeredDeployment = registeredDeployments.find((item) => item.endpointUrl === deployment.endpointUrl);
+        return registeredDeployment?.endpointId ? { ...deployment, endpointId: registeredDeployment.endpointId } : deployment;
+      }));
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
     }
+
+    return registeredDeployments;
   }
 
-  async function handleInstallLibrary(name: 'vllm' | 'ollama') {
-    if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) return;
-    setBusy(`install-${name}`);
-    try {
-      await window.desktopBridge.installLibrary(name);
-      setMessage({ tone: 'success', text: `${name} installed successfully.` });
-      const status = await window.desktopBridge.checkLibrary(name);
-      setLibraries((current) => ({ ...current, [name]: status }));
-    } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : `Failed to install ${name}.` });
-      throw error;
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleAttachEndpoint(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleDeleteRoute(routeId: string, routeName: string) {
     if (!session) {
       return;
     }
 
-    setBusy('attach-endpoint');
+    const confirmed = window.confirm(`Delete route "${routeName}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setBusy(`delete-route:${routeId}`);
     try {
-      await attachEndpoint(
-        settingsDraft.apiBaseUrl,
-        session,
-        attachForm.intelligentEndpointId,
-        attachForm.endpointType,
-        attachForm.endpointId,
-      );
-      setMessage({ tone: 'success', text: 'Endpoint attached to routing policy.' });
+      await window.desktopBridge?.stopLocalRoute?.({ routeId }).catch(() => undefined);
+      setLocalRouteUrls((current) => {
+        const next = { ...current };
+        delete next[routeId];
+        return next;
+      });
+      await deleteIntelligentEndpoint(settingsDraft.apiBaseUrl, session, routeId);
+      setMessage({ tone: 'success', text: 'Route deleted.' });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Attach endpoint failed.' });
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to delete route.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCopyRoute(routeId: string, route?: EndpointItem) {
+    if (!session) {
+      return;
+    }
+
+    let localRouteUrl = localRouteUrls[routeId] ? toOpenAiChatCompletionsUrl(localRouteUrls[routeId]) : null;
+    if (!localRouteUrl && route) {
+      try {
+        const startedRoute = await startLocalRouteFromRecord(routeId, route);
+        localRouteUrl = toOpenAiChatCompletionsUrl(startedRoute.endpointUrl);
+        setLocalRouteUrls((current) => ({ ...current, [routeId]: startedRoute.endpointUrl }));
+      } catch {
+        localRouteUrl = getLocalRouteChatUrl(route);
+      }
+    }
+
+    const normalizedBaseUrl = settingsDraft.apiBaseUrl.replace(/\/+$/, '');
+    const routeUrl = localRouteUrl || `${normalizedBaseUrl}/developer/${session.developerId}/intelligent-endpoints/${routeId}/chat/completions`;
+    navigator.clipboard?.writeText(routeUrl);
+    setMessage({ tone: 'success', text: localRouteUrl ? 'Local route URL copied.' : 'Route URL copied.' });
+  }
+
+  async function startLocalRouteFromRecord(routeId: string, route: EndpointItem): Promise<{ endpointUrl: string; port: number; routeId: string }> {
+    if (!window.desktopBridge?.startLocalRoute) {
+      throw new Error('Local route server is not available in this app build.');
+    }
+
+    const record = route as Record<string, unknown>;
+    const routingConfig = getRouteRoutingConfig(route);
+    const candidates = getRouteAttachedCandidates(route);
+    const routerEndpointUrl = String(routingConfig.router_endpoint_url ?? record.router_endpoint_url ?? '').trim();
+    if (!routerEndpointUrl) {
+      throw new Error('This route does not include a local router endpoint URL.');
+    }
+
+    if (candidates.length === 0) {
+      throw new Error('This route does not include attached endpoint URLs for local routing.');
+    }
+
+    return window.desktopBridge.startLocalRoute({
+      routeId,
+      name: String(record.name ?? routeId),
+      routerEndpointUrl,
+      routerModelId: String(routingConfig.routing_algorithm ?? ''),
+      candidates,
+    });
+  }
+
+  async function validateLocalRouteCandidates(routerEndpointUrl: string, candidates: Record<string, unknown>[]) {
+    if (!window.desktopBridge?.getLocalModelMetrics) {
+      return;
+    }
+
+    const normalizedRouterUrl = normalizeLocalEndpointUrl(routerEndpointUrl);
+    for (const candidate of candidates) {
+      const endpointUrl = String(candidate.endpoint_url ?? candidate.endpointUrl ?? '').trim();
+      const modelId = String(candidate.model_id ?? candidate.modelId ?? '').trim();
+      const name = String(candidate.endpoint_name ?? candidate.name ?? modelId ?? 'candidate');
+      if (!endpointUrl) {
+        throw new Error(`${name} does not have a local endpoint URL. Deploy/register the model before attaching it to a local route.`);
+      }
+
+      if (normalizeLocalEndpointUrl(endpointUrl) === normalizedRouterUrl) {
+        throw new Error(`${name} points to the router URL (${endpointUrl}). Attach the actual model server URL, not the router model URL.`);
+      }
+
+      const metrics = await window.desktopBridge.getLocalModelMetrics({ endpointUrl });
+      if (!metrics.healthy) {
+        throw new Error(`${name} is not reachable at ${endpointUrl}. Start/deploy that model before creating the local route.`);
+      }
+
+      if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.includes(modelId)) {
+        throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} reports: ${metrics.modelIds.join(', ')}. Update the endpoint URL or redeploy the model.`);
+      }
+    }
+  }
+
+  async function validateSelfHostedEndpointRegistration(endpointUrl: string, modelId: string, name: string) {
+    if (!window.desktopBridge?.getLocalModelMetrics || !isLocalEndpointUrl(endpointUrl)) {
+      return;
+    }
+
+    const metrics = await window.desktopBridge.getLocalModelMetrics({ endpointUrl });
+    if (!metrics.healthy) {
+      throw new Error(`${name} is not reachable at ${endpointUrl}. Start the model server first, then register the URL.`);
+    }
+
+    if (Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
+      const normalizedModelIds = metrics.modelIds.map((value) => value.toLowerCase());
+      if (!normalizedModelIds.includes(modelId.toLowerCase())) {
+        throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} is serving: ${metrics.modelIds.join(', ')}. Use the actual server URL for ${modelId}; do not reuse the router URL.`);
+      }
+    }
+  }
+
+  async function handleUseEndpointInRoute(endpointId: string, endpointName: string) {
+    setRouteInitialEndpointId(endpointId);
+    setIntelligentEndpointName((current) => current || `${endpointName} route`);
+    setActiveSection('routing');
+    if (session) {
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
+    }
+  }
+
+  async function handleDeleteLocalDeployment(deployment: {
+    endpointId: string;
+    endpointUrl: string;
+    modelId: string;
+    name: string;
+    runtime: string;
+    registered: boolean;
+  }) {
+    if (!session) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete local model "${deployment.name}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setBusy(`delete-local:${deployment.endpointUrl}`);
+    try {
+      if (deployment.registered) {
+        await deleteInferenceEndpoint(settingsDraft.apiBaseUrl, session, deployment.endpointId);
+      }
+
+      if (window.desktopBridge?.deleteLocalModel) {
+        await window.desktopBridge.deleteLocalModel({
+          endpointUrl: deployment.endpointUrl,
+          modelId: deployment.modelId,
+          runtime: deployment.runtime,
+        });
+      }
+
+      setLocalDeployments((current) => current.filter((item) => !isSameLocalDeploymentByKey(item, deployment)));
+      setLocalModelMetrics((current) => {
+        const next = { ...current };
+        delete next[deployment.endpointUrl];
+        return next;
+      });
+      setMessage({ tone: 'success', text: 'Local model deleted.' });
+      await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
+    } catch (error) {
+      const rawErrorMessage = error instanceof Error ? error.message : 'Failed to delete local model.';
+      const errorMessage = rawErrorMessage.includes("No handler registered for 'app:delete-local-model'")
+        ? 'Local model deletion is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then delete again.'
+        : rawErrorMessage;
+      setMessage({ tone: 'error', text: errorMessage });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleInstallLibrary(name: ServingLibrary) {
+    if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) return;
+    setBusy(`install-${name}`);
+    try {
+      await window.desktopBridge.installLibrary(name);
+      const status = await window.desktopBridge.checkLibrary(name);
+      if (name === 'transformers') {
+        const pytorchStatus = await window.desktopBridge.checkLibrary('pytorch');
+        setLibraries((current) => ({ ...current, transformers: status, pytorch: pytorchStatus }));
+        setMessage({ tone: 'success', text: 'Transformers and PyTorch installed successfully.' });
+      } else {
+        setLibraries((current) => ({ ...current, [name]: status }));
+        setMessage({ tone: 'success', text: `${formatLocalRuntime(name)} installed successfully.` });
+      }
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : `Failed to install ${name}.` });
+      throw error;
     } finally {
       setBusy(null);
     }
@@ -1213,6 +1845,19 @@ function App() {
         </div>
       ) : null}
 
+      {activeSection === 'overview' ? (
+        <div className="app-topbar">
+          <div className="welcome-copy">
+            <strong>Welcome</strong>
+            <span>{getGreeting()}, {getWelcomeName(session)}</span>
+          </div>
+          <div className="top-credit-pill">
+            <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
+            <span>Available Credits</span>
+          </div>
+        </div>
+      ) : null}
+
       <main className="main-stage" style={{ padding: '20px' }}>
         {activeSection === 'overview' ? (
           <OverviewPage
@@ -1230,6 +1875,10 @@ function App() {
             onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
             onSectionChange={setActiveSection}
+            onOpenRoute={(routeId) => {
+              setRouteInitialViewId(routeId);
+              setActiveSection('routing');
+            }}
           />
         ) : null}
 
@@ -1249,16 +1898,26 @@ function App() {
                 validation={validationResult}
                 machine={dashboard.machineDetails}
                 libraries={libraries}
+                selectedLibrary={selfHostForm.serving_library}
                 busy={busy}
                 message={message}
                 deploymentProgress={deploymentProgress}
+                onSelectLibrary={(servingLibrary) => setSelfHostForm((current) => ({ ...current, serving_library: servingLibrary }))}
                 onInstall={handleInstallLibrary}
                 onRegister={handleDeploySelfHostedModel}
                 onCancelDeploy={handleCancelSelfHostedDeployment}
               />
             )}
+            localDeployments={localDeployments}
+            localModelMetrics={localModelMetrics}
             onFormChange={setSelfHostForm}
-            onSubmit={handleRegisterSelfHosted}
+            onSubmit={(event) => {
+              event?.preventDefault();
+              return handleDeploySelfHostedModel();
+            }}
+            onInstallLibrary={handleInstallLibrary}
+            onUseInRoute={handleUseEndpointInRoute}
+            onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
         ) : null}
 
@@ -1273,6 +1932,7 @@ function App() {
             onCreate={handleCreateInstance}
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}
+            onUseEndpointInRoute={handleUseEndpointInRoute}
           />
         ) : null}
 
@@ -1293,15 +1953,21 @@ function App() {
           <RoutingPage
             dashboard={dashboard}
             intelligentEndpointName={intelligentEndpointName}
-            inferenceForm={inferenceForm}
-            attachForm={attachForm}
             busy={busy}
             onIntelligentEndpointNameChange={setIntelligentEndpointName}
-            onInferenceFormChange={setInferenceForm}
-            onAttachFormChange={setAttachForm}
-            onCreateIntelligentEndpoint={handleCreateIntelligentEndpoint}
-            onCreateInferenceEndpoint={handleCreateInferenceEndpoint}
-            onAttachEndpoint={handleAttachEndpoint}
+            onCreateRoute={handleCreateRoute}
+            onCopyRoute={handleCopyRoute}
+            onDeleteRoute={handleDeleteRoute}
+            onCreateSelfHosting={() => setActiveSection('selfHosting')}
+            onSetupRouterEndpoint={handleSetupRouterEndpoint}
+            onInstallLibrary={handleInstallLibrary}
+            libraries={libraries}
+            localDeployments={localDeployments}
+            localModelMetrics={localModelMetrics}
+            initialEndpointId={routeInitialEndpointId}
+            onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
+            initialRouteId={routeInitialViewId}
+            onInitialRouteConsumed={() => setRouteInitialViewId(null)}
           />
         ) : null}
 
@@ -1325,6 +1991,355 @@ function App() {
       </main>
     </AppLayout>
   );
+}
+
+function buildAttachedInferenceEndpointPayload(
+  endpointId: string,
+  routeName: string,
+  inputModality: string,
+  modelId: string,
+  inferenceEndpoints: EndpointItem[],
+  instances: InstanceItem[],
+  localDeployments: LocalModelDeployment[],
+  models: Record<string, unknown>[],
+) {
+      const endpoint = inferenceEndpoints.find((item) => {
+        const record = item as Record<string, unknown>;
+        return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
+      });
+  const instance = instances.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
+  });
+  const localDeployment = localDeployments.find((item) => getLocalDeploymentSelectionId(item) === endpointId);
+  const model = models.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
+  });
+  const endpointRecord = (endpoint ?? instance ?? (localDeployment ? {
+    name: localDeployment.name,
+    model_id: localDeployment.modelId,
+    endpoint_url: localDeployment.endpointUrl,
+  } : {})) as Record<string, unknown>;
+  const modelRecord = (model ?? {}) as Record<string, unknown>;
+  const outputModalities = Array.isArray(modelRecord.outputModalities)
+    ? modelRecord.outputModalities
+    : Array.isArray(modelRecord.output_modalities)
+      ? modelRecord.output_modalities
+      : [];
+
+  return {
+    endpoint_id: endpoint ? endpointId : localDeployment ? getLocalDeploymentSelectionId(localDeployment) : endpointId,
+    endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
+    endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
+    model_id: String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? ''),
+    input_modality: inputModality,
+    output_modality: String(outputModalities[0] ?? 'text'),
+  };
+}
+
+function getAttachedInferenceEndpointName(endpoint: Record<string, unknown>, fallbackName: string): string {
+  const explicitName = endpoint.endpoint_name ?? endpoint.name ?? endpoint.instance_name;
+  if (explicitName) {
+    return String(explicitName);
+  }
+
+  return fallbackName;
+}
+
+function getLocalDeploymentSelectionId(deployment: LocalModelDeployment): string {
+  return `local:${deployment.endpointUrl}::${deployment.modelId}`;
+}
+
+function getInferenceEndpointIdFromRecord(endpoint: EndpointItem, index: number): string {
+  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+}
+
+function getEndpointIdFromPayload(payload: Record<string, unknown>): string | undefined {
+  const candidates = [
+    payload.intelligent_endpoint_id,
+    payload.inference_endpoint_id,
+    payload.endpoint_id,
+    payload.id,
+    typeof payload.intelligent_endpoint === 'object' && payload.intelligent_endpoint ? (payload.intelligent_endpoint as Record<string, unknown>).intelligent_endpoint_id : undefined,
+    typeof payload.intelligent_endpoint === 'object' && payload.intelligent_endpoint ? (payload.intelligent_endpoint as Record<string, unknown>).endpoint_id : undefined,
+    typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).endpoint_id : undefined,
+    typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).intelligent_endpoint_id : undefined,
+    typeof payload.endpoint === 'object' && payload.endpoint ? (payload.endpoint as Record<string, unknown>).inference_endpoint_id : undefined,
+  ];
+  const endpointId = candidates.find((value) => typeof value === 'string' && value.trim());
+  return endpointId ? String(endpointId) : undefined;
+}
+
+function getLocalRouteChatUrl(route?: EndpointItem): string | null {
+  if (!route) {
+    return null;
+  }
+
+  const record = route as Record<string, unknown>;
+  const routingConfig = getRouteRoutingConfig(route);
+  const candidates = [
+    routingConfig.local_route_endpoint_url,
+    record.router_endpoint_url,
+    record.local_route_endpoint_url,
+  ];
+  const localEndpointUrl = candidates.find((value) => typeof value === 'string' && isLocalEndpointUrl(value));
+  if (!localEndpointUrl) {
+    return null;
+  }
+
+  return toOpenAiChatCompletionsUrl(String(localEndpointUrl));
+}
+
+function getRouteRoutingConfig(route: EndpointItem): Record<string, unknown> {
+  const record = route as Record<string, unknown>;
+  const routingConfig = record.routing_config ?? record.route_config ?? record.config;
+  if (typeof routingConfig === 'object' && routingConfig) {
+    return routingConfig as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function getRouteAttachedCandidates(route: EndpointItem): Record<string, unknown>[] {
+  const record = route as Record<string, unknown>;
+  const attachedEndpoints = record.attached_endpoints ?? record.attachedEndpoints;
+  if (!attachedEndpoints || typeof attachedEndpoints !== 'object') {
+    return [];
+  }
+
+  const groups = attachedEndpoints as Record<string, unknown>;
+  const values = [
+    groups.inference_api,
+    groups.inferenceApi,
+    groups.dedicated,
+    groups.local,
+  ].filter(Boolean);
+
+  return values.flatMap((value) => Array.isArray(value) ? value : [value])
+    .filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null)
+    .filter((candidate) => typeof (candidate.endpoint_url ?? candidate.endpointUrl) === 'string');
+}
+
+function toOpenAiChatCompletionsUrl(endpointUrl: string): string {
+  const normalized = endpointUrl.trim().replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (/\/v1$/i.test(normalized)) {
+    return `${normalized}/chat/completions`;
+  }
+
+  return `${normalized}/v1/chat/completions`;
+}
+
+function isLocalEndpointUrl(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const endpointUrl = String(value).toLowerCase();
+  return endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1') || endpointUrl.includes('0.0.0.0');
+}
+
+function getPreferredLocalRuntime(libraries: Record<ServingLibrary, boolean>): 'vllm' | 'ollama' | null {
+  if (libraries.vllm) {
+    return 'vllm';
+  }
+
+  if (libraries.ollama) {
+    return 'ollama';
+  }
+
+  return null;
+}
+
+type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+function getSupportedPlatform(value: unknown): SupportedPlatform {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('win')) return 'windows';
+  if (normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.includes('linux')) return 'linux';
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('windows')) return 'windows';
+    if (userAgent.includes('mac')) return 'macos';
+    if (userAgent.includes('linux')) return 'linux';
+  }
+  return 'unknown';
+}
+
+function getRouterRuntimeUnsupportedReason(runtime: ServingLibrary, platform: SupportedPlatform, routerModelId: string): string | null {
+  const gguf = isOllamaCompatibleModelId(routerModelId);
+
+  if (!['vllm', 'ollama', 'transformers'].includes(runtime)) {
+    return `${formatLocalRuntime(runtime)} can be installed for local model work, but routing auto-hosting currently supports vLLM, Transformers, and Ollama. Select Transformers for Hugging Face router models or Ollama for GGUF router models.`;
+  }
+
+  if (runtime === 'ollama') {
+    return gguf ? null : `${routerModelId} is not a GGUF/llama.cpp router model, so Ollama cannot host it. Select Transformers or vLLM.`;
+  }
+
+  if (runtime === 'transformers') {
+    return gguf ? `${routerModelId} is a GGUF/llama.cpp router model. Select Ollama for this model format.` : null;
+  }
+
+  if (gguf) {
+    return `${routerModelId} is a GGUF/llama.cpp router model. Select Ollama for this model format.`;
+  }
+
+  if (runtime === 'vllm' && platform === 'windows') {
+    return `${routerModelId} is a Hugging Face Transformers router model. One-click router deployment with vLLM is not supported on this OS. Select Transformers for Windows.`;
+  }
+
+  return null;
+}
+
+function getRequiredRouterRuntime(routerModelId: string, platform: SupportedPlatform): 'vllm' | 'ollama' | 'transformers' {
+  if (isOllamaCompatibleModelId(routerModelId)) {
+    return 'ollama';
+  }
+
+  return platform === 'windows' ? 'transformers' : 'vllm';
+}
+
+function isLaunchableLocalRuntime(runtime: ServingLibrary): runtime is 'vllm' | 'ollama' | 'transformers' {
+  return runtime === 'vllm' || runtime === 'ollama' || runtime === 'transformers';
+}
+
+function formatLocalRuntime(runtime: ServingLibrary): string {
+  const labels: Record<ServingLibrary, string> = {
+    vllm: 'vLLM',
+    sglang: 'SGLang',
+    tensorrt: 'TensorRT-LLM',
+    ollama: 'Ollama',
+    llama_cpp: 'llama.cpp',
+    pytorch: 'PyTorch',
+    transformers: 'Transformers',
+    dynamo: 'Dynamo',
+  };
+  return labels[runtime] ?? runtime;
+}
+
+function getLocalDeploymentHardwareBlockReason(
+  runtime: ServingLibrary,
+  validation: ValidationResult | null,
+  machine: DashboardState['machineDetails']
+): string | null {
+  if (!validation || validation.status !== 'warning') {
+    return null;
+  }
+
+  const acceleratorMemory = getAcceleratorMemorySummary(machine);
+  const totalVramGb = acceleratorMemory.totalGb;
+  const totalRamGb = machine?.memory?.totalGb ?? 0;
+  const hasInsufficientVram = totalVramGb < validation.effectiveMinVramGb;
+
+  if (!hasInsufficientVram) {
+    return null;
+  }
+
+  if ((runtime === 'vllm' || runtime === 'sglang' || runtime === 'dynamo') && totalVramGb < validation.effectiveMinVramGb) {
+    return `${formatLocalRuntime(runtime)} needs enough GPU ${acceleratorMemory.label} for this model. Required: ${validation.effectiveMinVramGb.toFixed(1)}GB, available: ${totalVramGb.toFixed(1)}GB.`;
+  }
+
+  if (runtime === 'transformers') {
+    const cpuUnsafe = validation.modelWeightGb >= 8 || (totalRamGb > 0 && validation.modelWeightGb > totalRamGb * 0.45);
+    if (cpuUnsafe) {
+      return `This model is too large for reliable one-click CPU Transformers hosting on this machine. Required: about ${validation.effectiveMinVramGb.toFixed(1)}GB ${acceleratorMemory.label}, available: ${totalVramGb.toFixed(1)}GB, system RAM: ${totalRamGb.toFixed(1)}GB. Choose a smaller model, a quantized/GGUF model, or a machine with more accelerator memory.`;
+    }
+  }
+
+  return null;
+}
+
+function getLocalRuntimeFromEndpointUrl(endpointUrl: string): ServingLibrary {
+  try {
+    return new URL(endpointUrl).port === '11434' ? 'ollama' : 'vllm';
+  } catch {
+    return endpointUrl.includes(':11434') ? 'ollama' : 'vllm';
+  }
+}
+
+function normalizeServingLibrary(value: unknown, fallback: ServingLibrary = 'vllm'): ServingLibrary {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases: Record<string, ServingLibrary> = {
+    vllm: 'vllm',
+    sglang: 'sglang',
+    tensorrt: 'tensorrt',
+    tensorrt_llm: 'tensorrt',
+    tensor_rt: 'tensorrt',
+    tensor_rt_llm: 'tensorrt',
+    ollama: 'ollama',
+    llama_cpp: 'llama_cpp',
+    llama_cpp_python: 'llama_cpp',
+    llamacpp: 'llama_cpp',
+    llama: 'llama_cpp',
+    pytorch: 'pytorch',
+    torch: 'pytorch',
+    transformers: 'transformers',
+    transformer: 'transformers',
+    dynamo: 'dynamo',
+  };
+
+  return aliases[normalized] ?? fallback;
+}
+
+function isOllamaCompatibleModelId(modelId: string): boolean {
+  const normalized = modelId.trim().toLowerCase();
+  return normalized.includes('gguf')
+    || normalized.endsWith('.gguf')
+    || normalized.startsWith('hf.co/')
+    || !normalized.includes('/');
+}
+
+function isValidLocalDeployment(value: unknown): value is LocalModelDeployment {
+  const record = value as Partial<LocalModelDeployment> | null;
+  return Boolean(record)
+    && typeof record?.endpointUrl === 'string'
+    && record.endpointUrl.trim().length > 0
+    && typeof record.modelId === 'string'
+    && record.modelId.trim().length > 0
+    && typeof record.name === 'string'
+    && servingLibraries.includes(record.runtime as ServingLibrary)
+    && typeof record.deployedAt === 'string';
+}
+
+function isSameLocalDeployment(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {
+  return left.endpointUrl === right.endpointUrl && left.modelId === right.modelId;
+}
+
+function upsertLocalDeployment(current: LocalModelDeployment[], nextDeployment: LocalModelDeployment): LocalModelDeployment[] {
+  return [
+    nextDeployment,
+    ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
+  ];
+}
+
+function isSameLocalDeploymentByKey(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {
+  return getLocalDeploymentIdentityKey(left) === getLocalDeploymentIdentityKey(right);
+}
+
+function getLocalDeploymentIdentityKey(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): string {
+  return `${normalizeLocalEndpointUrl(deployment.endpointUrl)}::${deployment.modelId}`;
+}
+
+function normalizeLocalEndpointUrl(endpointUrl: string): string {
+  return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
+}
+
+function getWelcomeName(session: DesktopSession): string {
+  const emailName = session.email?.split('@')[0]?.trim();
+  return emailName || 'back';
+}
+
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'good morning';
+  if (hour < 17) return 'good afternoon';
+  return 'good evening';
 }
 
 export default App;

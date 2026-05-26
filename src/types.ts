@@ -10,6 +10,10 @@ export interface DesktopSettings {
   apiBaseUrl: string;
 }
 
+export type ServingLibrary = 'vllm' | 'sglang' | 'tensorrt' | 'ollama' | 'llama_cpp' | 'pytorch' | 'transformers' | 'dynamo';
+
+export type LaunchableServingLibrary = Extract<ServingLibrary, 'vllm' | 'ollama' | 'transformers'>;
+
 export interface MachineCpuDetails {
   brand?: string;
   manufacturer?: string;
@@ -39,9 +43,14 @@ export interface MachineGpuDetails {
   vendor?: string;
   model?: string;
   gpuType?: string;
+  memoryKind?: 'dedicated' | 'unified' | string;
+  memorySource?: string;
   vramBytes?: number;
   vramMb?: number;
   vramGb?: number;
+  reportedVramMb?: number | null;
+  unifiedMemoryBytes?: number | null;
+  unifiedMemoryGb?: number | null;
   driverVersion?: string;
   temperatureC?: number;
   utilizationPercent?: number;
@@ -129,6 +138,7 @@ export interface EndpointItem {
   machine_id?: string;
   machine_name?: string;
   api_format?: string;
+  serving_library?: ServingLibrary | string;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -208,6 +218,8 @@ export interface CreateInferenceFormState {
   top_p: number;
   temperature: number;
   max_tokens: number;
+  endpoint_role?: 'inference' | 'router';
+  serving_library?: ServingLibrary;
 }
 
 export interface HfModelInfo {
@@ -224,11 +236,12 @@ export interface HfModelInfo {
 }
 
 export interface LocalModelDeployment {
+  endpointId?: string;
   endpointUrl: string;
   modelId: string;
   name: string;
   pid: number | null;
-  runtime: 'vllm';
+  runtime: ServingLibrary;
   deployedAt: string;
 }
 
@@ -236,6 +249,7 @@ export interface LocalModelMetrics {
   endpointUrl: string;
   healthy: boolean;
   modelCount: number;
+  modelIds?: string[];
   uptimeSeconds: number | null;
   requestsRunning: number | null;
   requestsWaiting: number | null;

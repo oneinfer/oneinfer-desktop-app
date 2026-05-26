@@ -1,8 +1,8 @@
-import { useEffect, type FormEvent } from 'react';
-import { LoaderCircle, Rocket, Server } from 'lucide-react';
+import { useEffect, useState, type FormEvent } from 'react';
+import { ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { CreateInstanceFormState, DashboardState } from '../types';
+import type { CreateInstanceFormState, DashboardState, EndpointItem } from '../types';
 import { formatValue } from '../utils/format';
 
 export function InstancesPage(props: {
@@ -15,7 +15,9 @@ export function InstancesPage(props: {
   onCreate: (event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   onAction: (action: 'start-instance' | 'stop-instance' | 'restart-instance', instanceId: string, provider: string) => void;
   onDelete: (instanceId: string, provider: string) => void;
+  onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
 }) {
+  const [detailsGpu, setDetailsGpu] = useState<GpuCardOption | null>(null);
   const providers = getProviderOptions(props.dashboard.providerInfo);
   const validProviderName = providers.some((provider) => provider.value === props.instanceForm.provider_name)
     ? props.instanceForm.provider_name
@@ -32,6 +34,8 @@ export function InstancesPage(props: {
   const gpuPricePerHour = selectedGpu?.pricePerHourUsd ?? 0;
   const diskPricePerHour = calculateDiskPricePerHour(props.instanceForm.disk_size);
   const totalPricePerHour = gpuPricePerHour + diskPricePerHour;
+  const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints);
+  const gpuCards = getGpuCardOptions(props.dashboard.providerInfo, props.dashboard.gpuSpecs);
 
   useEffect(() => {
     if (!props.showCreateInstanceModal || providers.length === 0) {
@@ -79,6 +83,23 @@ export function InstancesPage(props: {
     props.onModalChange(true);
   }
 
+  function openCreateModalForGpu(gpu: GpuCardOption) {
+    const provider = getSelectedProviderData(props.dashboard.providerInfo, gpu.providerName);
+    const matchingGpu = provider.instances.find((instance) => instance.gpu_id === gpu.gpuId) ?? provider.instances[0];
+    const image = provider.images[0];
+
+    props.onFormChange({
+      ...props.instanceForm,
+      provider_name: gpu.providerName,
+      gpu_id: matchingGpu?.gpu_id ?? gpu.gpuId,
+      gpu_num: Math.max(Math.min(props.instanceForm.gpu_num || 1, matchingGpu?.gpu_num ?? 1), 1),
+      region: matchingGpu?.regions?.[0] ?? '',
+      image_url: image?.image_url ?? props.instanceForm.image_url,
+      startup_script: image?.start_command ?? props.instanceForm.startup_script,
+    });
+    props.onModalChange(true);
+  }
+
   return (
     <div className="flex flex-col">
       <header className="mb-0.5 flex h-8 shrink-0 items-center justify-between">
@@ -88,19 +109,22 @@ export function InstancesPage(props: {
         </button>
       </header>
 
-      <div className="glass-panel mb-5 mt-4 flex shrink-0 items-center rounded-[0.875rem] px-5 py-3 text-[0.9rem] text-[var(--muted)]">
-        Loaded {providers.length} providers and {props.dashboard.gpuSpecs.length} GPU specs for instance setup.
+      <div className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {gpuCards.length === 0 ? (
+          <div className="glass-panel col-span-full p-6 text-[0.95rem] text-[var(--muted)]">No GPUs found.</div>
+        ) : null}
+        {gpuCards.map((gpu) => (
+          <GpuMarketplaceCard
+            gpu={gpu}
+            key={gpu.cardId}
+            onCreate={openCreateModalForGpu}
+            onDetails={setDetailsGpu}
+          />
+        ))}
       </div>
 
-      <div className="glass-panel w-full overflow-hidden">
-        {props.dashboard.instances.length === 0 ? (
-          <div className="p-10 text-center">
-            <p className="mb-5 text-base text-[var(--muted)]">No instances returned yet. Create a new instance to get started.</p>
-            <button className="primary-button mx-auto" onClick={openCreateModal} type="button">
-              Create Instance
-            </button>
-          </div>
-        ) : (
+      {props.dashboard.instances.length > 0 ? (
+        <div className="glass-panel w-full overflow-hidden">
           <div className="table-shell">
             <table className="w-full border-collapse">
               <thead>
@@ -140,7 +164,32 @@ export function InstancesPage(props: {
               </tbody>
             </table>
           </div>
-        )}
+        </div>
+      ) : null}
+
+      <div className="glass-panel mt-5 p-5">
+        <div className="panel-header" style={{ marginBottom: '12px' }}>
+          <div className="panel-title">
+            <Server size={18} />
+            <h3>Cloud Endpoints</h3>
+          </div>
+          <span className="status-pill soft">{cloudEndpoints.length} registered</span>
+        </div>
+        <div className="form-hint">
+          Registered cloud inference endpoints are available as routing candidates when the Cloud source is selected.
+        </div>
+        <div className="cloud-endpoint-list">
+          {cloudEndpoints.length === 0 ? (
+            <div className="empty-state">No cloud inference endpoints registered yet.</div>
+          ) : null}
+          {cloudEndpoints.map((endpoint) => (
+            <CloudEndpointCard
+              endpoint={endpoint}
+              key={endpoint.endpointId}
+              onUseEndpointInRoute={props.onUseEndpointInRoute}
+            />
+          ))}
+        </div>
       </div>
 
       <Modal title={selectedGpu ? `Deploy ${selectedGpu.name} Instance` : 'Create Instance'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
@@ -317,6 +366,59 @@ export function InstancesPage(props: {
           </div>
         </form>
       </Modal>
+
+      <Modal title="Specifications" isOpen={Boolean(detailsGpu)} onClose={() => setDetailsGpu(null)}>
+        {detailsGpu ? (
+          <div className="gpu-spec-details-modal">
+            <div className="gpu-spec-hero">
+              <div className="gpu-spec-title-row">
+                <div className="gpu-spec-title">
+                  {detailsGpu.brand.toLowerCase().includes('nvidia') ? (
+                    <img
+                      alt="NVIDIA"
+                      className="gpu-spec-logo"
+                      src="https://i.ibb.co/fGV3cccB/nvidia-small-logo-1.png"
+                    />
+                  ) : null}
+                  <div>
+                    <div className="gpu-spec-brand">{detailsGpu.brand}</div>
+                    <h3>{detailsGpu.name}</h3>
+                    {detailsGpu.productCategory ? <p>{detailsGpu.productCategory}</p> : null}
+                  </div>
+                </div>
+                <span className="status-pill soft">{detailsGpu.providerName}</span>
+              </div>
+              {detailsGpu.notes ? <p className="gpu-spec-note">{detailsGpu.notes}</p> : null}
+              <div className="gpu-spec-basic-grid">
+                <DetailStat label="Best price" value={detailsGpu.bestPriceLabel} />
+                <DetailStat label="VRAM" value={detailsGpu.vram || 'N/A'} />
+                <DetailStat label="CPU" value={detailsGpu.cpuInfo || 'N/A'} />
+                <DetailStat label="RAM" value={detailsGpu.ram || 'N/A'} />
+              </div>
+            </div>
+
+            <GpuSpecSection
+              accent="blue"
+              className="gpu-spec-section-wide"
+              entries={detailsGpu.gpuPerformanceEntries}
+              title="GPU Performance"
+            />
+
+            <div className="gpu-spec-two-col">
+              <GpuSpecSection accent="green" entries={detailsGpu.memorySpecEntries} title="Memory Specs" />
+              <GpuSpecSection accent="purple" entries={detailsGpu.inferencePerformanceEntries} title="Inference Performance" />
+            </div>
+
+            <GpuSpecSection
+              accent="amber"
+              className="gpu-spec-section-wide"
+              entries={detailsGpu.technicalSpecEntries}
+              title="Technical Specs"
+            />
+
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
@@ -327,6 +429,130 @@ type ProviderImageOption = {
   start_command: string;
 };
 
+interface CloudEndpointRow {
+  endpointId: string;
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  provider: string;
+  status: string;
+  updatedAt: string;
+}
+
+function CloudEndpointCard(props: {
+  endpoint: CloudEndpointRow;
+  onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
+}) {
+  return (
+    <div className="cloud-endpoint-card">
+      <div className="cloud-endpoint-main">
+        <div style={{ minWidth: 0 }}>
+          <strong>{props.endpoint.name}</strong>
+          <span>{props.endpoint.provider} / {props.endpoint.modelId}</span>
+          {props.endpoint.endpointUrl ? <code>{props.endpoint.endpointUrl}</code> : null}
+        </div>
+        <span className={`status-pill ${isActiveEndpointStatus(props.endpoint.status) ? 'active' : 'soft'}`}>{props.endpoint.status}</span>
+      </div>
+      <div className="cloud-endpoint-meta">
+        <span>Endpoint ID: {props.endpoint.endpointId}</span>
+        <span>{props.endpoint.updatedAt}</span>
+      </div>
+      <div className="cloud-endpoint-actions">
+        <button className="ghost-button" type="button" onClick={() => props.onUseEndpointInRoute(props.endpoint.endpointId, props.endpoint.name)}>
+          <Orbit size={14} />
+          Use in route
+        </button>
+        <button className="ghost-button" type="button" disabled={!props.endpoint.endpointUrl} onClick={() => navigator.clipboard?.writeText(props.endpoint.endpointUrl)}>
+          <Copy size={14} />
+          Copy URL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function getCloudEndpointRows(endpoints: EndpointItem[]): CloudEndpointRow[] {
+  return endpoints
+    .filter((endpoint) => getEndpointSource(endpoint) === 'cloud')
+    .map((endpoint, index) => {
+      const endpointId = getEndpointId(endpoint, index);
+      const modelId = String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `model-${index + 1}`);
+      return {
+        endpointId,
+        endpointUrl: String(endpoint.endpoint_url ?? ''),
+        modelId,
+        name: String(endpoint.name ?? endpoint.endpoint_name ?? modelId),
+        provider: String(endpoint.provider ?? endpoint.endpoint_source ?? 'cloud'),
+        status: String(endpoint.status ?? endpoint.creation_status ?? 'ready'),
+        updatedAt: String(endpoint.updated_at ?? endpoint.created_at ?? 'Registered endpoint'),
+      };
+    });
+}
+
+function getEndpointId(endpoint: EndpointItem, index: number): string {
+  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+}
+
+type EndpointSource = 'local' | 'cloud' | 'openbandwidth' | 'closed_source_api';
+
+function getEndpointSource(endpoint: EndpointItem): EndpointSource {
+  const record = endpoint as Record<string, unknown>;
+  const sourceText = [
+    record.endpoint_source,
+    record.source,
+    record.endpoint_type,
+    record.provider,
+    record.deployment_target,
+    record.endpoint_url,
+    record.name,
+    record.endpoint_name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (sourceText.includes('openbandwidth') || sourceText.includes('open_bandwidth') || sourceText.includes('open bandwidth')) {
+    return 'openbandwidth';
+  }
+
+  if (String(record.deployment_target ?? '').toLowerCase() === 'local' || isLocalEndpointUrl(record.endpoint_url)) {
+    return 'local';
+  }
+
+  if (
+    sourceText.includes('closed_source_api')
+    || sourceText.includes('closed source')
+    || sourceText.includes('close source')
+    || isClosedSourceProvider(record.provider)
+  ) {
+    return 'closed_source_api';
+  }
+
+  return 'cloud';
+}
+
+function isLocalEndpointUrl(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const endpointUrl = String(value).toLowerCase();
+  return endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1') || endpointUrl.includes('0.0.0.0');
+}
+
+function isClosedSourceProvider(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return ['openai', 'anthropic', 'groq', 'deepseek', 'google', 'grok', 'zai', 'minimax', 'sarvam'].includes(String(value).toLowerCase());
+}
+
+function isActiveEndpointStatus(status: string): boolean {
+  const normalizedStatus = status.toLowerCase();
+  return normalizedStatus === 'active' || normalizedStatus === 'running' || normalizedStatus === 'ready';
+}
+
 type ProviderGpuOption = {
   gpu_id: string;
   gpu_num: number;
@@ -334,7 +560,137 @@ type ProviderGpuOption = {
   label: string;
   regions: string[];
   pricePerHourUsd: number;
+  chipId: string;
+  cpuId: string;
+  brand: string;
+  vram: string;
+  cpuInfo: string;
+  ram: string;
 };
+
+type GpuCardOption = {
+  cardId: string;
+  gpuId: string;
+  chipId: string;
+  cpuId: string;
+  name: string;
+  brand: string;
+  providerName: string;
+  bestPriceLabel: string;
+  pricePerHourUsd: number | null;
+  regions: string[];
+  vram: string;
+  cpuInfo: string;
+  ram: string;
+  isNew: boolean;
+  productCategory: string;
+  notes: string;
+  gpuPerformanceEntries: SpecEntry[];
+  memorySpecEntries: SpecEntry[];
+  inferencePerformanceEntries: SpecEntry[];
+  technicalSpecEntries: SpecEntry[];
+};
+
+type SpecEntry = {
+  label: string;
+  value: string;
+};
+
+function GpuMarketplaceCard(props: {
+  gpu: GpuCardOption;
+  onCreate: (gpu: GpuCardOption) => void;
+  onDetails: (gpu: GpuCardOption) => void;
+}) {
+  return (
+    <div
+      className="gpu-market-card"
+      onClick={() => props.onCreate(props.gpu)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          props.onCreate(props.gpu);
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      {props.gpu.isNew ? (
+        <div className="gpu-new-ribbon"><span>NEW</span></div>
+      ) : null}
+      <div className="gpu-card-header">
+        <div className="gpu-card-title">
+          <img
+            alt="NVIDIA"
+            className="nvidia-mark"
+            src="https://i.ibb.co/fGV3cccB/nvidia-small-logo-1.png"
+          />
+          <h3>{props.gpu.name.replace(/nvidia/gi, '').trim()}</h3>
+        </div>
+        <button
+          className="gpu-details-button"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onDetails(props.gpu);
+          }}
+        >
+          Details
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      <div className="gpu-card-regions">
+        {props.gpu.regions.slice(0, 2).map((region) => (
+          <span className="gpu-region-pill" key={region}>{region}</span>
+        ))}
+        {props.gpu.regions.length > 2 ? (
+          <span className="gpu-region-pill">+{props.gpu.regions.length - 2} more</span>
+        ) : null}
+      </div>
+
+      <div className="gpu-card-spacer" />
+
+      <div className="gpu-spec-row">
+        <span>VRAM</span>
+        <strong>{props.gpu.vram || 'N/A'}</strong>
+      </div>
+
+      <div className="gpu-price-row">
+        <span>Best Price</span>
+        <strong>{props.gpu.bestPriceLabel}</strong>
+      </div>
+    </div>
+  );
+}
+
+function DetailStat(props: { label: string; value: string }) {
+  return (
+    <div className="gpu-detail-stat">
+      <div>{props.label}</div>
+      <strong>{props.value}</strong>
+    </div>
+  );
+}
+
+function GpuSpecSection(props: { accent: 'blue' | 'green' | 'purple' | 'amber'; entries: SpecEntry[]; title: string; className?: string }) {
+  if (props.entries.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className={`gpu-spec-section ${props.className ?? ''}`.trim()}>
+      <h4 className={`gpu-spec-section-title ${props.accent}`}>{props.title}</h4>
+      <div className="gpu-spec-entry-grid">
+        {props.entries.map((entry) => (
+          <div className="gpu-spec-entry" key={`${props.title}-${entry.label}`}>
+            <span>{entry.label}</span>
+            <strong>{entry.value}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function getProviderOptions(providerInfo: DashboardState['providerInfo']) {
   return Object.keys(providerInfo).map((key) => ({
@@ -364,6 +720,8 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
     .map((instance) => {
       const gpu = typeof instance.gpu === 'object' && instance.gpu ? instance.gpu as Record<string, unknown> : {};
       const cpu = typeof instance.cpu === 'object' && instance.cpu ? instance.cpu as Record<string, unknown> : {};
+      const ram = getNestedRecord(instance, 'ram', 'RAM');
+      const vram = getNestedRecord(instance, 'vram', 'VRAM');
       const regions = Array.isArray(instance.regions) ? instance.regions.filter((region): region is string => typeof region === 'string') : [];
       const gpuNum = typeof gpu.number_of_gpus === 'number' ? gpu.number_of_gpus : 1;
       const cpuCores = typeof cpu.number_of_cores === 'number' ? cpu.number_of_cores : null;
@@ -375,6 +733,12 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
         name: String(instance.name ?? instance.instance_name ?? 'GPU'),
         regions,
         pricePerHourUsd: price !== null ? price / 100 : 0,
+        chipId: String(instance.chip_id ?? ''),
+        cpuId: String(instance.cpu_id ?? ''),
+        brand: String(instance.manufacturer ?? 'NVIDIA'),
+        vram: formatGbValue(vram.size_in_gigabytes),
+        cpuInfo: cpuCores ? `${cpuCores} cores` : '',
+        ram: formatGbValue(ram.size_in_gigabytes),
         label: [
           String(instance.name ?? instance.instance_name ?? 'GPU'),
           `${gpuNum} GPU`,
@@ -385,6 +749,196 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
     });
 
   return { images, instances };
+}
+
+function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpecs: DashboardState['gpuSpecs']): GpuCardOption[] {
+  const allGpuInstances = Object.entries(providerInfo).flatMap(([providerName, provider]) => {
+    const instances = Array.isArray(provider.instances) ? provider.instances as Array<Record<string, unknown>> : [];
+    return instances.map((instance) => ({ ...instance, providerName }));
+  }) as Array<Record<string, unknown> & { providerName: string }>;
+
+  const specOptions = gpuSpecs.map((spec) => {
+    const specChipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');
+    const matchingInstances = allGpuInstances.filter((instance) => String(instance.chip_id ?? '') === specChipId);
+    const matchingInstance = matchingInstances.find((instance) => Number(instance.price_per_hour ?? 0) > 0) ?? matchingInstances[0];
+    if (!matchingInstance) {
+      return createGpuCardFromSpec(spec);
+    }
+
+    return createGpuCardFromProviderInstance(matchingInstance, String(spec.modelName ?? spec.gpu_name ?? spec.display_name ?? matchingInstance.name ?? 'GPU'), spec);
+  });
+
+  const specChipIds = new Set(gpuSpecs.map((spec) => String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '')));
+  const orphanOptions = allGpuInstances
+    .filter((instance) => !specChipIds.has(String(instance.chip_id ?? '')))
+    .filter((instance, index, self) => index === self.findIndex((item) => String(item.chip_id ?? item.gpu_id) === String(instance.chip_id ?? instance.gpu_id)))
+    .map((instance) => createGpuCardFromProviderInstance(instance, String(instance.name ?? 'GPU')));
+
+  return [...specOptions, ...orphanOptions]
+    .filter((gpu) => gpu.gpuId || gpu.chipId)
+    .sort((left, right) => (right.pricePerHourUsd ?? -1) - (left.pricePerHourUsd ?? -1));
+}
+
+function createGpuCardFromProviderInstance(instance: Record<string, unknown>, displayName: string, spec?: Record<string, unknown>): GpuCardOption {
+  const cpu = getNestedRecord(instance, 'cpu');
+  const ram = getNestedRecord(instance, 'ram', 'RAM');
+  const vram = getNestedRecord(instance, 'vram', 'VRAM');
+  const price = typeof instance.price_per_hour === 'number' ? instance.price_per_hour / 100 : null;
+  const regions = Array.isArray(instance.regions) ? instance.regions.filter((region): region is string => typeof region === 'string') : [];
+  const chipId = String(instance.chip_id ?? '');
+  const gpuId = String(instance.gpu_id ?? chipId);
+  const memorySpecEntries = getMemorySpecEntries(spec);
+  const specVram = memorySpecEntries.find((entry) => entry.label === 'Size')?.value?.replace(/\s+/g, '');
+
+  return {
+    cardId: `${chipId || gpuId}-${String(instance.providerName ?? 'provider')}`,
+    gpuId,
+    chipId,
+    cpuId: String(instance.cpu_id ?? ''),
+    name: displayName,
+    brand: String(instance.manufacturer ?? 'NVIDIA'),
+    providerName: String(instance.providerName ?? ''),
+    bestPriceLabel: price !== null ? `${formatUsd(price)}/gpu/hr` : 'N/A',
+    pricePerHourUsd: price,
+    regions,
+    vram: formatGbValue(vram.size_in_gigabytes) || specVram || '',
+    cpuInfo: typeof cpu.number_of_cores === 'number' ? `${cpu.number_of_cores} cores` : '',
+    ram: formatGbValue(ram.size_in_gigabytes),
+    isNew: isNewGpu({ chipId, name: displayName }),
+    productCategory: getStringValue(spec?.productCategory ?? spec?.product_category),
+    notes: getStringValue(spec?.notes),
+    gpuPerformanceEntries: getGpuPerformanceEntries(spec),
+    memorySpecEntries,
+    inferencePerformanceEntries: getInferencePerformanceEntries(spec),
+    technicalSpecEntries: getTechnicalSpecEntries(spec),
+  };
+}
+
+function createGpuCardFromSpec(spec: Record<string, unknown>): GpuCardOption {
+  const chipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');
+  const memorySpecs = getNestedRecord(spec, 'memory_specs');
+  const name = String(spec.modelName ?? spec.gpu_name ?? spec.display_name ?? 'GPU');
+  const memorySpecEntries = getMemorySpecEntries(spec);
+
+  return {
+    cardId: chipId || name,
+    gpuId: chipId,
+    chipId,
+    cpuId: '',
+    name,
+    brand: String(spec.manufacturer ?? 'NVIDIA'),
+    providerName: '',
+    bestPriceLabel: 'N/A',
+    pricePerHourUsd: null,
+    regions: [],
+    vram: formatGbValue(memorySpecs.size_gb) || memorySpecEntries.find((entry) => entry.label === 'Size')?.value?.replace(/\s+/g, '') || '',
+    cpuInfo: '',
+    ram: '',
+    isNew: isNewGpu({ chipId, name, launchDate: String(spec.launchDate ?? spec.launch_date ?? '') }),
+    productCategory: getStringValue(spec.productCategory ?? spec.product_category),
+    notes: getStringValue(spec.notes),
+    gpuPerformanceEntries: getGpuPerformanceEntries(spec),
+    memorySpecEntries,
+    inferencePerformanceEntries: getInferencePerformanceEntries(spec),
+    technicalSpecEntries: getTechnicalSpecEntries(spec),
+  };
+}
+
+function getNestedRecord(record: Record<string, unknown>, ...keys: string[]): Record<string, unknown> {
+  const value = keys.map((key) => record[key]).find((item) => item && typeof item === 'object' && !Array.isArray(item));
+  return (value ?? {}) as Record<string, unknown>;
+}
+
+function getNestedSpecRecord(spec: Record<string, unknown> | undefined, ...keys: string[]): Record<string, unknown> {
+  if (!spec) {
+    return {};
+  }
+
+  return getNestedRecord(spec, ...keys);
+}
+
+function getStringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function formatSpecValue(value: unknown, suffix = ''): string {
+  if (value === undefined || value === null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No';
+  }
+
+  return `${value}${suffix}`;
+}
+
+function compactEntries(entries: Array<{ label: string; value: string }>): SpecEntry[] {
+  return entries.filter((entry) => entry.value !== '');
+}
+
+function getGpuPerformanceEntries(spec?: Record<string, unknown>): SpecEntry[] {
+  const performance = getNestedSpecRecord(spec, 'gpuPerformance', 'gpu_performance');
+  return compactEntries([
+    { label: 'AI TOPS', value: formatSpecValue(performance.ai_tops) },
+    { label: 'FP4 TFLOPS', value: formatSpecValue(performance.fp_4_tflops) },
+    { label: 'FP8 TFLOPS', value: formatSpecValue(performance.fp_8_tflops) },
+    { label: 'BF16 TFLOPS', value: formatSpecValue(performance.bf_16_tflops) },
+    { label: 'FP16 TFLOPS', value: formatSpecValue(performance.fp_16_tflops) },
+    { label: 'FP32 TFLOPS', value: formatSpecValue(performance.fp_32_tflops) },
+    { label: 'FP64 TFLOPS', value: formatSpecValue(performance.fp_64_tflops) },
+    { label: 'Pixel Rate', value: formatSpecValue(performance.pixel_rate) },
+    { label: 'Texture Rate', value: formatSpecValue(performance.texture_rate) },
+    { label: 'INT4 TOPS', value: formatSpecValue(performance.int_4_tops) },
+    { label: 'INT8 TOPS', value: formatSpecValue(performance.int_8_tops) },
+    { label: 'Sparse Multiplier', value: formatSpecValue(performance.sparse_performance_multiplier) },
+  ]);
+}
+
+function getMemorySpecEntries(spec?: Record<string, unknown>): SpecEntry[] {
+  const memory = getNestedSpecRecord(spec, 'memory_specs', 'memorySpecs');
+  return compactEntries([
+    { label: 'Size', value: formatSpecValue(memory.size_gb, ' GB') },
+    { label: 'Type', value: formatSpecValue(memory.type) },
+    { label: 'Interface', value: formatSpecValue(memory.interface_bits, '-bit') },
+    { label: 'Bandwidth', value: formatSpecValue(memory.bandwidth_gbs, ' GB/s') },
+    { label: 'ECC Support', value: memory.ecc_support === undefined ? '' : formatSpecValue(Boolean(memory.ecc_support)) },
+  ]);
+}
+
+function getInferencePerformanceEntries(spec?: Record<string, unknown>): SpecEntry[] {
+  const inference = getNestedSpecRecord(spec, 'inference_performance', 'inferencePerformance');
+  return compactEntries([
+    { label: '7B Tokens/sec', value: formatSpecValue(inference.model_7b_tokens_per_sec) },
+    { label: '13B Tokens/sec', value: formatSpecValue(inference.model_13b_tokens_per_sec) },
+    { label: '30B Tokens/sec', value: formatSpecValue(inference.model_30b_tokens_per_sec) },
+    { label: '70B Tokens/sec', value: formatSpecValue(inference.model_70b_tokens_per_sec) },
+  ]);
+}
+
+function getTechnicalSpecEntries(spec?: Record<string, unknown>): SpecEntry[] {
+  const technical = getNestedSpecRecord(spec, 'technical_specs', 'technicalSpecs');
+  return compactEntries([
+    { label: 'Die Size', value: formatSpecValue(technical.die_size_mm2, ' mm²') },
+    { label: 'TDP', value: formatSpecValue(technical.tdp_watts, ' W') },
+    { label: 'Transistors', value: formatSpecValue(technical.transistor_count_billion, 'B') },
+    { label: 'NVLink', value: formatSpecValue(technical.nvlink_version) },
+    { label: 'PCIe', value: formatSpecValue(technical.pcie_version) },
+    { label: 'Process Node', value: formatSpecValue(technical.process_node_nm, ' nm') },
+  ]);
+}
+
+function formatGbValue(value: unknown): string {
+  return typeof value === 'number' && value > 0 ? `${value}GB` : '';
+}
+
+function isNewGpu(gpu: { chipId: string; name: string; launchDate?: string }) {
+  if (gpu.launchDate && !Number.isNaN(new Date(gpu.launchDate).getTime())) {
+    return new Date(gpu.launchDate) > new Date('2024-01-01');
+  }
+
+  const text = `${gpu.chipId} ${gpu.name}`.toLowerCase();
+  return ['h100', 'h200', 'b200', 'mi300', 'l40s', '4090'].some((chip) => text.includes(chip));
 }
 
 function calculateDiskPricePerHour(diskSize: number) {

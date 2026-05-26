@@ -10,9 +10,34 @@ import type {
   InstanceItem,
   MachineDetailsItem,
   ProviderInfoMap,
+  ServingLibrary,
 } from './types';
 
 type AnyRecord = Record<string, unknown>;
+
+export interface AttachedInferenceEndpointPayload {
+  endpoint_id: string;
+  endpoint_name: string;
+  input_modality: string;
+  output_modality: string;
+}
+
+export interface CreateIntelligentEndpointPayload {
+  name: string;
+  routing_config: {
+    routing_algorithm: string;
+    router_runtime?: 'local';
+    router_endpoint_id?: string;
+    router_endpoint_url?: string;
+    serving_library?: ServingLibrary;
+    input_modality: string;
+    candidate_models: string[];
+    description?: string;
+  };
+  attached_endpoints?: {
+    inference_api: AttachedInferenceEndpointPayload[];
+  };
+}
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
@@ -545,14 +570,28 @@ export async function listIntelligentEndpoints(baseUrl: string, session: Desktop
 export async function createIntelligentEndpoint(
   baseUrl: string,
   session: DesktopSession,
-  name: string,
+  payload: CreateIntelligentEndpointPayload,
 ): Promise<AnyRecord> {
   return request<AnyRecord>({
     baseUrl,
     path: `/developer/${session.developerId}/create-intelligent-endpoint`,
     method: 'POST',
     token: session.accessToken,
-    query: { name },
+    body: payload,
+  });
+}
+
+export async function deleteIntelligentEndpoint(
+  baseUrl: string,
+  session: DesktopSession,
+  intelligentEndpointId: string,
+): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: `/developer/${session.developerId}/delete-intelligent-endpoint`,
+    method: 'DELETE',
+    token: session.accessToken,
+    query: { intelligent_endpoint_id: intelligentEndpointId },
   });
 }
 
@@ -579,22 +618,42 @@ export async function createInferenceEndpoint(
   });
 }
 
+export async function deleteInferenceEndpoint(
+  baseUrl: string,
+  session: DesktopSession,
+  inferenceEndpointId: string,
+  intelligentEndpointId = '',
+): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: `/developer/${session.developerId}/delete-inference-api-endpoint`,
+    method: 'DELETE',
+    token: session.accessToken,
+    query: {
+      intelligent_endpoint_id: intelligentEndpointId,
+      inference_endpoint_id: inferenceEndpointId,
+    },
+  });
+}
+
 export async function attachEndpoint(
   baseUrl: string,
   session: DesktopSession,
   intelligentEndpointId: string,
   endpointType: string,
-  endpointId: string,
+  endpoint: string | AttachedInferenceEndpointPayload,
 ): Promise<AnyRecord> {
+  const isEndpointObject = typeof endpoint === 'object';
+
   return request<AnyRecord>({
     baseUrl,
     path: `/developer/${session.developerId}/attach-endpoint`,
     method: 'POST',
     token: session.accessToken,
-    query: {
+    body: {
       intelligent_endpoint_id: intelligentEndpointId,
       endpoint_type: endpointType,
-      endpoint_id: endpointId,
+      ...(isEndpointObject ? { endpoint } : { endpoint_id: endpoint }),
     },
   });
 }
@@ -604,14 +663,56 @@ export async function listModels(baseUrl: string): Promise<AnyRecord[]> {
     baseUrl,
     path: '/developer/get-all-models',
   });
-  return normalizeList<AnyRecord>(data);
+  return normalizeList<AnyRecord>(data).map(normalizeModelItem);
 }
 
-export async function getHfModelInfo(repoId: string): Promise<AnyRecord> {
-  const url = `https://huggingface.co/api/models/${repoId}`;
-  const response = await fetch(url);
+function normalizeModelItem(item: AnyRecord): AnyRecord {
+  return {
+    ...item,
+    id: item._id ?? item.id ?? '',
+    modelSizeGb: item.model_size_gb ?? item.modelSizeGb ?? '',
+    modelQuantization: item.model_quantization ?? item.modelQuantization ?? '',
+    modelParameters: item.model_parameters ?? item.modelParameters ?? '',
+    modelName: item.model_name ?? item.modelName ?? '',
+    modelMinVram: item.model_min_vram ?? item.modelMinVram ?? '',
+    modelId: item.model_id ?? item.modelId ?? '',
+    modelContextLength: item.model_context_length ?? item.modelContextLength ?? '',
+    modelKnowledgeCutOff: item.knowledge_cutoff ?? item.modelKnowledgeCutOff ?? '',
+    callingEnabled: item.is_tool_calling_enabled ?? item.callingEnabled ?? '',
+    inputModalities: Array.isArray(item.input_modalities)
+      ? item.input_modalities
+      : Array.isArray(item.inputModalities)
+        ? item.inputModalities
+        : [],
+    outputModalities: Array.isArray(item.output_modalities)
+      ? item.output_modalities
+      : Array.isArray(item.outputModalities)
+        ? item.outputModalities
+        : [],
+    benchmarkInfo: item.benchmark_info ?? item.benchmarkInfo ?? {},
+    Description: item.description ?? item.Description ?? '',
+    displayName: item.display_name ?? item.displayName ?? null,
+    displayOrder: item.display_order ?? item.displayOrder ?? null,
+    displayTags: Array.isArray(item.display_tags)
+      ? item.display_tags
+      : Array.isArray(item.displayTags)
+        ? item.displayTags
+        : [],
+  };
+}
+
+export async function getHfModelInfo(repoId: string, accessToken?: string): Promise<AnyRecord> {
+  const url = `https://huggingface.co/api/models/${repoId}?blobs=true`;
+  const token = accessToken?.trim();
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   if (!response.ok) {
-    throw new Error(`Failed to fetch Hugging Face model info for ${repoId}`);
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`Hugging Face returned HTTP ${response.status} for ${repoId}. Enter a Hugging Face access token for private or gated repositories.`);
+    }
+
+    throw new Error(`Failed to fetch Hugging Face model info for ${repoId} (HTTP ${response.status}).`);
   }
   return await response.json() as AnyRecord;
 }

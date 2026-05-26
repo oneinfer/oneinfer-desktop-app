@@ -3,6 +3,7 @@ const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -15,6 +16,7 @@ let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
 const localModelDeployments = new Map();
 const localModelDeploymentsInFlight = new Map();
+const localRouteDeployments = new Map();
 const MACHINE_SYNC_DEBOUNCE_MS = 15000;
 let updaterConfigured = false;
 let updateState = {
@@ -33,6 +35,9 @@ const DEFAULT_KILOCODE_MODEL = 'MiniMax-M2.7';
 const DEFAULT_CLAUDE_MODEL = 'haiku';
 const CLAUDE_CODE_SETUP_DOCS_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 const OPENCODE_SETUP_DOCS_URL = 'https://opencode.ai/docs/';
+const WINDOWS_VLLM_VERSION = '0.21.0';
+const WINDOWS_VLLM_WHEEL_URL = `https://github.com/SystemPanic/vllm-windows/releases/download/v${WINDOWS_VLLM_VERSION}/vllm-${WINDOWS_VLLM_VERSION}%2Bcu132-cp312-cp312-win_amd64.whl`;
+const WINDOWS_VLLM_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu130';
 const KILO_CODE_SETUP_DOCS_URL = 'https://kilo.ai/docs/code-with-ai/platforms/cli';
 const ONEINFER_CODE_MODELS = {
   'MiniMax-M2.7': {
@@ -383,6 +388,18 @@ function runCommand(command, args = [], options = {}) {
   });
 }
 
+function stripAnsi(value) {
+  return String(value || '')
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '\n')
+    .trim();
+}
+
+function formatCommandError(error) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  return stripAnsi(rawMessage);
+}
+
 async function commandExists(command) {
   try {
     if (process.platform === 'win32') {
@@ -395,6 +412,161 @@ async function commandExists(command) {
   } catch {
     return false;
   }
+}
+
+function isMacOS() {
+  return process.platform === 'darwin' || os.type() === 'Darwin';
+}
+
+function getMacOllamaCommandPath() {
+  if (!isMacOS()) {
+    return null;
+  }
+
+  const candidates = [
+    '/opt/homebrew/bin/ollama',
+    '/usr/local/bin/ollama',
+    '/Applications/Ollama.app/Contents/Resources/ollama',
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function getWindowsOllamaCommandPath() {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const candidates = [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe'),
+    path.join(process.env.PROGRAMFILES || '', 'Ollama', 'ollama.exe'),
+  ];
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
+}
+
+function getWindowsVllmRuntimeDirectory() {
+  return path.join(app.getPath('userData'), 'runtimes', 'vllm-windows');
+}
+
+function getWindowsVllmPythonPath() {
+  return path.join(getWindowsVllmRuntimeDirectory(), 'Scripts', 'python.exe');
+}
+
+function getWindowsVllmCommandPath() {
+  return path.join(getWindowsVllmRuntimeDirectory(), 'Scripts', 'vllm.exe');
+}
+
+async function hasWindowsPython312() {
+  try {
+    await runCommand('py', ['-3.12', '--version'], { timeoutMs: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureWindowsPython312() {
+  if (await hasWindowsPython312()) {
+    return;
+  }
+
+  if (await commandExists('winget')) {
+    await runCommand('winget', [
+      'install',
+      '--id',
+      'Python.Python.3.12',
+      '--exact',
+      '--accept-package-agreements',
+      '--accept-source-agreements',
+    ], { timeoutMs: 20 * 60 * 1000 });
+  }
+
+  if (!await hasWindowsPython312()) {
+    throw new Error('OneInfer Windows vLLM requires Python 3.12. Install Python 3.12 with the py launcher enabled, then try installing vLLM again.');
+  }
+}
+
+async function getPythonPipCommand() {
+  const candidates = [
+    { command: 'py', args: ['-3.12', '-m', 'pip'] },
+    { command: 'py', args: ['-3.11', '-m', 'pip'] },
+    { command: 'py', args: ['-3.10', '-m', 'pip'] },
+    { command: 'python3', args: ['-m', 'pip'] },
+    { command: 'python', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', args: ['-m', 'pip'] },
+    { command: '/opt/homebrew/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/local/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/bin/python3', args: ['-m', 'pip'] },
+    { command: 'pip3', args: [] },
+    { command: 'pip', args: [] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/pip3', args: [] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.12/bin/pip3', args: [] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.13/bin/pip3', args: [] },
+    { command: '/opt/homebrew/bin/pip3', args: [] },
+    { command: '/usr/local/bin/pip3', args: [] },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await runCommand(candidate.command, [...candidate.args, '--version'], { timeoutMs: 10000 });
+      return candidate;
+    } catch {
+      // Try the next pip entry point.
+    }
+  }
+
+  return null;
+}
+
+async function isWindowsManagedVllmInstalled() {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  const pythonPath = getWindowsVllmPythonPath();
+  if (!fs.existsSync(pythonPath)) {
+    return false;
+  }
+
+  try {
+    await runCommand(pythonPath, ['-c', 'import vllm'], { timeoutMs: 30000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function installWindowsManagedVllm() {
+  await ensureWindowsPython312();
+
+  const runtimeDir = getWindowsVllmRuntimeDirectory();
+  const pythonPath = getWindowsVllmPythonPath();
+
+  if (!fs.existsSync(pythonPath)) {
+    fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
+    await runCommand('py', ['-3.12', '-m', 'venv', runtimeDir], { timeoutMs: 5 * 60 * 1000 });
+  }
+
+  await runCommand(pythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'], { timeoutMs: 10 * 60 * 1000 });
+  await runCommand(pythonPath, [
+    '-m',
+    'pip',
+    'install',
+    '--force-reinstall',
+    WINDOWS_VLLM_WHEEL_URL,
+    '--extra-index-url',
+    WINDOWS_VLLM_TORCH_INDEX_URL,
+  ], { timeoutMs: 45 * 60 * 1000 });
+
+  if (!await isWindowsManagedVllmInstalled()) {
+    throw new Error('OneInfer installed the Windows vLLM runtime, but vLLM could not be imported. Check that the machine has a CUDA 13-compatible NVIDIA driver and try again.');
+  }
+
+  return 'installed';
 }
 
 async function isClaudeCodeInstalled() {
@@ -660,19 +832,50 @@ async function ensureKiloCodeInstalled() {
   throw new Error(`Kilo Code was not found and automatic installation failed.${detail} See ${KILO_CODE_SETUP_DOCS_URL}`);
 }
 
+function normalizeServingLibraryName(name) {
+  const normalized = String(name || '').trim().toLowerCase().replace(/[-.\s]+/g, '_');
+  const aliases = {
+    llama: 'llama_cpp',
+    llamacpp: 'llama_cpp',
+    llama_cpp: 'llama_cpp',
+    llama_cpp_python: 'llama_cpp',
+    tensorrt_llm: 'tensorrt',
+    tensor_rt: 'tensorrt',
+    tensor_rt_llm: 'tensorrt',
+    torch: 'pytorch',
+    transformer: 'transformers',
+  };
+  return aliases[normalized] || normalized;
+}
+
 async function isLibraryInstalled(name) {
+  name = normalizeServingLibraryName(name);
   try {
     if (name === 'vllm') {
+      if (process.platform === 'win32') {
+        if (await isWindowsManagedVllmInstalled()) return true;
+        if (!await commandExists('vllm')) return false;
+
+        try {
+          await runCommand('vllm', ['--version'], { timeoutMs: 30000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
       // First try standard command
       if (await commandExists('vllm')) return true;
       // Then try python import
       try {
-        await runCommand('python', ['-c', 'import vllm'], { timeoutMs: 10000 });
+        await runCommand('python3', ['-c', 'import vllm'], { timeoutMs: 10000 });
         return true;
       } catch {
         // Fallback to pip check
         try {
-          const { stdout } = await runCommand('pip', ['show', 'vllm'], { timeoutMs: 5000 });
+          const pipCommand = await getPythonPipCommand();
+          if (!pipCommand) return false;
+          const { stdout } = await runCommand(pipCommand.command, [...pipCommand.args, 'show', 'vllm'], { timeoutMs: 5000 });
           return stdout.includes('Name: vllm');
         } catch {
           return false;
@@ -682,10 +885,101 @@ async function isLibraryInstalled(name) {
     
     if (name === 'ollama') {
       if (await commandExists('ollama')) return true;
-      // Check default install path on Windows
+      if (isMacOS()) {
+        return Boolean(getMacOllamaCommandPath());
+      }
       if (process.platform === 'win32') {
-        const defaultPath = path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe');
-        return fs.existsSync(defaultPath);
+        return Boolean(getWindowsOllamaCommandPath());
+      }
+    }
+
+    if (name === 'sglang') {
+      if (await commandExists('sglang')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import sglang'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import sglang'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'tensorrt') {
+      if (await commandExists('trtllm-serve')) return true;
+      if (await commandExists('tensorrt_llm')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'pytorch') {
+      try {
+        await runCommand('python3', ['-c', 'import torch'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import torch'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'llama_cpp') {
+      if (await commandExists('llama-server')) return true;
+      if (await commandExists('llama-cli')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'transformers') {
+      try {
+        await runCommand('python3', ['-c', 'import transformers'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import transformers'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (name === 'dynamo') {
+      if (await commandExists('dynamo')) return true;
+      try {
+        await runCommand('python3', ['-c', 'import dynamo'], { timeoutMs: 10000 });
+        return true;
+      } catch {
+        try {
+          await runCommand('python', ['-c', 'import dynamo'], { timeoutMs: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
       }
     }
 
@@ -697,19 +991,103 @@ async function isLibraryInstalled(name) {
 
 
 async function installLibrary(name) {
+  name = normalizeServingLibraryName(name);
   if (name === 'vllm') {
-    if (!await commandExists('pip')) {
+    if (process.platform === 'win32') {
+      return await installWindowsManagedVllm();
+    }
+
+    const pipCommand = await getPythonPipCommand();
+    if (!pipCommand) {
       throw new Error('pip is not installed. Please install Python and pip first.');
     }
-    await runCommand('pip', ['install', 'vllm'], { timeoutMs: 15 * 60 * 1000 });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', 'vllm'], { timeoutMs: 15 * 60 * 1000 });
     return 'installed';
   }
 
   if (name === 'ollama') {
     if (process.platform === 'win32') {
-      throw new Error('Automatic installation of Ollama on Windows is not supported yet. Please download it from https://ollama.com/download/windows');
+      if (await isLibraryInstalled('ollama')) {
+        return 'installed';
+      }
+
+      try {
+        await runCommand('powershell.exe', [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          'irm https://ollama.com/install.ps1 | iex',
+        ], { timeoutMs: 15 * 60 * 1000 });
+
+        if (await isLibraryInstalled('ollama')) {
+          return 'installed';
+        }
+      } catch {
+        // Fall back to WinGet below.
+      }
+
+      if (await commandExists('winget')) {
+        await runCommand('winget', [
+          'install',
+          '--id',
+          'Ollama.Ollama',
+          '--exact',
+          '--accept-package-agreements',
+          '--accept-source-agreements',
+        ], { timeoutMs: 15 * 60 * 1000 });
+
+        if (await isLibraryInstalled('ollama')) {
+          return 'installed';
+        }
+
+        throw new Error('Ollama installer completed, but the ollama command was not found yet. Restart OneInfer Desktop or sign out and back in so Windows refreshes PATH.');
+      }
+
+      throw new Error('WinGet is not available on this Windows machine. Install Ollama from https://ollama.com/download/windows, then restart OneInfer Desktop.');
     }
+
+    if (isMacOS()) {
+      if (await isLibraryInstalled('ollama')) {
+        return 'installed';
+      }
+
+      if (await commandExists('brew')) {
+        await runCommand('brew', ['install', 'ollama'], { timeoutMs: 15 * 60 * 1000 });
+        return 'installed';
+      }
+
+      throw new Error('Automatic Ollama installation on macOS requires Homebrew. Install Ollama from https://ollama.com/download/mac or run "brew install ollama", then restart OneInfer Desktop.');
+    }
+
     await runCommand('sh', ['-lc', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeoutMs: 15 * 60 * 1000 });
+    return 'installed';
+  }
+
+  const pipInstallPackages = {
+    sglang: ['sglang'],
+    tensorrt: ['tensorrt-llm'],
+    llama_cpp: ['llama-cpp-python'],
+    pytorch: ['torch'],
+    transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'],
+    dynamo: ['ai-dynamo'],
+  };
+
+  if (Object.prototype.hasOwnProperty.call(pipInstallPackages, name)) {
+    if (process.platform === 'win32' && ['sglang', 'tensorrt', 'dynamo'].includes(name)) {
+      throw new Error(`${name} is not supported for native Windows installs in OneInfer Desktop yet.`);
+    }
+
+    if (isMacOS() && ['tensorrt', 'dynamo'].includes(name)) {
+      throw new Error(`${name} requires a Linux NVIDIA runtime in OneInfer Desktop.`);
+    }
+
+    const pipCommand = await getPythonPipCommand();
+    if (!pipCommand) {
+      throw new Error('pip is not installed. Please install Python and pip first.');
+    }
+
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...pipInstallPackages[name]], { timeoutMs: 15 * 60 * 1000 });
     return 'installed';
   }
 
@@ -744,6 +1122,36 @@ function normalizeHfRepoId(value) {
   }
 
   return candidate;
+}
+
+function normalizeLocalModelId(value, runtime = 'vllm') {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) {
+    throw new Error('Local model id is required.');
+  }
+
+  if (runtime === 'ollama') {
+    if (/^https?:\/\//i.test(rawValue)) {
+      return normalizeHfRepoId(rawValue);
+    }
+
+    return rawValue;
+  }
+
+  return normalizeHfRepoId(rawValue);
+}
+
+function getHfAuthenticatedEnv(accessToken) {
+  const token = String(accessToken || '').trim();
+  if (!token) {
+    return process.env;
+  }
+
+  return {
+    ...process.env,
+    HF_TOKEN: token,
+    HUGGING_FACE_HUB_TOKEN: token,
+  };
 }
 
 function wait(ms) {
@@ -918,6 +1326,25 @@ async function waitForOpenAiEndpoint(endpointUrl, timeoutMs = 10 * 60 * 1000, on
   throw new Error(`Timed out waiting for local model server at ${modelsUrl}.${lastError?.message ? ` Last error: ${lastError.message}` : ''}`);
 }
 
+async function waitForOpenAiEndpointOrProcessExit(endpointUrl, child, timeoutMs, onProgress = () => {}, shouldCancel = () => false) {
+  let exitState = null;
+  child.once('exit', (code, signal) => {
+    exitState = { code, signal };
+  });
+
+  return waitForOpenAiEndpoint(endpointUrl, timeoutMs, onProgress, () => {
+    if (shouldCancel()) {
+      return true;
+    }
+
+    if (exitState) {
+      throw new Error(`Local model server exited before it became ready. Exit code: ${exitState.code ?? 'none'}${exitState.signal ? `, signal: ${exitState.signal}` : ''}.`);
+    }
+
+    return false;
+  });
+}
+
 function getVllmLogPath(repoId) {
   const safeId = repoId.replace(/[^a-zA-Z0-9._-]/g, '_');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -926,7 +1353,173 @@ function getVllmLogPath(repoId) {
   return path.join(logsDir, `vllm-${safeId}-${timestamp}.log`);
 }
 
-async function startVllmServer(repoId, port, onProgress = () => {}) {
+function getTransformersLogPath(repoId) {
+  const safeId = repoId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logsDir = path.join(app.getPath('userData'), 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  return path.join(logsDir, `transformers-${safeId}-${timestamp}.log`);
+}
+
+function readLogTail(logPath, maxLines = 40) {
+  try {
+    if (!logPath || !fs.existsSync(logPath)) {
+      return '';
+    }
+
+    const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+    return lines.slice(-maxLines).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+async function getPythonCommandForModule(moduleName) {
+  const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
+  for (const command of candidates) {
+    if (!await commandExists(command)) {
+      continue;
+    }
+
+    const args = command === 'py' ? ['-3', '-c', `import ${moduleName}`] : ['-c', `import ${moduleName}`];
+    try {
+      await runCommand(command, args, { timeoutMs: 10000 });
+      return {
+        command,
+        prefixArgs: command === 'py' ? ['-3'] : [],
+      };
+    } catch {
+      // Try the next Python command.
+    }
+  }
+
+  return null;
+}
+
+async function removeTorchvisionIfBroken(pipCommand, python, onProgress = () => {}) {
+  try {
+    await runCommand(python.command, [...python.prefixArgs, '-c', 'import torchvision'], { timeoutMs: 10000 });
+    return false;
+  } catch {
+    onProgress({
+      stage: 'preparing',
+      message: 'Removing broken TorchVision package...',
+      detail: 'TorchVision is not required for text router models, and the installed copy is incompatible with PyTorch.',
+    });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'uninstall', '-y', 'torchvision'], { timeoutMs: 5 * 60 * 1000 }).catch(() => undefined);
+    return true;
+  }
+}
+
+
+function getOllamaCommand() {
+  return getMacOllamaCommandPath() || getWindowsOllamaCommandPath() || 'ollama';
+}
+
+function getOllamaModelName(repoId) {
+  const value = String(repoId || '').trim();
+  const normalized = value.toLowerCase();
+  const mappings = new Map([
+    ['qwen/qwen2.5-0.5b-instruct', 'qwen2.5:0.5b'],
+    ['qwen/qwen2.5-1.5b-instruct', 'qwen2.5:1.5b'],
+    ['qwen/qwen2.5-3b-instruct', 'qwen2.5:3b'],
+    ['qwen/qwen2.5-7b-instruct', 'qwen2.5:7b'],
+    ['meta-llama/llama-3.2-1b-instruct', 'llama3.2:1b'],
+    ['meta-llama/llama-3.2-3b-instruct', 'llama3.2:3b'],
+  ]);
+
+  if (mappings.has(normalized)) {
+    return mappings.get(normalized);
+  }
+
+  if (value.includes(':') || normalized.startsWith('hf.co/')) {
+    return value;
+  }
+
+  return `hf.co/${value}`;
+}
+
+async function ensureOllamaServer(endpointUrl, onProgress = () => {}, options = {}) {
+  try {
+    await waitForOpenAiEndpoint(endpointUrl, 3000, onProgress, () => false);
+    return null;
+  } catch {
+    // Ollama is not responding yet. Start the local server below.
+  }
+
+  const command = getOllamaCommand();
+  onProgress({
+    stage: 'starting',
+    message: 'Starting Ollama local server...',
+    detail: command,
+  });
+
+  const child = spawn(command, ['serve'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: {
+      ...getHfAuthenticatedEnv(options.hfAccessToken),
+      OLLAMA_HOST: '127.0.0.1:11434',
+    },
+  });
+
+  child.once('error', (error) => {
+    onProgress({
+      stage: 'error',
+      message: 'Failed to start Ollama.',
+      detail: error.message,
+      level: 'error',
+    });
+  });
+
+  child.unref();
+  await waitForOpenAiEndpoint(endpointUrl, 30000, onProgress, () => false);
+  return child;
+}
+
+async function startOllamaModel(repoId, onProgress = () => {}, options = {}) {
+  if (!await isLibraryInstalled('ollama')) {
+    throw new Error('Ollama is not installed. Install Ollama before deploying on macOS.');
+  }
+
+  const endpointUrl = 'http://127.0.0.1:11434/v1';
+  const modelName = getOllamaModelName(repoId);
+
+  const child = await ensureOllamaServer(endpointUrl, onProgress, options);
+  onProgress({
+    stage: 'loading',
+    message: `Pulling Ollama model ${modelName}...`,
+    detail: modelName.startsWith('hf.co/') ? 'Ollama can pull Hugging Face GGUF models with hf.co/... names.' : undefined,
+  });
+  try {
+    await runCommand(getOllamaCommand(), ['pull', modelName], {
+      timeoutMs: 30 * 60 * 1000,
+      env: getHfAuthenticatedEnv(options.hfAccessToken),
+    });
+  } catch (error) {
+    const message = formatCommandError(error);
+    if (message.includes('Repository is not GGUF') || message.includes('not compatible with llama.cpp')) {
+      throw new Error(`${repoId} cannot be deployed with Ollama because the Hugging Face repository is not GGUF/llama.cpp compatible. Use vLLM for this Transformers-format model, or choose a GGUF model repository for Ollama.`);
+    }
+
+    throw new Error(message || 'Ollama failed to pull the model.');
+  }
+
+  onProgress({
+    stage: 'ready',
+    message: `${modelName} is available in Ollama.`,
+    detail: endpointUrl,
+    level: 'success',
+  });
+
+  return {
+    child,
+    endpointUrl,
+    modelName,
+  };
+}
+
+async function startVllmServer(repoId, port, onProgress = () => {}, options = {}) {
   let command = 'vllm';
   let args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
 
@@ -936,7 +1529,12 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
     detail: 'Looking for vllm command or Python module.',
   });
 
-  if (!await commandExists('vllm')) {
+  if (process.platform === 'win32' && await isWindowsManagedVllmInstalled()) {
+    command = getWindowsVllmCommandPath();
+    args = ['serve', repoId, '--host', '127.0.0.1', '--port', String(port)];
+  }
+
+  if (command === 'vllm' && !await commandExists('vllm')) {
     if (!await commandExists('python')) {
       throw new Error('vLLM is not available and Python was not found. Install vLLM before deploying.');
     }
@@ -970,7 +1568,16 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
   const child = spawn(command, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    env: getHfAuthenticatedEnv(options.hfAccessToken),
   });
+  const recentOutput = [];
+
+  function rememberOutput(line) {
+    recentOutput.push(line);
+    if (recentOutput.length > 80) {
+      recentOutput.shift();
+    }
+  }
 
   const pipeOutput = (stream, level) => {
     let buffer = '';
@@ -982,6 +1589,7 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
         .map((line) => line.trim())
         .filter(Boolean)
         .forEach((line) => {
+          rememberOutput(line);
           writeLog(line);
         });
       lines
@@ -1017,9 +1625,296 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
     writeLog(`Process exited — code: ${code}, signal: ${signal}`);
     logStream.end();
     if (code !== null && code !== 0) {
+      const outputDetail = getVllmExitDetail(recentOutput.join('\n'));
       onProgress({
         stage: 'error',
-        message: `vLLM exited with code ${code}. Logs saved to: ${logPath}`,
+        message: outputDetail.message || `vLLM exited with code ${code}. Logs saved to: ${logPath}`,
+        detail: outputDetail.detail || (signal ? `Signal: ${signal}` : undefined),
+        level: 'error',
+      });
+    }
+  });
+
+  child.unref();
+  return child;
+}
+
+const TRANSFORMERS_OPENAI_SERVER_SCRIPT = String.raw`
+import json
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+repo_id = sys.argv[1]
+port = int(sys.argv[2])
+serve_role = sys.argv[3] if len(sys.argv) > 3 else "model"
+
+print(f"Loading Transformers model {repo_id}", flush=True)
+import torch
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True)
+model = None
+model_kind = "causal-lm"
+device = "cuda" if torch.cuda.is_available() and torch.cuda.mem_get_info()[0] > 4 * 1024 * 1024 * 1024 else "cpu"
+dtype = torch.float16 if device == "cuda" else torch.float32
+print(f"Using device={device}, dtype={dtype}", flush=True)
+try:
+    model = AutoModelForCausalLM.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
+    print("Loaded model as causal-lm", flush=True)
+except Exception as causal_error:
+    print(f"Causal LM load failed: {causal_error}", flush=True)
+    if serve_role != "router":
+        raise
+    model_kind = "sequence-classification"
+    model = AutoModelForSequenceClassification.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
+    print("Loaded model as sequence-classification", flush=True)
+
+model.eval()
+if hasattr(model, "to"):
+    try:
+        model.to(device)
+    except RuntimeError as cuda_error:
+        if device == "cuda":
+            print(f"CUDA load failed, falling back to CPU: {cuda_error}", flush=True)
+            device = "cpu"
+            model.to(device)
+        else:
+            raise
+
+def response_payload(content, request_id):
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": repo_id,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+    }
+
+def prompt_from_messages(payload):
+    messages = payload.get("messages") or []
+    return "\n".join([str(item.get("content", "")) for item in messages if isinstance(item, dict)]).strip()
+
+def build_generation_inputs(prompt, payload, device):
+    messages = payload.get("messages") or []
+    if messages and hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
+        try:
+            input_ids = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                truncation=True,
+            ).to(device)
+            return {"input_ids": input_ids}
+        except Exception as template_error:
+            print(f"Chat template formatting failed, using plain prompt: {template_error}", flush=True)
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+    return {key: value.to(device) for key, value in inputs.items()}
+
+def run_model(prompt, payload):
+    if not prompt:
+        prompt = str(payload.get("prompt") or "")
+    if not prompt:
+        prompt = "Route this request."
+
+    device = next(model.parameters()).device
+    inputs = build_generation_inputs(prompt, payload, device)
+
+    with torch.no_grad():
+        if model_kind == "causal-lm":
+            max_new_tokens = max(1, min(int(payload.get("max_tokens") or 128), 512))
+            temperature = float(payload.get("temperature") or 0)
+            eos_token_id = tokenizer.eos_token_id
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_token_id
+            generation_args = {
+                **inputs,
+                "max_new_tokens": max_new_tokens,
+                "repetition_penalty": float(payload.get("repetition_penalty") or 1.12),
+                "no_repeat_ngram_size": int(payload.get("no_repeat_ngram_size") or 4),
+                "eos_token_id": eos_token_id,
+                "pad_token_id": pad_token_id,
+            }
+            if temperature > 0:
+                generation_args.update({
+                    "do_sample": True,
+                    "temperature": temperature,
+                    "top_p": float(payload.get("top_p") or 0.9),
+                })
+            else:
+                generation_args["do_sample"] = False
+
+            output_ids = model.generate(
+                **generation_args,
+            )
+            generated = output_ids[0][inputs["input_ids"].shape[-1]:]
+            return tokenizer.decode(generated, skip_special_tokens=True).strip() or "ok"
+
+        outputs = model(**inputs)
+        scores = torch.softmax(outputs.logits[0], dim=-1)
+        index = int(torch.argmax(scores).item())
+        label = getattr(model.config, "id2label", {}).get(index, str(index))
+        return json.dumps({"label": label, "score": float(scores[index].item())})
+
+class Handler(BaseHTTPRequestHandler):
+    def send_json(self, status, payload):
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/v1/models":
+            self.send_json(200, {"object": "list", "data": [{"id": repo_id, "object": "model", "owned_by": "oneinfer"}]})
+            return
+        if self.path.rstrip("/") == "/metrics":
+            raw = "\n".join([
+                "# HELP oneinfer_transformers_requests_total Total requests handled by the local Transformers server.",
+                "# TYPE oneinfer_transformers_requests_total counter",
+                "oneinfer_transformers_requests_total 0",
+                "# HELP oneinfer_transformers_server_ready Whether the local Transformers server is ready.",
+                "# TYPE oneinfer_transformers_server_ready gauge",
+                "oneinfer_transformers_server_ready 1",
+                "",
+            ]).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        self.send_json(404, {"error": {"message": "Not found"}})
+
+    def do_POST(self):
+        if self.path.rstrip("/") not in ["/v1/chat/completions", "/v1/completions"]:
+            self.send_json(404, {"error": {"message": "Not found"}})
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length).decode("utf-8") if length else "{}"
+        try:
+            payload = json.loads(body or "{}")
+            prompt = prompt_from_messages(payload)
+            content = run_model(prompt, payload)
+            self.send_json(200, response_payload(content, f"chatcmpl-{int(time.time() * 1000)}"))
+        except Exception as error:
+            self.send_json(500, {"error": {"message": str(error)}})
+
+    def log_message(self, format, *args):
+        print(format % args, flush=True)
+
+print(f"Transformers OpenAI-compatible server ready on 127.0.0.1:{port}", flush=True)
+ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+`;
+
+async function startTransformersServer(repoId, port, onProgress = () => {}, options = {}) {
+  onProgress({
+    stage: 'preparing',
+    message: 'Checking PyTorch and Transformers installation...',
+    detail: 'Looking for a Python environment that can import transformers and torch.',
+  });
+
+  const python = await getPythonCommandForModule('transformers');
+  if (!python) {
+    throw new Error('Transformers is not installed in an available Python environment.');
+  }
+
+  const transformersPreflight = 'import torch; import transformers; import numpy; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__; from transformers import AutoTokenizer; from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM';
+  try {
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
+  } catch {
+    const pipCommand = await getPythonPipCommand();
+    if (!pipCommand) {
+      throw new Error('PyTorch and Transformers are required, but pip is not available to repair the Python environment.');
+    }
+
+    onProgress({
+      stage: 'preparing',
+      message: 'Repairing PyTorch, Transformers, NumPy, SciPy, and scikit-learn...',
+      detail: 'Fixing the Python runtime used by local Transformers models.',
+    });
+    await removeTorchvisionIfBroken(pipCommand, python, onProgress);
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 20 * 60 * 1000 });
+    await removeTorchvisionIfBroken(pipCommand, python, onProgress);
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
+  }
+
+  const logPath = getTransformersLogPath(repoId);
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  const serveRole = options.role === 'router' ? 'router' : 'model';
+  const args = [...python.prefixArgs, '-u', '-c', TRANSFORMERS_OPENAI_SERVER_SCRIPT, repoId, String(port), serveRole];
+
+  function writeLog(line) {
+    const ts = new Date().toISOString();
+    logStream.write(`[${ts}] ${line}\n`);
+  }
+
+  writeLog(`Starting Transformers server: ${python.command} ${args.slice(0, 4).join(' ')} ...`);
+  onProgress({
+    stage: 'starting',
+    message: `Starting Transformers ${serveRole === 'router' ? 'router' : 'model'} server for ${repoId}...`,
+    detail: `Logs: ${logPath}`,
+  });
+
+  const child = spawn(python.command, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: getHfAuthenticatedEnv(options.hfAccessToken),
+  });
+  child.oneinferLogPath = logPath;
+
+  const pipeOutput = (stream, level) => {
+    let buffer = '';
+    stream.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      lines
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .forEach((line) => {
+          writeLog(line);
+          const isHttpProbe = /^"GET \/(v1\/models|metrics) HTTP\/1\.[01]" \d{3}/.test(line);
+          if (isHttpProbe) {
+            return;
+          }
+          onProgress({
+            stage: 'loading',
+            message: level === 'error' ? 'Transformers reported output.' : 'Transformers is loading the local model...',
+            detail: line,
+            level,
+          });
+        });
+    });
+  };
+
+  pipeOutput(child.stdout, 'info');
+  pipeOutput(child.stderr, 'info');
+
+  child.once('error', (error) => {
+    writeLog(`ERROR: ${error.message}`);
+    logStream.end();
+    onProgress({
+      stage: 'error',
+      message: 'Failed to start Transformers.',
+      detail: error.message,
+      level: 'error',
+    });
+  });
+
+  child.once('exit', (code, signal) => {
+    writeLog(`Process exited - code: ${code}, signal: ${signal}`);
+    logStream.end();
+    if (code !== null && code !== 0) {
+      onProgress({
+        stage: 'error',
+        message: `Transformers server exited with code ${code}.`,
         detail: signal ? `Signal: ${signal}` : undefined,
         level: 'error',
       });
@@ -1030,14 +1925,67 @@ async function startVllmServer(repoId, port, onProgress = () => {}) {
   return child;
 }
 
+function getVllmExitDetail(output) {
+  if (output.includes('operator torchvision::nms does not exist')) {
+    return {
+      message: 'vLLM failed because TorchVision is incompatible with the installed PyTorch runtime.',
+      detail: process.platform === 'win32'
+        ? 'Windows vLLM needs a matching Windows build of torch, torchvision, CUDA, and vLLM. Use a OneInfer-managed Windows vLLM runtime or reinstall matching Windows wheels in an isolated environment.'
+        : 'Reinstall torch and torchvision from the same PyTorch wheel channel, then restart deployment.',
+    };
+  }
+
+  if (output.includes("Could not import module 'ProcessorMixin'")) {
+    return {
+      message: 'vLLM failed while importing the model processor dependencies.',
+      detail: 'Check the vLLM log for the first Python import error; processor import errors are usually caused by a lower-level dependency crash.',
+    };
+  }
+
+  return {
+    message: null,
+    detail: null,
+  };
+}
+
+function getTransformersFailureDetail(errorMessage, logTail) {
+  const output = `${errorMessage || ''}\n${logTail || ''}`;
+  const unknownModelTypeMatch = output.match(/model type [`'"]([^`'"]+)[`'"][\s\S]{0,240}Transformers does not recognize/i)
+    || output.match(/KeyError:\s*['"]([^'"]+)['"]/i);
+  if (unknownModelTypeMatch) {
+    const modelType = unknownModelTypeMatch[1];
+    return {
+      message: `Transformers does not recognize model type "${modelType}".`,
+      detail: 'This Hugging Face repo uses a custom or newer architecture that the installed Transformers runtime cannot load with AutoModel. Choose a standard text-generation model, a GGUF model with Ollama, or add a custom runtime for this architecture.',
+    };
+  }
+
+  if (/Timed out waiting for local model server/i.test(output)) {
+    return {
+      message: 'Timed out while loading the Transformers model.',
+      detail: 'The model did not finish loading before the local server health check expired. This usually means the model is too large for this machine, is loading on CPU, or is still downloading large weights. Use a much smaller model, a GPU-capable runtime, or a quantized/GGUF model.',
+    };
+  }
+
+  if (/out of memory|cuda memory|allocation|paging file|not enough memory/i.test(output)) {
+    return {
+      message: 'Transformers ran out of memory while loading the model.',
+      detail: 'Select a smaller model, use a quantized model, or deploy on a machine with enough VRAM/RAM.',
+    };
+  }
+
+  return { message: null, detail: null };
+}
+
 async function deployHfModel(payload = {}) {
-  const repoId = normalizeHfRepoId(payload.repoId);
   const runtime = payload.runtime || 'vllm';
+  const repoId = normalizeLocalModelId(payload.repoId, runtime);
+  const hfAccessToken = String(payload.hfAccessToken || payload.hfToken || '').trim();
   const progressId = String(payload.progressId || `${repoId}-${Date.now()}`);
   const progress = (patch) => sendDeploymentProgress({ id: progressId, ...patch });
   const shouldCancel = () => Boolean(localModelDeploymentsInFlight.get(repoId)?.cancelled);
 
-  if (runtime !== 'vllm') {
+  if (!['vllm', 'ollama', 'transformers'].includes(runtime)) {
     throw new Error(`Unsupported local deployment runtime: ${runtime}`);
   }
 
@@ -1057,7 +2005,7 @@ async function deployHfModel(payload = {}) {
   progress({
     stage: 'preparing',
     message: `Preparing local deployment for ${repoId}.`,
-    detail: 'Runtime: vLLM',
+    detail: `Runtime: ${runtime === 'ollama' ? 'Ollama' : runtime === 'transformers' ? 'Transformers' : 'vLLM'}`,
   });
 
   const existingDeployment = localModelDeployments.get(repoId);
@@ -1080,6 +2028,47 @@ async function deployHfModel(payload = {}) {
     }
   }
 
+  if (runtime === 'ollama') {
+    try {
+      assertDeploymentNotCancelled(repoId);
+      const ollamaDeployment = await startOllamaModel(repoId, progress, { hfAccessToken });
+      const activeDeployment = localModelDeploymentsInFlight.get(repoId);
+      if (activeDeployment) {
+        activeDeployment.child = ollamaDeployment.child;
+        activeDeployment.endpointUrl = ollamaDeployment.endpointUrl;
+      }
+
+      const deployment = {
+        endpointUrl: ollamaDeployment.endpointUrl,
+        modelId: ollamaDeployment.modelName,
+        pid: ollamaDeployment.child?.pid || null,
+        runtime,
+        startedAt: Date.now(),
+      };
+
+      localModelDeployments.set(repoId, deployment);
+      localModelDeploymentsInFlight.delete(repoId);
+      progress({
+        stage: 'ready',
+        message: `${ollamaDeployment.modelName} is ready for OpenAI-compatible requests.`,
+        detail: ollamaDeployment.endpointUrl,
+        level: 'success',
+      });
+      return deployment;
+    } catch (error) {
+      const activeDeployment = localModelDeploymentsInFlight.get(repoId);
+      stopProcessTree(activeDeployment?.child?.pid);
+      localModelDeploymentsInFlight.delete(repoId);
+      progress({
+        stage: 'error',
+        message: error?.cancelled ? 'Local deployment cancelled.' : 'Ollama deployment failed.',
+        detail: error instanceof Error ? error.message : String(error),
+        level: 'error',
+      });
+      throw error;
+    }
+  }
+
   const port = await findAvailablePort(payload.port || 8000);
   assertDeploymentNotCancelled(repoId);
   const endpointUrl = `http://127.0.0.1:${port}/v1`;
@@ -1094,7 +2083,9 @@ async function deployHfModel(payload = {}) {
     detail: endpointUrl,
   });
 
-  const child = await startVllmServer(repoId, port, progress);
+  const child = runtime === 'transformers'
+    ? await startTransformersServer(repoId, port, progress, { role: payload.role, hfAccessToken })
+    : await startVllmServer(repoId, port, progress, { hfAccessToken });
   const activeDeployment = localModelDeploymentsInFlight.get(repoId);
   if (activeDeployment) {
     activeDeployment.child = child;
@@ -1109,7 +2100,8 @@ async function deployHfModel(payload = {}) {
   };
 
   try {
-    await waitForOpenAiEndpoint(endpointUrl, payload.healthTimeoutMs || 2 * 60 * 1000, progress, shouldCancel);
+    const healthTimeoutMs = payload.healthTimeoutMs || (runtime === 'transformers' ? 20 * 60 * 1000 : 2 * 60 * 1000);
+    await waitForOpenAiEndpointOrProcessExit(endpointUrl, child, healthTimeoutMs, progress, shouldCancel);
     localModelDeployments.set(repoId, deployment);
     localModelDeploymentsInFlight.delete(repoId);
     progress({
@@ -1122,19 +2114,30 @@ async function deployHfModel(payload = {}) {
   } catch (error) {
     stopProcessTree(child.pid);
     localModelDeploymentsInFlight.delete(repoId);
+    const logTail = readLogTail(child.oneinferLogPath);
+    const runtimeDetail = runtime === 'transformers'
+      ? getTransformersFailureDetail(error instanceof Error ? error.message : String(error), logTail)
+      : { message: null, detail: null };
+    const errorDetail = [
+      runtimeDetail.message,
+      runtimeDetail.detail,
+      error instanceof Error ? error.message : String(error),
+      child.oneinferLogPath ? `Logs: ${child.oneinferLogPath}` : '',
+      logTail ? `Last log lines:\n${logTail}` : '',
+    ].filter(Boolean).join('\n');
 
     progress({
       stage: 'error',
       message: error?.cancelled ? 'Local deployment cancelled.' : 'Local deployment failed.',
-      detail: error instanceof Error ? error.message : String(error),
+      detail: errorDetail,
       level: 'error',
     });
-    throw error;
+    throw new Error(errorDetail);
   }
 }
 
 async function cancelHfDeployment(payload = {}) {
-  const repoId = normalizeHfRepoId(payload.repoId);
+  const repoId = normalizeLocalModelId(payload.repoId, payload.runtime || 'vllm');
   const inFlight = localModelDeploymentsInFlight.get(repoId);
   if (!inFlight) {
     return { cancelled: false, message: `No active deployment found for ${repoId}.` };
@@ -1154,6 +2157,276 @@ async function cancelHfDeployment(payload = {}) {
   return { cancelled: true, message: `Cancelled deployment for ${repoId}.` };
 }
 
+function normalizeOpenAiBaseUrl(endpointUrl) {
+  const normalized = String(endpointUrl || '').trim().replace(/\/+$/, '');
+  if (!normalized) return '';
+  if (/\/v1$/i.test(normalized)) return normalized;
+  if (/\/v1\/chat\/completions$/i.test(normalized)) return normalized.replace(/\/chat\/completions$/i, '');
+  return `${normalized}/v1`;
+}
+
+async function readJsonRequest(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+
+  const rawBody = Buffer.concat(chunks).toString('utf8') || '{}';
+  return JSON.parse(rawBody);
+}
+
+function sendJsonResponse(res, status, payload) {
+  const raw = Buffer.from(JSON.stringify(payload));
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': raw.length,
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'content-type, authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  });
+  res.end(raw);
+}
+
+async function postOpenAiChatCompletion(endpointUrl, payload, headers = {}) {
+  const targetUrl = `${normalizeOpenAiBaseUrl(endpointUrl)}/chat/completions`;
+  const response = await fetch(targetUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(headers.authorization ? { Authorization: headers.authorization } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
+  }
+
+  if (!response.ok) {
+    const message = typeof parsed === 'string'
+      ? parsed
+      : parsed?.error?.message || parsed?.detail || response.statusText;
+    throw new Error(`Candidate endpoint ${targetUrl} returned HTTP ${response.status}: ${message}`);
+  }
+
+  return parsed;
+}
+
+async function chooseLocalRouteCandidate(route, requestPayload) {
+  const candidates = route.candidates.filter((candidate) => candidate.endpointUrl);
+  if (candidates.length === 0) {
+    throw new Error('This local route has no callable local/OpenAI-compatible candidate endpoint URLs.');
+  }
+
+  if (candidates.length === 1 || !route.routerEndpointUrl) {
+    route.nextIndex = (route.nextIndex + 1) % candidates.length;
+    return candidates[0];
+  }
+
+  const routerPrompt = [
+    'Select the best endpoint for this request.',
+    'Return only the endpoint id, name, or index.',
+    `Endpoints: ${candidates.map((candidate, index) => `${index}: ${candidate.name || candidate.id} (${candidate.modelId || 'unknown model'})`).join('; ')}`,
+    `Request: ${JSON.stringify(requestPayload.messages || requestPayload.prompt || requestPayload).slice(0, 4000)}`,
+  ].join('\n');
+
+  try {
+    const routerResponse = await postOpenAiChatCompletion(route.routerEndpointUrl, {
+      model: route.routerModelId || 'router',
+      messages: [{ role: 'user', content: routerPrompt }],
+      max_tokens: 64,
+    });
+    const content = String(routerResponse?.choices?.[0]?.message?.content || routerResponse?.choices?.[0]?.text || '').toLowerCase();
+    const matched = candidates.find((candidate, index) => {
+      const id = String(candidate.id || '').toLowerCase();
+      const name = String(candidate.name || '').toLowerCase();
+      return content.includes(String(index)) || (id && content.includes(id)) || (name && content.includes(name));
+    });
+    if (matched) {
+      return matched;
+    }
+  } catch (error) {
+    console.warn('[local-route] router selection failed, falling back to round-robin', error);
+  }
+
+  const selected = candidates[route.nextIndex % candidates.length];
+  route.nextIndex = (route.nextIndex + 1) % candidates.length;
+  return selected;
+}
+
+async function startLocalRoute(payload = {}) {
+  const routeId = String(payload.routeId || payload.name || crypto.randomUUID());
+  const existingRoute = localRouteDeployments.get(routeId);
+  if (existingRoute?.endpointUrl) {
+    return {
+      endpointUrl: existingRoute.endpointUrl,
+      port: existingRoute.port,
+      routeId,
+    };
+  }
+
+  const routerEndpointUrl = normalizeOpenAiBaseUrl(payload.routerEndpointUrl || '');
+  const candidates = Array.isArray(payload.candidates)
+    ? payload.candidates
+        .map((candidate) => ({
+          id: String(candidate.endpoint_id || candidate.id || candidate.endpointUrl || ''),
+          name: String(candidate.endpoint_name || candidate.name || candidate.model_id || candidate.modelId || candidate.endpointUrl || 'endpoint'),
+          modelId: String(candidate.model_id || candidate.modelId || candidate.name || ''),
+          endpointUrl: normalizeOpenAiBaseUrl(candidate.endpoint_url || candidate.endpointUrl || ''),
+          authorization: candidate.authorization || candidate.api_key ? `Bearer ${candidate.api_key}` : undefined,
+        }))
+        .filter((candidate) => candidate.endpointUrl)
+        .filter((candidate) => candidate.endpointUrl !== routerEndpointUrl)
+    : [];
+
+  if (candidates.length === 0) {
+    throw new Error('Cannot start a fully local route because none of the attached candidate endpoints include a callable URL different from the router model URL. Attach deployed model endpoints, not the router endpoint.');
+  }
+
+  const port = await findAvailablePort(payload.port || 8500);
+  const route = {
+    routeId,
+    name: String(payload.name || routeId),
+    routerEndpointUrl,
+    routerModelId: String(payload.routerModelId || ''),
+    candidates,
+    nextIndex: 0,
+    port,
+    endpointUrl: `http://127.0.0.1:${port}/v1`,
+  };
+
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      sendJsonResponse(res, 204, {});
+      return;
+    }
+
+    if (req.method === 'GET' && req.url.replace(/\/+$/, '') === '/v1/models') {
+      sendJsonResponse(res, 200, {
+        object: 'list',
+        data: candidates.map((candidate) => ({ id: candidate.modelId || candidate.name, object: 'model', owned_by: 'oneinfer-local-route' })),
+      });
+      return;
+    }
+
+    if (req.method !== 'POST' || !['/v1/chat/completions', '/v1/completions'].includes(req.url.replace(/\/+$/, ''))) {
+      sendJsonResponse(res, 404, { error: { message: 'Not found' } });
+      return;
+    }
+
+    try {
+      const requestPayload = await readJsonRequest(req);
+      const candidate = await chooseLocalRouteCandidate(route, requestPayload);
+      const responsePayload = await postOpenAiChatCompletion(candidate.endpointUrl, {
+        ...requestPayload,
+        model: requestPayload.model && requestPayload.model !== 'route' ? requestPayload.model : candidate.modelId || requestPayload.model,
+      }, { authorization: candidate.authorization || req.headers.authorization });
+      sendJsonResponse(res, 200, {
+        ...responsePayload,
+        oneinfer_route: {
+          route_id: route.routeId,
+          selected_endpoint_id: candidate.id,
+          selected_endpoint_name: candidate.name,
+          selected_endpoint_url: candidate.endpointUrl,
+        },
+      });
+    } catch (error) {
+      sendJsonResponse(res, 500, { error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  server.unref();
+  route.server = server;
+  localRouteDeployments.set(routeId, route);
+
+  return {
+    endpointUrl: route.endpointUrl,
+    port,
+    routeId,
+  };
+}
+
+async function stopLocalRoute(payload = {}) {
+  const routeId = String(payload.routeId || '').trim();
+  const endpointUrl = normalizeOpenAiBaseUrl(payload.endpointUrl || '');
+  const candidateEndpointUrl = normalizeOpenAiBaseUrl(payload.candidateEndpointUrl || '');
+  const stoppedRouteIds = [];
+
+  for (const [existingRouteId, route] of [...localRouteDeployments.entries()]) {
+    const routeMatches = (routeId && existingRouteId === routeId)
+      || (endpointUrl && route.endpointUrl === endpointUrl)
+      || (candidateEndpointUrl && route.candidates.some((candidate) => candidate.endpointUrl === candidateEndpointUrl));
+
+    if (!routeMatches) {
+      continue;
+    }
+
+    await new Promise((resolve) => {
+      route.server?.close?.(() => resolve());
+      setTimeout(resolve, 1000);
+    });
+    localRouteDeployments.delete(existingRouteId);
+    stoppedRouteIds.push(existingRouteId);
+  }
+
+  return {
+    stopped: stoppedRouteIds.length > 0,
+    routeIds: stoppedRouteIds,
+    message: stoppedRouteIds.length > 0 ? 'Local route stopped.' : 'No matching local route was running.',
+  };
+}
+
+async function deleteLocalModel(payload = {}) {
+  const endpointUrl = String(payload.endpointUrl || '').trim();
+  const modelId = String(payload.modelId || '').trim();
+  const runtime = String(payload.runtime || '').trim().toLowerCase();
+
+  if (!endpointUrl && !modelId) {
+    throw new Error('Local endpoint URL or model id is required.');
+  }
+
+  const entries = [...localModelDeployments.entries()];
+  const matchedEntry = entries.find(([repoId, deployment]) => {
+    return deployment.endpointUrl === endpointUrl
+      || deployment.modelId === modelId
+      || repoId === modelId;
+  });
+
+  if (matchedEntry) {
+    const [repoId, deployment] = matchedEntry;
+    stopProcessTree(deployment.pid);
+    localModelDeployments.delete(repoId);
+  }
+
+  if (endpointUrl) {
+    await stopLocalRoute({ candidateEndpointUrl: endpointUrl });
+  }
+
+  if (runtime === 'ollama' && modelId && await isLibraryInstalled('ollama')) {
+    try {
+      await runCommand(getOllamaCommand(), ['rm', modelId], { timeoutMs: 2 * 60 * 1000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes('not found')) {
+        throw error;
+      }
+    }
+  }
+
+  return {
+    deleted: true,
+    message: matchedEntry ? 'Local deployment stopped and removed.' : 'Local deployment registration removed.',
+  };
+}
+
 async function getLocalModelMetrics(payload = {}) {
   const endpointUrl = String(payload.endpointUrl || '').trim();
   if (!endpointUrl) {
@@ -1171,6 +2444,9 @@ async function getLocalModelMetrics(payload = {}) {
     if (modelsResponse.ok) {
       const payload = await modelsResponse.json().catch(() => null);
       metrics.modelCount = Array.isArray(payload?.data) ? payload.data.length : 0;
+      metrics.modelIds = Array.isArray(payload?.data)
+        ? payload.data.map((model) => String(model?.id ?? model?.model ?? '')).filter(Boolean)
+        : [];
     }
   } catch (error) {
     metrics.error = error instanceof Error ? error.message : String(error);
@@ -2212,6 +3488,104 @@ function toNullableNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function parseCapacityToMb(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // systeminformation normally reports controller.vram in MB, but some
+    // platform-specific fields are exposed as bytes.
+    return value > 1024 * 1024 ? value / (1024 * 1024) : value;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = value.trim().match(/^([\d.]+)\s*(b|bytes|kb|mb|mib|gb|gib)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+
+  const unit = (match[2] || 'mb').toLowerCase();
+  if (unit === 'gb' || unit === 'gib') return amount * 1024;
+  if (unit === 'kb') return amount / 1024;
+  if (unit === 'b' || unit === 'bytes') return amount / (1024 * 1024);
+  return amount;
+}
+
+function getControllerVramMb(controller) {
+  const candidates = [
+    controller.vram,
+    controller.memoryTotal,
+    controller.memoryTotalMb,
+    controller.memory,
+    controller.ram,
+  ];
+
+  for (const candidate of candidates) {
+    const parsedMb = parseCapacityToMb(candidate);
+    if (parsedMb !== null && parsedMb > 0) {
+      return Math.round(parsedMb);
+    }
+  }
+
+  return null;
+}
+
+function isAppleGpuController(controller, resolvedCpu) {
+  const text = [
+    controller.vendor,
+    controller.name,
+    controller.model,
+    controller.deviceName,
+    resolvedCpu.brand,
+    resolvedCpu.manufacturer,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return process.platform === 'darwin'
+    && (os.arch() === 'arm64' || text.includes('apple'))
+    && text.includes('apple');
+}
+
+function isAppleUnifiedMemoryGpu(controller, resolvedCpu) {
+  if (process.platform !== 'darwin' || os.arch() !== 'arm64') {
+    return false;
+  }
+
+  const text = [
+    controller.vendor,
+    controller.name,
+    controller.model,
+    controller.deviceName,
+    controller.bus,
+    resolvedCpu.brand,
+    resolvedCpu.manufacturer,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return text.includes('apple')
+    || text.includes('integrated')
+    || text.includes('apple silicon')
+    || text.includes('m1')
+    || text.includes('m2')
+    || text.includes('m3')
+    || text.includes('m4');
+}
+
+function getConservativeUnifiedGpuMemoryBytes(totalMemoryBytes) {
+  if (typeof totalMemoryBytes !== 'number' || !Number.isFinite(totalMemoryBytes) || totalMemoryBytes <= 0) {
+    return null;
+  }
+
+  return Math.round(totalMemoryBytes * 0.75);
+}
+
+function toNullableInteger(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
+}
+
 function toTrimmedString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -2340,18 +3714,44 @@ async function collectMachineDetails() {
     type: toTrimmedString(entry.type),
   }));
 
-  const gpus = Array.isArray(graphics.controllers) ? graphics.controllers.map((controller) => {
-    const vramMb = toNullableNumber(controller.vram);
-    const vramBytes = vramMb !== null ? Math.round(vramMb * 1024 * 1024) : null;
+  const graphicsControllers = Array.isArray(graphics.controllers) ? graphics.controllers : [];
+  const normalizedGraphicsControllers = graphicsControllers.length > 0
+    ? graphicsControllers
+    : process.platform === 'darwin' && os.arch() === 'arm64'
+      ? [{
+        name: resolvedCpu.brand || 'Apple GPU',
+        vendor: 'Apple',
+        model: resolvedCpu.brand || 'Apple Silicon',
+        bus: 'integrated',
+      }]
+      : [];
+
+  const gpus = normalizedGraphicsControllers.map((controller) => {
+    const reportedVramMb = getControllerVramMb(controller);
+    const isAppleUnifiedGpu = isAppleUnifiedMemoryGpu(controller, resolvedCpu) || isAppleGpuController(controller, resolvedCpu);
+    const unifiedMemoryBytes = isAppleUnifiedGpu
+      ? getConservativeUnifiedGpuMemoryBytes(resolvedMemory.total)
+      : null;
+    const vramBytes = unifiedMemoryBytes !== null
+      ? unifiedMemoryBytes
+      : reportedVramMb !== null
+        ? Math.round(reportedVramMb * 1024 * 1024)
+        : null;
+    const vramMb = vramBytes !== null ? Math.round(vramBytes / (1024 * 1024)) : null;
 
     return {
       name: toTrimmedString(controller.name) || toTrimmedString(controller.model),
       vendor: toTrimmedString(controller.vendor),
       model: toTrimmedString(controller.model) || toTrimmedString(controller.name),
       gpuType: controller.bus ? String(controller.bus).toLowerCase() : null,
+      memoryKind: isAppleUnifiedGpu ? 'unified' : 'dedicated',
+      memorySource: unifiedMemoryBytes !== null ? 'macos-unified-memory' : 'systeminformation',
       vramBytes,
       vramMb,
       vramGb: vramBytes !== null ? toGb(vramBytes) : null,
+      reportedVramMb,
+      unifiedMemoryBytes,
+      unifiedMemoryGb: toGb(unifiedMemoryBytes),
       driverVersion: toTrimmedString(controller.driverVersion),
       temperatureC: toNullableNumber(controller.temperatureGpu),
       utilizationPercent: toNullableNumber(controller.utilizationGpu),
@@ -2359,7 +3759,7 @@ async function collectMachineDetails() {
       pciBus: toTrimmedString(controller.pciBus),
       deviceName: toTrimmedString(controller.deviceName),
     };
-  }) : [];
+  });
 
   return {
     machineId: getOrCreateMachineId(),
@@ -2418,18 +3818,18 @@ async function collectMachineDetails() {
       currentLoadPercent: toNullableNumber(currentLoad.currentLoad),
     },
     memory: {
-      totalBytes: resolvedMemory.total,
-      availableBytes: resolvedMemory.available,
-      usedBytes: resolvedMemory.used,
-      freeBytes: resolvedMemory.free,
+      totalBytes: toNullableInteger(resolvedMemory.total),
+      availableBytes: toNullableInteger(resolvedMemory.available),
+      usedBytes: toNullableInteger(resolvedMemory.used),
+      freeBytes: toNullableInteger(resolvedMemory.free),
       totalGb: toGb(resolvedMemory.total),
       availableGb: toGb(resolvedMemory.available),
       usedGb: toGb(resolvedMemory.used),
-      swapTotalBytes: resolvedMemory.swaptotal,
-      swapUsedBytes: resolvedMemory.swapused,
+      swapTotalBytes: toNullableInteger(resolvedMemory.swaptotal),
+      swapUsedBytes: toNullableInteger(resolvedMemory.swapused),
     },
     memoryLayout: Array.isArray(memLayout) ? memLayout.map((entry) => ({
-      sizeBytes: entry.size,
+      sizeBytes: toNullableInteger(entry.size),
       sizeGb: toGb(entry.size),
       bank: toTrimmedString(entry.bank),
       type: toTrimmedString(entry.type),
@@ -2445,9 +3845,9 @@ async function collectMachineDetails() {
       name: toTrimmedString(entry.fs) || toTrimmedString(entry.mount),
       mount: toTrimmedString(entry.mount),
       fsType: toTrimmedString(entry.type),
-      totalBytes: entry.size,
-      usedBytes: entry.used,
-      freeBytes: typeof entry.size === 'number' && typeof entry.used === 'number' ? Math.max(entry.size - entry.used, 0) : null,
+      totalBytes: toNullableInteger(entry.size),
+      usedBytes: toNullableInteger(entry.used),
+      freeBytes: typeof entry.size === 'number' && typeof entry.used === 'number' ? Math.max(Math.round(entry.size - entry.used), 0) : null,
       usePercent: toNullableNumber(entry.use),
     })) : [],
     networkInterfaces: normalizedNetworkInterfaces,
@@ -2673,7 +4073,10 @@ app.whenReady().then(() => {
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
   ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
+  ipcMain.handle('app:start-local-route', async (_event, payload) => startLocalRoute(payload));
+  ipcMain.handle('app:stop-local-route', async (_event, payload) => stopLocalRoute(payload));
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
+  ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
 
   createWindow();

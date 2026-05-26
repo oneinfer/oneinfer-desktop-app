@@ -19,9 +19,23 @@ interface DesktopSettings {
   claudeCodeProvider: 'oneinfer' | 'anthropic';
 }
 
+type DesktopServingLibrary = 'vllm' | 'sglang' | 'tensorrt' | 'ollama' | 'llama_cpp' | 'pytorch' | 'transformers' | 'dynamo';
+type DesktopLaunchableServingLibrary = Extract<DesktopServingLibrary, 'vllm' | 'ollama' | 'transformers'>;
+
 interface DesktopState {
   settings: Partial<DesktopSettings>;
   session: DesktopSession | null;
+  localDeployments?: DesktopLocalModelDeployment[];
+}
+
+interface DesktopLocalModelDeployment {
+  endpointId?: string;
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  pid: number | null;
+  runtime: DesktopServingLibrary;
+  deployedAt: string;
 }
 
 interface DesktopMachineDetails {
@@ -69,13 +83,14 @@ interface DesktopHfDeploymentResult {
   endpointUrl: string;
   modelId: string;
   pid: number | null;
-  runtime: 'vllm';
+  runtime: DesktopLaunchableServingLibrary;
 }
 
 interface DesktopLocalModelMetrics {
   endpointUrl: string;
   healthy: boolean;
   modelCount: number;
+  modelIds?: string[];
   uptimeSeconds: number | null;
   requestsRunning: number | null;
   requestsWaiting: number | null;
@@ -144,18 +159,37 @@ interface Window {
       apiBaseUrl?: string;
       session?: DesktopSession;
     }) => Promise<DesktopOpenClawResult>;
-    checkLibrary: (name: 'vllm' | 'ollama') => Promise<boolean>;
-    installLibrary: (name: 'vllm' | 'ollama') => Promise<void>;
+    checkLibrary: (name: DesktopServingLibrary) => Promise<boolean>;
+    installLibrary: (name: DesktopServingLibrary) => Promise<void>;
     deployHfModel: (payload: {
       repoId: string;
       port?: number;
-      runtime?: 'vllm';
+      runtime?: DesktopLaunchableServingLibrary;
+      role?: 'model' | 'router';
       healthTimeoutMs?: number;
       progressId?: string;
+      hfAccessToken?: string;
     }) => Promise<DesktopHfDeploymentResult>;
+    startLocalRoute: (payload: {
+      routeId?: string;
+      name?: string;
+      routerEndpointUrl?: string;
+      routerModelId?: string;
+      candidates: Array<Record<string, unknown>>;
+    }) => Promise<{ endpointUrl: string; port: number; routeId: string }>;
+    stopLocalRoute: (payload: {
+      routeId?: string;
+      endpointUrl?: string;
+      candidateEndpointUrl?: string;
+    }) => Promise<{ stopped: boolean; routeIds: string[]; message: string }>;
     cancelHfDeployment: (payload: {
       repoId: string;
     }) => Promise<{ cancelled: boolean; message: string }>;
+    deleteLocalModel: (payload: {
+      endpointUrl: string;
+      modelId?: string;
+      runtime?: DesktopServingLibrary | string;
+    }) => Promise<{ deleted: boolean; message: string }>;
     getLocalModelMetrics: (payload: {
       endpointUrl: string;
     }) => Promise<DesktopLocalModelMetrics>;

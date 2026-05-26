@@ -11,6 +11,7 @@ import {
   Info,
   Layers,
   LoaderCircle,
+  ChevronDown,
   Rocket,
   Server,
   Tag,
@@ -19,8 +20,10 @@ import {
   Zap,
 } from 'lucide-react';
 
-import type { ValidationResult } from '../helpers/hardwareValidation';
-import type { HfModelInfo, MachineDetailsItem } from '../types';
+import { getAcceleratorMemorySummary, type ValidationResult } from '../helpers/hardwareValidation';
+import { getModelMemoryBreakdown } from '../helpers/modelSizing';
+import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
+import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
 import { Banner } from './Common';
 
@@ -28,38 +31,53 @@ export function HfModelDetailPanel(props: {
   model: HfModelInfo | null;
   validation: ValidationResult | null;
   machine: MachineDetailsItem | null;
-  libraries: { vllm: boolean; ollama: boolean };
+  libraries: Record<ServingLibrary, boolean>;
+  selectedLibrary: ServingLibrary;
   busy: string | null;
   message: { tone: 'info' | 'success' | 'error'; text: string } | null;
   deploymentProgress: DesktopDeploymentProgress[];
-  onInstall: (name: 'vllm' | 'ollama') => Promise<void>;
+  onSelectLibrary: (library: ServingLibrary) => void;
+  onInstall: (name: ServingLibrary) => Promise<void>;
   onRegister: () => Promise<boolean | void> | boolean | void;
   onCancelDeploy: () => Promise<boolean | void> | boolean | void;
 }) {
-  const { model, validation, machine, libraries, busy, onInstall, onRegister, onCancelDeploy } = props;
+  const { model, validation, machine, libraries, busy, selectedLibrary, onInstall, onSelectLibrary, onRegister, onCancelDeploy } = props;
   const [localError, setLocalError] = React.useState<string | null>(null);
   const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
+  const [servingLibraryMenuOpen, setServingLibraryMenuOpen] = React.useState(false);
 
   if (!model) return null;
 
-  const totalSize = (model.siblings as any[])?.reduce((acc, file) => acc + (file.size || 0), 0) ?? 0;
-  const sizeGb = totalSize / (1024 ** 3);
-  const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
-  const effectiveMinVramGb = validation?.effectiveMinVramGb || sizeGb;
+  const memoryBreakdown = getModelMemoryBreakdown(model);
+  const sizeGb = validation?.modelWeightGb ?? memoryBreakdown.modelWeightGb;
+  const kvCacheGb = validation?.kvCacheGb ?? memoryBreakdown.kvCacheGb;
+  const servingOverheadGb = validation?.servingOverheadGb ?? memoryBreakdown.servingOverheadGb;
+  const acceleratorMemory = getAcceleratorMemorySummary(machine);
+  const totalVramGb = acceleratorMemory.totalGb;
+  const effectiveMinVramGb = validation?.effectiveMinVramGb || memoryBreakdown.totalVramGb;
 
   const isVllmBusy = busy === 'install-vllm';
   const isOllamaBusy = busy === 'install-ollama';
   const isRegisterBusy = busy === 'register-self-hosted';
-  const isAnyInstalling = isVllmBusy || isOllamaBusy;
+  const isAnyInstalling = Boolean(busy?.startsWith('install-'));
+  const installingLibraryName = busy?.startsWith('install-') ? formatServingLibraryName(busy.replace('install-', '') as ServingLibrary) : '';
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
-  const canDeploy = libraries.vllm && validation?.status !== 'insufficient';
+  const platform = getSupportedPlatform(machine?.platform);
+  const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
+  const selectedSupported = isLibrarySupported(selectedOption.value, platform, model);
+  const selectedCompatibility = getServingLibraryCompatibility(selectedOption.value, model);
+  const selectedInstalled = selectedSupported && libraries[selectedOption.value];
+  const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
+  const selectedLaunchable = isOneClickLaunchable(selectedOption.value);
+  const canUseSelectedLibrary = selectedSupported && validation?.status !== 'insufficient';
+  const selectedBusy = busy === `install-${selectedOption.value}`;
 
-  const handleInstall = async (name: 'vllm' | 'ollama') => {
+  const handleInstall = async (name: ServingLibrary) => {
     setLocalError(null);
     setLocalSuccess(null);
     try {
       await onInstall(name);
-      setLocalSuccess(`${name === 'vllm' ? 'vLLM' : 'Ollama'} installed successfully.`);
+      setLocalSuccess(`${formatServingLibraryName(name)} installed successfully.`);
     } catch (error: any) {
       setLocalError(error?.message || 'Installation failed');
     }
@@ -69,11 +87,16 @@ export function HfModelDetailPanel(props: {
     setLocalError(null);
     setLocalSuccess(null);
     try {
+      if (selectedSupported && !selectedInstalled) {
+        await handleInstall(selectedOption.value);
+        return;
+      }
+
       const deployed = await onRegister();
       if (deployed === false) {
         return;
       }
-      setLocalSuccess('Model deployed successfully to your local machine.');
+      setLocalSuccess(selectedLaunchable ? 'Model deployed successfully to your local machine.' : 'Local endpoint registered successfully.');
     } catch (error: any) {
       setLocalError(error?.message || 'Deployment failed');
     }
@@ -93,15 +116,16 @@ export function HfModelDetailPanel(props: {
       {props.message ? <div style={{ marginBottom: '12px' }}><Banner tone={props.message.tone} text={props.message.text} /></div> : null}
       {localError ? <div style={{ marginBottom: '12px' }}><Banner tone="error" text={localError} /></div> : null}
       {localSuccess ? <div style={{ marginBottom: '12px' }}><Banner tone="success" text={localSuccess} /></div> : null}
-      {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess ? (
-        <div style={{ marginBottom: '20px' }}>
-          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${isVllmBusy ? 'vLLM' : 'Ollama'}... Please wait.`} />
+      {!selectedSupported ? (
+        <div style={{ marginBottom: '12px' }}>
+          <Banner tone="error" text={selectedCompatibility.reason || `${selectedOption.label} is not compatible with this model or operating system.`} />
         </div>
       ) : null}
-      {props.deploymentProgress.length > 0 ? (
-        <DeploymentProgressLog items={props.deploymentProgress} />
+      {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess ? (
+        <div style={{ marginBottom: '20px' }}>
+          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${installingLibraryName}... Please wait.`} />
+        </div>
       ) : null}
-
       <div className="panel-header model-detail-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '16px' }}>
           <div style={{ minWidth: 0 }}>
@@ -137,7 +161,16 @@ export function HfModelDetailPanel(props: {
               </div>
               <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={16} /> KV Cache (Est.)</span>
-                <strong style={{ color: 'var(--muted)' }}>+ {(sizeGb * 0.15).toFixed(2)} GB</strong>
+                <strong style={{ color: 'var(--muted)' }}>+ {kvCacheGb.toFixed(2)} GB</strong>
+              </div>
+              <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
+                <span
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                  title="Estimated extra VRAM used by the selected serving runtime, separate from model weights and KV cache."
+                >
+                  <Server size={16} /> Serving Library VRAM (Est.)
+                </span>
+                <strong style={{ color: 'var(--muted)' }}>+ {servingOverheadGb.toFixed(2)} GB</strong>
               </div>
               <div className="data-row" style={{ padding: '12px', background: 'rgba(116, 227, 197, 0.05)', borderRadius: '8px', borderBottom: 'none' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent)' }}><Server size={16} /> Total Req. VRAM</span>
@@ -155,9 +188,27 @@ export function HfModelDetailPanel(props: {
                 <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Serving Libraries</span>
                 <Info size={14} style={{ opacity: 0.4 }} />
               </div>
-              <LibraryStatus name="vLLM (Recommended)" installed={libraries.vllm} busy={isVllmBusy} onInstall={() => handleInstall('vllm')} />
-              <LibraryStatus name="Ollama" installed={libraries.ollama} busy={isOllamaBusy} onInstall={() => handleInstall('ollama')} />
+              <div className="serving-library-picker">
+                <ServingLibraryDropdown
+                  busy={busy}
+                  libraries={libraries}
+                  onInstall={handleInstall}
+                  onOpenChange={setServingLibraryMenuOpen}
+                  onSelect={(library) => {
+                    onSelectLibrary(library);
+                    setServingLibraryMenuOpen(false);
+                  }}
+                  open={servingLibraryMenuOpen}
+                  platform={platform}
+                  model={model}
+                  selectedLibrary={selectedLibrary}
+                />
+              </div>
             </div>
+
+            {props.deploymentProgress.length > 0 ? (
+              <DeploymentProgressLog items={props.deploymentProgress} />
+            ) : null}
 
             {validation ? (
               <div className={`analysis-card ${validation.status}`} style={{
@@ -180,7 +231,7 @@ export function HfModelDetailPanel(props: {
                 </div>
                 <div style={{ marginTop: '14px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--muted)' }}>VRAM Capacity Used</span>
+                    <span style={{ color: 'var(--muted)' }}>{acceleratorMemory.hasUnifiedMemory ? 'Accelerator Memory Used' : 'VRAM Capacity Used'}</span>
                     <span>{effectiveMinVramGb.toFixed(1)}GB / {totalVramGb.toFixed(1)}GB</span>
                   </div>
                   <div className="progress-bar-bg" style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
@@ -207,9 +258,11 @@ export function HfModelDetailPanel(props: {
             Cancel Deployment
           </button>
         ) : null}
-        <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canDeploy} type="button">
+        <button className="primary-button" style={{ fontSize: '0.85rem', padding: '8px 16px' }} onClick={handleDeploy} disabled={isRegisterBusy || !canUseSelectedLibrary || selectedBusy} type="button">
           {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
-          {libraries.vllm ? 'Deploy with vLLM' : 'Install vLLM to Deploy'}
+          {selectedInstalled
+            ? selectedLaunchable ? `Deploy with ${preferredRuntime}` : `Register ${selectedOption.label} endpoint`
+            : selectedSupported ? `Install ${selectedOption.label}` : `${selectedOption.label} not supported`}
         </button>
       </div>
     </section>
@@ -245,22 +298,129 @@ function DeploymentProgressLog(props: { items: DesktopDeploymentProgress[] }) {
   );
 }
 
-function LibraryStatus(props: { name: string; installed: boolean; busy: boolean; onInstall: () => void }) {
+type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platforms: SupportedPlatform[] }> = [
+  { value: 'vllm', label: 'vLLM', platforms: ['linux', 'macos'] },
+  { value: 'sglang', label: 'SGLang', platforms: ['linux', 'macos'] },
+  { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'] },
+  { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'] },
+  { value: 'dynamo', label: 'Dynamo', platforms: ['linux'] },
+];
+
+function ServingLibraryDropdown(props: {
+  busy: string | null;
+  libraries: Record<ServingLibrary, boolean>;
+  onInstall: (library: ServingLibrary) => void;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (library: ServingLibrary) => void;
+  open: boolean;
+  platform: SupportedPlatform;
+  model: HfModelInfo;
+  selectedLibrary: ServingLibrary;
+}) {
+  const selectedOption = servingLibraryOptions.find((option) => option.value === props.selectedLibrary) ?? servingLibraryOptions[0];
+  const selectedSupported = isLibrarySupported(selectedOption.value, props.platform, props.model);
+  const selectedInstalled = selectedSupported && props.libraries[selectedOption.value];
+
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem' }}>
-        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: props.installed ? '#10b981' : '#ef4444', boxShadow: props.installed ? '0 0 8px #10b981' : 'none' }} />
-        {props.name}
-      </div>
-      {!props.installed ? (
-        <button className="ghost-button" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={props.onInstall} disabled={props.busy} type="button">
-          {props.busy ? <LoaderCircle className="spin" size={12} /> : 'Install'}
-        </button>
-      ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
-          <CheckCircle2 size={16} /> Installed
+    <div className="serving-library-dropdown">
+      <button
+        aria-expanded={props.open}
+        className={`serving-library-trigger ${selectedInstalled ? 'installed' : selectedSupported ? 'missing' : 'unsupported'}`}
+        onClick={() => props.onOpenChange(!props.open)}
+        type="button"
+      >
+        <span className="serving-library-trigger-main">
+          <span />
+          <strong>{selectedOption.label}</strong>
+        </span>
+        <span className="serving-library-trigger-meta">
+          {selectedInstalled ? 'Installed' : selectedSupported ? 'Install available' : 'Unsupported'}
+          <ChevronDown size={16} />
+        </span>
+      </button>
+      {props.open ? (
+        <div className="serving-library-menu">
+          {servingLibraryOptions.map((option) => {
+            const supported = isLibrarySupported(option.value, props.platform, props.model);
+            const installed = supported && props.libraries[option.value];
+            const optionBusy = props.busy === `install-${option.value}`;
+            const selected = option.value === props.selectedLibrary;
+            return (
+              <div className={`serving-library-option ${selected ? 'selected' : ''} ${installed ? 'installed' : supported ? 'missing' : 'unsupported'}`} key={option.value}>
+                <button
+                  className="serving-library-option-select"
+                  disabled={!supported}
+                  onClick={() => props.onSelect(option.value)}
+                  type="button"
+                >
+                  <span />
+                  <strong>{option.label}</strong>
+                  <small>{installed ? 'Installed' : supported ? 'Not installed' : 'Unsupported'}</small>
+                </button>
+                {!installed ? (
+                  <button
+                    className="serving-library-option-install"
+                    disabled={!supported || optionBusy}
+                    onClick={() => props.onInstall(option.value)}
+                    type="button"
+                  >
+                    {optionBusy ? <LoaderCircle className="spin" size={12} /> : supported ? 'Install' : 'Unsupported'}
+                  </button>
+                ) : (
+                  <span className="serving-library-option-installed"><CheckCircle2 size={14} /> Installed</span>
+                )}
+              </div>
+            );
+          })}
         </div>
-      )}
+      ) : null}
     </div>
   );
+}
+
+function isLibrarySupported(library: ServingLibrary, platform: SupportedPlatform, model: HfModelInfo): boolean {
+  const option = servingLibraryOptions.find((item) => item.value === library);
+  const osSupported = platform === 'unknown' || Boolean(option?.platforms.includes(platform));
+  return osSupported && isLibraryCompatibleWithModel(library, model);
+}
+
+function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInfo): boolean {
+  return isServingLibraryCompatibleWithModel(library, model);
+}
+
+function isOneClickLaunchable(library: ServingLibrary): boolean {
+  return library === 'vllm' || library === 'ollama' || library === 'transformers' || library === 'pytorch';
+}
+
+function getSupportedPlatform(value: unknown): SupportedPlatform {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('win')) return 'windows';
+  if (normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.includes('linux')) return 'linux';
+  if (typeof navigator !== 'undefined') {
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('windows')) return 'windows';
+    if (userAgent.includes('mac')) return 'macos';
+    if (userAgent.includes('linux')) return 'linux';
+  }
+  return 'unknown';
+}
+
+function formatServingLibraryName(value: ServingLibrary): string {
+  const labels: Record<ServingLibrary, string> = {
+    vllm: 'vLLM',
+    sglang: 'SGLang',
+    tensorrt: 'TensorRT-LLM',
+    ollama: 'Ollama',
+    llama_cpp: 'llama.cpp',
+    pytorch: 'PyTorch',
+    transformers: 'Transformers',
+    dynamo: 'Dynamo',
+  };
+  return labels[value] ?? value;
 }

@@ -97,7 +97,9 @@ export function getMachineGpuRows(machine: DashboardState['machineDetails']): Ar
   return machine.gpus.map((gpu) => ({
     name: gpu.name ?? gpu.model ?? 'Unknown GPU',
     vendor: gpu.vendor ?? 'Unknown',
-    vram: formatMachineCapacity(gpu.vramGb),
+    vram: gpu.memoryKind === 'unified' && typeof gpu.vramGb === 'number'
+      ? `${formatMachineCapacity(gpu.vramGb)} unified`
+      : formatMachineCapacity(gpu.vramGb),
     utilization: typeof gpu.utilizationPercent === 'number' ? `${gpu.utilizationPercent}%` : '-',
     driver: gpu.driverVersion ?? '-',
   }));

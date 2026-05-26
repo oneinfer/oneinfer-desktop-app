@@ -17,24 +17,36 @@ export function ClaudeCodeSetupPanel(props: {
         </div>
       </div>
 
-      <div className="cc-toggle">
+      <div className="settings-list">
         <button
-          className={`cc-toggle-btn${isOneinfer ? ' active' : ''}`}
+          className={`settings-list-item${isOneinfer ? ' active' : ''}`}
           type="button"
           onClick={() => props.onSetProvider('oneinfer')}
           disabled={busyConfig}
         >
-          {busyConfig && isOneinfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
-          OneInfer API
+          <span className="settings-list-icon">
+            {busyConfig && isOneinfer ? <LoaderCircle className="spin" size={16} /> : <Orbit size={16} />}
+          </span>
+          <span className="settings-list-copy">
+            <strong>OneInfer API</strong>
+            <span>Route Claude Code through your OneInfer workspace.</span>
+          </span>
+          <span className="settings-list-status">{isOneinfer ? 'Selected' : 'Use'}</span>
         </button>
         <button
-          className={`cc-toggle-btn${!isOneinfer ? ' active' : ''}`}
+          className={`settings-list-item${!isOneinfer ? ' active' : ''}`}
           type="button"
           onClick={() => props.onSetProvider('anthropic')}
           disabled={busyConfig}
         >
-          {busyConfig && !isOneinfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-          Anthropic API
+          <span className="settings-list-icon">
+            {busyConfig && !isOneinfer ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+          </span>
+          <span className="settings-list-copy">
+            <strong>Anthropic API</strong>
+            <span>Use your configured Anthropic credentials directly.</span>
+          </span>
+          <span className="settings-list-status">{!isOneinfer ? 'Selected' : 'Use'}</span>
         </button>
       </div>
     </section>
@@ -56,14 +68,16 @@ export function OpenCodeSetupPanel(props: {
         </div>
       </div>
 
-      <div className="stack-form">
-        <div className="form-hint">
-          Install OpenCode automatically if it is missing, then write a global OneInfer-backed
-          configuration for this user account.
-        </div>
-        <button className="primary-button" type="button" onClick={props.onEnable} disabled={busyConfig}>
-          {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
-          Enable OpenCode Globally
+      <div className="settings-list">
+        <button className="settings-list-item" type="button" onClick={props.onEnable} disabled={busyConfig}>
+          <span className="settings-list-icon">
+            {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
+          </span>
+          <span className="settings-list-copy">
+            <strong>Enable OpenCode Globally</strong>
+            <span>Install OpenCode if needed and write a OneInfer-backed user config.</span>
+          </span>
+          <span className="settings-list-status">Enable</span>
         </button>
       </div>
     </section>
@@ -114,14 +128,16 @@ export function OpenClawSetupPanel(props: {
         </div>
       </div>
 
-      <div className="stack-form">
-        <div className="form-hint">
-          Install OpenClaw automatically if it is missing, then write a global OneInfer-backed
-          configuration for this user account.
-        </div>
-        <button className="primary-button" type="button" onClick={props.onEnable} disabled={busyConfig}>
-          {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
-          Enable OpenClaw Globally
+      <div className="settings-list">
+        <button className="settings-list-item" type="button" onClick={props.onEnable} disabled={busyConfig}>
+          <span className="settings-list-icon">
+            {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
+          </span>
+          <span className="settings-list-copy">
+            <strong>Enable OpenClaw Globally</strong>
+            <span>Install OpenClaw if needed and write a OneInfer-backed user config.</span>
+          </span>
+          <span className="settings-list-status">Enable</span>
         </button>
       </div>
     </section>
