@@ -1,7 +1,8 @@
-import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
+import { Blocks, Bot, Orbit, Server, Zap } from 'lucide-react';
 
-import { EmptyState, MiniTable } from '../components/Common';
+import { EmptyState } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
+import { ClaudeCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -9,21 +10,18 @@ export function OverviewPage(props: {
   dashboard: DashboardState;
   busy: string | null;
   infraTab: 'self-hosted' | 'cloud';
-  overviewTab: 'claude-code' | 'opencode' | 'openclaw';
+  overviewTab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw';
   claudeCodeProvider: 'oneinfer' | 'anthropic';
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onInfraTabChange: (tab: 'self-hosted' | 'cloud') => void;
-  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'openclaw') => void;
+  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw') => void;
   onClaudeProviderChange: (provider: 'oneinfer' | 'anthropic') => void;
   onEnableOpenCode: () => void;
+  onEnableKiloCode: () => void;
   onEnableOpenClaw: () => void;
   onSectionChange: (section: SectionKey) => void;
 }) {
-  const isClaudeOneInfer = props.claudeCodeProvider === 'oneinfer';
-  const isClaudeBusy = props.busy === 'configure-claude-code';
-  const isOpenCodeBusy = props.busy === 'configure-opencode';
-  const isOpenClawBusy = props.busy === 'configure-openclaw';
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local' && !isRouterEndpoint(endpoint));
   const cloudEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'cloud' && !isRouterEndpoint(endpoint));
   const validLocalDeployments = props.localDeployments.filter((deployment) => isVisibleLocalDeployment(deployment, props.localModelMetrics));
@@ -112,73 +110,47 @@ export function OverviewPage(props: {
         </aside>
 
         <main className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
-            <h3 className="overview-settings-heading">AI Coding Tool</h3>
-            <div className="settings-list overview-tab-list">
-              <div className="settings-list-item settings-list-card active">
-                <span className="settings-list-icon"><Bot size={16} /></span>
-                <span className="settings-list-copy">
-                  <strong>Claude Code</strong>
-                  <span>Configure your Claude Code provider.</span>
-                </span>
-                <div className="settings-list-actions">
-                  <button
-                    className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
-                    disabled={isClaudeBusy}
-                    onClick={() => props.onClaudeProviderChange('oneinfer')}
-                    type="button"
-                  >
-                    {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
-                    OneInfer
-                  </button>
-                  <button
-                    className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
-                    disabled={isClaudeBusy}
-                    onClick={() => props.onClaudeProviderChange('anthropic')}
-                    type="button"
-                  >
-                    {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                    Anthropic
-                  </button>
-                </div>
-              </div>
-              <div className="settings-list-item settings-list-card">
-                <span className="settings-list-icon"><Blocks size={16} /></span>
-                <span className="settings-list-copy">
-                  <strong>OpenCode</strong>
-                  <span>Enable a global OneInfer-backed config.</span>
-                </span>
-                <button className="settings-list-status settings-action-button" disabled={isOpenCodeBusy} onClick={props.onEnableOpenCode} type="button">
-                  {isOpenCodeBusy ? 'Enabling...' : 'Enable'}
-                </button>
-              </div>
-              <div className="settings-list-item settings-list-card">
-                <span className="settings-list-icon"><Blocks size={16} /></span>
-                <span className="settings-list-copy">
-                  <strong>OpenClaw</strong>
-                  <span>Enable OpenClaw for this user account.</span>
-                </span>
-                <button className="settings-list-status settings-action-button" disabled={isOpenClawBusy} onClick={props.onEnableOpenClaw} type="button">
-                  {isOpenClawBusy ? 'Enabling...' : 'Enable'}
-                </button>
-              </div>
-            </div>
+          <h3 className="overview-settings-heading">AI Coding Tool</h3>
+          <div className="cc-toggle" style={{ marginBottom: '20px' }}>
+            <button className={`cc-toggle-btn ${props.overviewTab === 'claude-code' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('claude-code')} type="button">
+              <Bot size={14} />
+              Claude Code
+            </button>
+            <button className={`cc-toggle-btn ${props.overviewTab === 'opencode' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('opencode')} type="button">
+              <Blocks size={14} />
+              OpenCode
+            </button>
+            <button className={`cc-toggle-btn ${props.overviewTab === 'kilocode' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('kilocode')} type="button">
+              <Blocks size={14} />
+              Kilo Code
+            </button>
+            <button className={`cc-toggle-btn ${props.overviewTab === 'openclaw' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('openclaw')} type="button">
+              <Blocks size={14} />
+              OpenClaw
+            </button>
+          </div>
 
-            <div className="card-stack">
-              {localEndpoints.length > 0 && (
-                <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
-                  <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-                    <Zap size={20} />
-                  </div>
-                  <div className="status-card-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                    <div style={{ textAlign: 'left' }}>
-                      <h4 style={{ color: '#10b981', margin: '0 0 4px 0' }}>Local Models Active</h4>
-                      <p style={{ fontSize: '0.85rem', opacity: 0.8, margin: 0 }}>{localEndpoints.length} local inference server(s) registered and ready.</p>
-                    </div>
-                    <button className="ghost-button" onClick={() => props.onSectionChange('routing')} style={{ fontSize: '0.75rem' }} type="button">Manage Routing</button>
-                  </div>
+          <div className="card-stack">
+            {localEndpoints.length > 0 && (
+              <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
+                <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+                  <Zap size={20} />
                 </div>
-              )}
-            </div>
+                <div className="status-card-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                  <div style={{ textAlign: 'left' }}>
+                    <h4 style={{ color: '#10b981', margin: '0 0 4px 0' }}>Local Models Active</h4>
+                    <p style={{ fontSize: '0.85rem', opacity: 0.8, margin: 0 }}>{localEndpoints.length} local inference server(s) registered and ready.</p>
+                  </div>
+                  <button className="ghost-button" onClick={() => props.onSectionChange('routing')} style={{ fontSize: '0.75rem' }} type="button">Manage Routing</button>
+                </div>
+              </div>
+            )} 
+
+            {props.overviewTab === 'claude-code' ? <ClaudeCodeSetupPanel provider={props.claudeCodeProvider} onSetProvider={props.onClaudeProviderChange} busy={props.busy} /> : null}
+            {props.overviewTab === 'opencode' ? <OpenCodeSetupPanel busy={props.busy} onEnable={props.onEnableOpenCode} /> : null}
+            {props.overviewTab === 'kilocode' ? <KiloCodeSetupPanel busy={props.busy} onEnable={props.onEnableKiloCode} /> : null}
+            {props.overviewTab === 'openclaw' ? <OpenClawSetupPanel busy={props.busy} onEnable={props.onEnableOpenClaw} /> : null}
+          </div>
         </main>
 
         <RoutingSummaryCard

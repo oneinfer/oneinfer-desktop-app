@@ -84,6 +84,35 @@ export function OpenCodeSetupPanel(props: {
   );
 }
 
+export function KiloCodeSetupPanel(props: {
+  busy: string | null;
+  onEnable: () => void;
+}) {
+  const busyConfig = props.busy === 'configure-kilocode';
+
+  return (
+    <section className="content-panel glass-panel">
+      <div className="panel-header">
+        <div className="panel-title">
+          <Blocks size={18} />
+          <h3>Kilo Code Setup</h3>
+        </div>
+      </div>
+
+      <div className="stack-form">
+        <div className="form-hint">
+          Install Kilo Code automatically if it is missing, then write a global OneInfer-backed
+          configuration for this user account.
+        </div>
+        <button className="primary-button" type="button" onClick={props.onEnable} disabled={busyConfig}>
+          {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
+          Enable Kilo Code Globally
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function OpenClawSetupPanel(props: {
   busy: string | null;
   onEnable: () => void;
