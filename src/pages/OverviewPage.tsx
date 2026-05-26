@@ -3,7 +3,7 @@ import { Blocks, Bot, Orbit, Server, Zap } from 'lucide-react';
 import { EmptyState } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
 import { ClaudeCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
-import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
+import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
 export function OverviewPage(props: {
@@ -21,6 +21,7 @@ export function OverviewPage(props: {
   onEnableKiloCode: () => void;
   onEnableOpenClaw: () => void;
   onSectionChange: (section: SectionKey) => void;
+  onOpenRoute: (routeId: string) => void;
 }) {
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local' && !isRouterEndpoint(endpoint));
   const cloudEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'cloud' && !isRouterEndpoint(endpoint));
@@ -154,10 +155,12 @@ export function OverviewPage(props: {
         </main>
 
         <RoutingSummaryCard
+          routes={props.dashboard.intelligentEndpoints}
           routeCount={props.dashboard.intelligentEndpoints.length}
           localTargetCount={visibleLocalDeployments.length}
           cloudTargetCount={cloudEndpoints.length}
           onManage={() => props.onSectionChange('routing')}
+          onOpenRoute={props.onOpenRoute}
         />
 
         <section className="overview-standalone-section">
@@ -215,8 +218,16 @@ function ActivePlansCard(props: { activePlan: DeveloperPlanItem | ActiveDevelope
   );
 }
 
-function RoutingSummaryCard(props: { routeCount: number; localTargetCount: number; cloudTargetCount: number; onManage: () => void }) {
+function RoutingSummaryCard(props: {
+  routes: EndpointItem[];
+  routeCount: number;
+  localTargetCount: number;
+  cloudTargetCount: number;
+  onManage: () => void;
+  onOpenRoute: (routeId: string) => void;
+}) {
   const targetCount = props.localTargetCount + props.cloudTargetCount;
+  const previewRoutes = props.routes.slice(0, 3);
 
   return (
     <section className="sub-card" style={{ alignItems: 'stretch', display: 'grid', gap: '14px', padding: '16px' }}>
@@ -241,12 +252,51 @@ function RoutingSummaryCard(props: { routeCount: number; localTargetCount: numbe
         <MetricChip label="Cloud" value={formatMetric(props.cloudTargetCount)} />
       </div>
 
+      {previewRoutes.length > 0 ? (
+        <div style={{ display: 'grid', gap: '8px' }}>
+          {previewRoutes.map((route, index) => {
+            const routeId = getRouteId(route, index);
+            const routeName = String(route.name ?? route.endpoint_name ?? routeId);
+            const status = String(route.status ?? route.creation_status ?? 'active');
+            return (
+              <button
+                className="overview-router-row"
+                key={routeId}
+                onClick={() => props.onOpenRoute(routeId)}
+                type="button"
+              >
+                <span>
+                  <strong>{routeName}</strong>
+                  <small>{routeId}</small>
+                </span>
+                <span className={`status-pill ${isActiveStatus(status) ? 'active' : 'soft'}`}>
+                  {formatValue(status)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+          No routers created yet.
+        </div>
+      )}
+
       <button className="ghost-button" onClick={props.onManage} style={{ fontSize: '0.8rem', justifySelf: 'flex-start', minHeight: '36px', padding: '8px 12px' }} type="button">
         <Orbit size={14} />
         Manage Routing
       </button>
     </section>
   );
+}
+
+function getRouteId(endpoint: EndpointItem, index: number): string {
+  return String(endpoint.intelligent_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `route-${index + 1}`);
+}
+
+function isActiveStatus(status: string): boolean {
+  const normalizedStatus = status.toLowerCase();
+  return normalizedStatus === 'active' || normalizedStatus === 'running' || normalizedStatus === 'ready';
 }
 
 function LocalDeploymentSummary(props: { deployment: LocalModelDeployment; metrics?: LocalModelMetrics }) {

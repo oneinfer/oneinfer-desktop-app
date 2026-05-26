@@ -864,12 +864,27 @@ label span,
   align-items: center;
   gap: 10px;
   padding: 10px;
+  cursor: pointer;
+}
+
+.route-endpoint-option:has(.route-endpoint-checkbox:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .route-endpoint-option small {
   display: block;
   margin-top: 3px;
   word-break: break-all;
+}
+
+.route-endpoint-checkbox {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .route-endpoint-check {
@@ -905,6 +920,85 @@ label span,
   font-size: 0.88rem;
 }
 
+.route-step-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.route-step-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.route-step-heading strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.route-step-heading span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.route-step-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.route-step-warning {
+  border: 1px solid rgba(255, 182, 94, 0.28);
+  border-radius: 10px;
+  background: rgba(255, 182, 94, 0.1);
+  color: #ffd39b;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  padding: 10px 12px;
+}
+
+.overview-router-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  padding: 10px;
+  text-align: left;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.overview-router-row:hover {
+  border-color: rgba(116, 227, 197, 0.26);
+  background: rgba(116, 227, 197, 0.08);
+}
+
+.overview-router-row span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.overview-router-row strong,
+.overview-router-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-router-row strong {
+  font-size: 0.84rem;
+}
+
+.overview-router-row small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .modal-content:has(.route-blueprint-modal) {
   width: min(1180px, 96vw);
 }
@@ -931,6 +1025,11 @@ label span,
   color: var(--accent);
 }
 
+.route-builder-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .route-builder-tabs button.active::after {
   position: absolute;
   right: 0;
@@ -947,17 +1046,13 @@ label span,
   border: 1px solid rgba(144, 197, 255, 0.13);
   border-radius: 18px;
   background:
-    radial-gradient(circle at 48% 44%, rgba(116, 227, 197, 0.1), transparent 28%),
-    linear-gradient(180deg, rgba(13, 23, 34, 0.94), rgba(5, 11, 18, 0.94));
+    radial-gradient(circle at 48% 44%, rgba(116, 227, 197, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(13, 23, 34, 0.96), rgba(5, 11, 18, 0.96));
 }
 
 .route-flow-canvas {
   position: relative;
-  display: grid;
   min-height: 390px;
-  grid-template-columns: minmax(150px, 1fr) 80px minmax(150px, 1fr) 80px minmax(180px, 1.15fr);
-  gap: 10px;
-  align-items: center;
   padding: 34px;
 }
 
@@ -973,10 +1068,52 @@ label span,
   pointer-events: none;
 }
 
-.route-blueprint-node {
-  position: relative;
+.route-flow-canvas-freeform {
+  min-height: 440px;
+  cursor: grab;
+}
+
+.route-flow-canvas-freeform:active {
+  cursor: grabbing;
+}
+
+.route-blueprint-svg {
+  position: absolute;
+  inset: 0;
   z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.route-blueprint-svg path {
+  fill: none;
+  stroke: rgba(116, 227, 197, 0.82);
+  stroke-dasharray: 5 5;
+  stroke-linecap: round;
+  stroke-width: 0.28;
+}
+
+.route-blueprint-svg marker path {
+  fill: rgba(116, 227, 197, 0.92);
+}
+
+.route-blueprint-free-node {
+  position: absolute;
+  z-index: 2;
+  width: clamp(172px, 17vw, 230px);
+  transform: translate(0, 0);
+  user-select: none;
+}
+
+.route-blueprint-node {
+  position: absolute;
+}
+
+.route-blueprint-node-content {
   display: flex;
+  width: 100%;
   min-width: 0;
   min-height: 112px;
   flex-direction: column;
@@ -991,28 +1128,35 @@ label span,
   text-align: center;
 }
 
-.route-blueprint-node:hover {
+.route-blueprint-node-content:hover {
   border-color: rgba(116, 227, 197, 0.58);
 }
 
-.route-blueprint-node.engine {
+.route-blueprint-node.engine,
+.route-engine-node-wrap {
+  width: clamp(184px, 18vw, 250px);
+}
+
+.route-blueprint-node.engine .route-blueprint-node-content,
+.route-engine-node-wrap .route-blueprint-node-content {
   min-height: 142px;
   border-color: rgba(129, 140, 248, 0.7);
   background: linear-gradient(180deg, rgba(25, 32, 58, 0.96), rgba(11, 18, 31, 0.96));
 }
 
-.route-blueprint-node.engine:hover {
+.route-blueprint-node.engine .route-blueprint-node-content:hover,
+.route-engine-node-wrap .route-blueprint-node-content:hover {
   border-color: rgba(129, 140, 248, 0.95);
   box-shadow: 0 18px 58px rgba(99, 102, 241, 0.22);
 }
 
-.route-blueprint-node.candidate {
+.route-blueprint-node.candidate .route-blueprint-node-content {
   min-height: 86px;
   align-items: flex-start;
   text-align: left;
 }
 
-.route-blueprint-node img {
+.route-blueprint-node-content img {
   width: 54px;
   height: 54px;
   border-radius: 10px;
@@ -1030,7 +1174,7 @@ label span,
   color: var(--accent);
 }
 
-.route-blueprint-node strong {
+.route-blueprint-node-content strong {
   max-width: 100%;
   overflow: hidden;
   color: var(--text);
@@ -1040,7 +1184,7 @@ label span,
   white-space: nowrap;
 }
 
-.route-blueprint-node small {
+.route-blueprint-node-content small {
   max-width: 100%;
   overflow: hidden;
   color: var(--muted);
@@ -1051,7 +1195,6 @@ label span,
 }
 
 .route-engine-node-wrap {
-  position: relative;
   z-index: 2;
 }
 
@@ -1070,6 +1213,11 @@ label span,
   background: #6366f1;
   color: white;
   box-shadow: 0 10px 24px rgba(99, 102, 241, 0.34);
+}
+
+.route-engine-add-review {
+  top: 50%;
+  right: -18px;
 }
 
 .route-engine-menu {
@@ -1210,6 +1358,13 @@ label span,
   font-size: 0.76rem;
   font-weight: 800;
   padding: 7px 10px;
+}
+
+.route-blueprint-free-more {
+  position: absolute;
+  right: 26px;
+  bottom: 22px;
+  z-index: 2;
 }
 
 .table-shell {

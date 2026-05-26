@@ -152,6 +152,7 @@ function App() {
   const [localRouteUrls, setLocalRouteUrls] = useState<Record<string, string>>({});
   const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
   const [routeInitialEndpointId, setRouteInitialEndpointId] = useState<string | null>(null);
+  const [routeInitialViewId, setRouteInitialViewId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -429,6 +430,7 @@ function App() {
           getInstances(currentBaseUrl, currentSession),
           getDeveloperPlans(currentBaseUrl),
           getActiveDeveloperPlan(currentBaseUrl, currentSession),
+          listIntelligentEndpoints(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
@@ -442,6 +444,7 @@ function App() {
           }),
           developerPlans: results[4].status === 'fulfilled' ? results[4].value : current.developerPlans,
           activeDeveloperPlan: results[5].status === 'fulfilled' ? results[5].value : current.activeDeveloperPlan,
+          intelligentEndpoints: results[6].status === 'fulfilled' ? results[6].value : current.intelligentEndpoints,
         }));
 
         announcePartialFailures('Overview', results, shouldBeSilent, [
@@ -451,6 +454,7 @@ function App() {
           'instances',
           'developer plans',
           'active developer plan',
+          'routes',
         ]);
       }
 
@@ -1871,6 +1875,10 @@ function App() {
             onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
             onSectionChange={setActiveSection}
+            onOpenRoute={(routeId) => {
+              setRouteInitialViewId(routeId);
+              setActiveSection('routing');
+            }}
           />
         ) : null}
 
@@ -1958,6 +1966,8 @@ function App() {
             localModelMetrics={localModelMetrics}
             initialEndpointId={routeInitialEndpointId}
             onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
+            initialRouteId={routeInitialViewId}
+            onInitialRouteConsumed={() => setRouteInitialViewId(null)}
           />
         ) : null}
 

@@ -39,7 +39,7 @@ export function AppLayout(props: {
 
       <div className={`sidebar-overlay${props.sidebarOpen ? ' active' : ''}`} onClick={() => props.onSidebarOpen(false)} />
 
-      <aside className={`sidebar-container glass-panel${props.sidebarOpen ? ' open' : ''}`} style={{ width: '360px', flexShrink: 0 }}>
+      <aside className={`sidebar-container glass-panel${props.sidebarOpen ? ' open' : ''}`} style={{ minWidth: 0 }}>
         <div className="sidebar">
           <button className="ghost-button sidebar-close" type="button" onClick={() => props.onSidebarOpen(false)}>
             <X size={18} />
