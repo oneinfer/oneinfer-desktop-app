@@ -53,8 +53,8 @@ export function SelfHostingPage(props: {
   const canShowAnalysis = Boolean(props.hfModelMetadata);
   const selectedModelValue = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
   const hasModelInput = selectedModelValue.trim().length > 0;
-  const hasLocalRuntime = Object.values(props.libraries).some(Boolean);
   const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
+  const hasLocalRuntime = servingLibraryOptions.some((library) => props.libraries[library.value] && isServingLibrarySupported(library, platform, props.hfModelMetadata));
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
   const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform, props.hfModelMetadata);
   const selectedLibraryCompatibility = props.hfModelMetadata ? getServingLibraryCompatibility(selectedLibrary.value, props.hfModelMetadata) : null;
@@ -229,6 +229,8 @@ export function SelfHostingPage(props: {
               metadataError={props.hfModelMetadataError}
               validationResult={props.validationResult}
               libraries={props.libraries}
+              platform={platform}
+              model={props.hfModelMetadata}
               selectedLibrary={selectedLibrary}
               selectedLibraryInstalled={selectedLibraryInstalled}
               selectedLibraryLaunchable={selectedLibraryLaunchable}
@@ -400,13 +402,13 @@ function getLocalDeploymentRows(endpoints: EndpointItem[], deployments: LocalMod
     const rowKey = getLocalDeploymentRowKey(deployment.endpointUrl, deployment.modelId);
     const existing = rows.get(rowKey);
     rows.set(rowKey, {
-      endpointId: existing?.endpointId ?? `local-deployment-${index + 1}`,
+      endpointId: existing?.endpointId ?? deployment.endpointId ?? `local-deployment-${index + 1}`,
       endpointUrl: normalizeLocalEndpointUrl(deployment.endpointUrl),
       modelId: deployment.modelId,
       name: deployment.name,
       runtime: deployment.runtime,
       deployedAt: deployment.deployedAt,
-      registered: Boolean(existing?.registered),
+      registered: Boolean(existing?.registered || deployment.endpointId),
       pid: deployment.pid,
     });
   });
@@ -427,10 +429,14 @@ function isRouterDeployment(deployment: LocalModelDeployment): boolean {
   return isRouterText(deployment.name, deployment.modelId);
 }
 
-function isVisibleLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId' | 'name'>, metricsMap: Record<string, LocalModelMetrics>): boolean {
+function isVisibleLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointId' | 'endpointUrl' | 'modelId' | 'name'>, metricsMap: Record<string, LocalModelMetrics>): boolean {
+  if (deployment.endpointId) {
+    return true;
+  }
+
   const metrics = metricsMap[deployment.endpointUrl] ?? metricsMap[normalizeLocalEndpointUrl(deployment.endpointUrl)];
   if (metrics?.healthy && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
-    return metrics.modelIds.includes(deployment.modelId);
+    return metrics.modelIds.some((modelId) => isSameLocalModelId(modelId, deployment.modelId));
   }
 
   return true;
@@ -447,6 +453,20 @@ function getLocalDeploymentRowKey(endpointUrl: string, modelId: string): string 
 
 function normalizeLocalEndpointUrl(endpointUrl: string): string {
   return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
+}
+
+function isSameLocalModelId(left: string, right: string): boolean {
+  const leftAliases = getLocalModelIdAliases(left);
+  const rightAliases = getLocalModelIdAliases(right);
+  return leftAliases.some((alias) => rightAliases.includes(alias));
+}
+
+function getLocalModelIdAliases(value: string): string[] {
+  const rawValue = value.trim();
+  const normalized = rawValue.toLowerCase();
+  const withoutHfPrefix = normalized.startsWith('hf.co/') ? normalized.slice('hf.co/'.length) : normalized;
+  const withHfPrefix = normalized.includes('/') && !normalized.startsWith('hf.co/') ? `hf.co/${normalized}` : normalized;
+  return Array.from(new Set([normalized, withoutHfPrefix, withHfPrefix].filter(Boolean)));
 }
 
 function getEndpointId(endpoint: EndpointItem, index: number): string {
@@ -468,23 +488,27 @@ function DeployabilityChecklist(props: {
   metadataError: string | null;
   validationResult: ValidationResult | null;
   libraries: Record<ServingLibrary, boolean>;
+  platform: SupportedPlatform;
+  model: HfModelInfo | null;
   selectedLibrary: { value: ServingLibrary; label: string };
   selectedLibraryInstalled: boolean;
   selectedLibraryLaunchable: boolean;
 }) {
-  const installedLibraries = servingLibraryOptions.filter((library) => props.libraries[library.value]).map((library) => library.label);
-  const runtimeInstalled = installedLibraries.length > 0;
+  const supportedInstalledLibraries = servingLibraryOptions
+    .filter((library) => props.libraries[library.value] && isServingLibrarySupported(library, props.platform, props.model))
+    .map((library) => library.label);
+  const runtimeInstalled = supportedInstalledLibraries.length > 0;
   const runtimeLabel = props.selectedLibraryInstalled
-    ? `${props.selectedLibrary.label} installed`
+    ? `Supported serving libraries: ${props.selectedLibrary.label}`
     : runtimeInstalled
-      ? `${installedLibraries.join(', ')} installed`
-      : 'Local runtime required';
+      ? `Supported serving libraries: ${supportedInstalledLibraries.join(', ')}`
+      : 'Supported serving libraries required';
   const runtimeDetail = props.selectedLibraryInstalled
     ? props.selectedLibraryLaunchable
       ? `${props.selectedLibrary.label} can be launched automatically for this model.`
       : `${props.selectedLibrary.label} can be registered after you start an OpenAI-compatible local server. One-click launch is currently available for vLLM and Ollama.`
     : runtimeInstalled
-      ? 'Select an installed runtime, or install the selected runtime before deployment.'
+      ? 'Select a supported serving library, or install the selected serving library before deployment.'
     : 'Install or start a supported local serving library before deployment.';
 
   return (

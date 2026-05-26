@@ -905,6 +905,313 @@ label span,
   font-size: 0.88rem;
 }
 
+.modal-content:has(.route-blueprint-modal) {
+  width: min(1180px, 96vw);
+}
+
+.route-builder-tabs {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 0 4px;
+}
+
+.route-builder-tabs button {
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+  padding: 0 0 12px;
+}
+
+.route-builder-tabs button.active {
+  color: var(--accent);
+}
+
+.route-builder-tabs button.active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  content: "";
+}
+
+.route-blueprint-shell {
+  overflow: hidden;
+  border: 1px solid rgba(144, 197, 255, 0.13);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 48% 44%, rgba(116, 227, 197, 0.1), transparent 28%),
+    linear-gradient(180deg, rgba(13, 23, 34, 0.94), rgba(5, 11, 18, 0.94));
+}
+
+.route-flow-canvas {
+  position: relative;
+  display: grid;
+  min-height: 390px;
+  grid-template-columns: minmax(150px, 1fr) 80px minmax(150px, 1fr) 80px minmax(180px, 1.15fr);
+  gap: 10px;
+  align-items: center;
+  padding: 34px;
+}
+
+.route-flow-canvas::before {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(144, 197, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(144, 197, 255, 0.05) 1px, transparent 1px);
+  background-size: 26px 26px;
+  content: "";
+  mask-image: radial-gradient(circle at center, black, transparent 76%);
+  pointer-events: none;
+}
+
+.route-blueprint-node {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 112px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(116, 227, 197, 0.34);
+  border-radius: 12px;
+  background: rgba(8, 14, 22, 0.92);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  padding: 16px;
+  text-align: center;
+}
+
+.route-blueprint-node:hover {
+  border-color: rgba(116, 227, 197, 0.58);
+}
+
+.route-blueprint-node.engine {
+  min-height: 142px;
+  border-color: rgba(129, 140, 248, 0.7);
+  background: linear-gradient(180deg, rgba(25, 32, 58, 0.96), rgba(11, 18, 31, 0.96));
+}
+
+.route-blueprint-node.engine:hover {
+  border-color: rgba(129, 140, 248, 0.95);
+  box-shadow: 0 18px 58px rgba(99, 102, 241, 0.22);
+}
+
+.route-blueprint-node.candidate {
+  min-height: 86px;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.route-blueprint-node img {
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: 0 10px 24px rgba(129, 140, 248, 0.22);
+}
+
+.route-blueprint-node-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(116, 227, 197, 0.12);
+  color: var(--accent);
+}
+
+.route-blueprint-node strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.94rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-blueprint-node small {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-engine-node-wrap {
+  position: relative;
+  z-index: 2;
+}
+
+.route-engine-add {
+  position: absolute;
+  top: 42%;
+  right: -19px;
+  z-index: 3;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 2px solid rgba(8, 14, 22, 0.94);
+  border-radius: 999px;
+  background: #6366f1;
+  color: white;
+  box-shadow: 0 10px 24px rgba(99, 102, 241, 0.34);
+}
+
+.route-engine-menu {
+  position: absolute;
+  top: 42%;
+  right: -242px;
+  z-index: 4;
+  display: grid;
+  width: 220px;
+  gap: 6px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(144, 197, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 14, 22, 0.98);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+  padding: 8px;
+}
+
+.route-engine-controls {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.route-engine-controls label {
+  display: grid;
+  gap: 6px;
+}
+
+.route-engine-controls label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.route-engine-controls select {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.route-engine-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.route-engine-menu button.active {
+  background: rgba(116, 227, 197, 0.12);
+  color: var(--accent);
+}
+
+.route-goal-menu {
+  position: absolute;
+  top: 154px;
+  left: 50%;
+  z-index: 5;
+  display: grid;
+  width: min(320px, 90vw);
+  max-height: 260px;
+  gap: 6px;
+  overflow-y: auto;
+  transform: translateX(-50%);
+  border: 1px solid rgba(144, 197, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 14, 22, 0.98);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+  padding: 8px;
+}
+
+.route-goal-menu button {
+  display: grid;
+  gap: 3px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px;
+  text-align: left;
+}
+
+.route-goal-menu button.active {
+  background: rgba(116, 227, 197, 0.12);
+  color: var(--accent);
+}
+
+.route-goal-menu button strong {
+  color: inherit;
+  font-size: 0.84rem;
+}
+
+.route-goal-menu button span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.route-blueprint-connector {
+  position: relative;
+  z-index: 1;
+  height: 2px;
+  min-width: 54px;
+  background: linear-gradient(90deg, rgba(129, 140, 248, 0.2), rgba(116, 227, 197, 0.8));
+}
+
+.route-blueprint-connector span {
+  position: absolute;
+  top: 50%;
+  right: -2px;
+  width: 9px;
+  height: 9px;
+  transform: translateY(-50%) rotate(45deg);
+  border-top: 2px solid rgba(116, 227, 197, 0.8);
+  border-right: 2px solid rgba(116, 227, 197, 0.8);
+}
+
+.route-blueprint-endpoints {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+}
+
+.route-blueprint-more {
+  justify-self: start;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
 .table-shell {
   overflow: auto;
   border-radius: 18px;
@@ -1160,7 +1467,24 @@ th {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 20px;
-  align-items: start;
+  align-items: stretch;
+}
+
+.overview-column {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.overview-feature-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.overview-standalone-section {
+  display: grid;
+  gap: 12px;
 }
 
 .overview-hardware-row {
@@ -1246,6 +1570,13 @@ th {
 
 .overview-tab-list {
   margin-bottom: 20px;
+}
+
+.overview-settings-heading {
+  margin: 0 0 14px;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .settings-list-item {

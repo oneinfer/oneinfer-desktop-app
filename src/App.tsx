@@ -36,7 +36,7 @@ import {
   defaultInstanceForm,
   defaultSettings,
 } from './constants';
-import { validateHardwareSupport, type ModelRequirements, type ValidationResult } from './helpers/hardwareValidation';
+import { getAcceleratorMemorySummary, validateHardwareSupport, type ModelRequirements, type ValidationResult } from './helpers/hardwareValidation';
 import { syncLocalMachineProfile } from './helpers/machineDetails';
 import { getModelMemoryBreakdown } from './helpers/modelSizing';
 import { getServingLibraryCompatibility } from './helpers/servingCompatibility';
@@ -494,8 +494,18 @@ function App() {
       }
 
       if (section === 'selfHosting') {
-        const models = await listModels(currentBaseUrl);
-        setDashboard((current) => ({ ...current, models }));
+        const results = await Promise.allSettled([
+          listModels(currentBaseUrl),
+          listInferenceEndpoints(currentBaseUrl, currentSession),
+        ]);
+
+        setDashboard((current) => ({
+          ...current,
+          models: results[0].status === 'fulfilled' ? results[0].value : current.models,
+          inferenceEndpoints: results[1].status === 'fulfilled' ? results[1].value : current.inferenceEndpoints,
+        }));
+
+        announcePartialFailures('Self Hosting', results, shouldBeSilent, ['models', 'inference endpoints']);
         if (!shouldBeSilent) {
           setMessage({ tone: 'success', text: 'Models catalog synced.' });
         }
@@ -965,20 +975,19 @@ function App() {
         ...current,
         endpoint_url: deployment.endpointUrl,
       }));
+      const deployedAt = new Date().toISOString();
+      const localDeploymentRecord: LocalModelDeployment = {
+        endpointUrl: deployment.endpointUrl,
+        modelId: deployment.modelId,
+        name: selfHostForm.name.trim() || repoId,
+        pid: deployment.pid,
+        runtime: deployment.runtime,
+        deployedAt,
+      };
+      let nextLocalDeployments = upsertLocalDeployment(localDeployments, localDeploymentRecord);
       setLocalDeployments((current) => {
-        const nextDeployment: LocalModelDeployment = {
-          endpointUrl: deployment.endpointUrl,
-          modelId: deployment.modelId,
-          name: selfHostForm.name.trim() || repoId,
-          pid: deployment.pid,
-          runtime: deployment.runtime,
-          deployedAt: new Date().toISOString(),
-        };
-
-        return [
-          nextDeployment,
-          ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
-        ];
+        nextLocalDeployments = upsertLocalDeployment(current, localDeploymentRecord);
+        return nextLocalDeployments;
       });
 
       const registeringProgress: DesktopDeploymentProgress = {
@@ -1007,12 +1016,18 @@ function App() {
 
       const registeredEndpointId = getEndpointIdFromPayload(registeredEndpoint);
       if (registeredEndpointId) {
+        nextLocalDeployments = nextLocalDeployments.map((item) => (
+          item.endpointUrl === deployment.endpointUrl && item.modelId === deployment.modelId
+            ? { ...item, endpointId: registeredEndpointId }
+            : item
+        ));
         setLocalDeployments((current) => current.map((item) => (
           item.endpointUrl === deployment.endpointUrl && item.modelId === deployment.modelId
             ? { ...item, endpointId: registeredEndpointId }
             : item
         )));
       }
+      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments);
 
       const registeredProgress: DesktopDeploymentProgress = {
         id: progressId,
@@ -1024,6 +1039,7 @@ function App() {
       };
       setDeploymentProgress((current) => [...current, registeredProgress].slice(-80));
       setMessage({ tone: 'success', text: `Deployed ${deployment.modelId} locally and registered ${deployment.endpointUrl}.` });
+      await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
       return true;
     } catch (error) {
@@ -2175,7 +2191,8 @@ function getLocalDeploymentHardwareBlockReason(
     return null;
   }
 
-  const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
+  const acceleratorMemory = getAcceleratorMemorySummary(machine);
+  const totalVramGb = acceleratorMemory.totalGb;
   const totalRamGb = machine?.memory?.totalGb ?? 0;
   const hasInsufficientVram = totalVramGb < validation.effectiveMinVramGb;
 
@@ -2184,13 +2201,13 @@ function getLocalDeploymentHardwareBlockReason(
   }
 
   if ((runtime === 'vllm' || runtime === 'sglang' || runtime === 'dynamo') && totalVramGb < validation.effectiveMinVramGb) {
-    return `${formatLocalRuntime(runtime)} needs enough GPU VRAM for this model. Required: ${validation.effectiveMinVramGb.toFixed(1)}GB VRAM, available: ${totalVramGb.toFixed(1)}GB.`;
+    return `${formatLocalRuntime(runtime)} needs enough GPU ${acceleratorMemory.label} for this model. Required: ${validation.effectiveMinVramGb.toFixed(1)}GB, available: ${totalVramGb.toFixed(1)}GB.`;
   }
 
   if (runtime === 'transformers') {
     const cpuUnsafe = validation.modelWeightGb >= 8 || (totalRamGb > 0 && validation.modelWeightGb > totalRamGb * 0.45);
     if (cpuUnsafe) {
-      return `This model is too large for reliable one-click CPU Transformers hosting on this machine. Required: about ${validation.effectiveMinVramGb.toFixed(1)}GB VRAM, available: ${totalVramGb.toFixed(1)}GB VRAM, system RAM: ${totalRamGb.toFixed(1)}GB. Choose a smaller model, a quantized/GGUF model, or a machine with more VRAM.`;
+      return `This model is too large for reliable one-click CPU Transformers hosting on this machine. Required: about ${validation.effectiveMinVramGb.toFixed(1)}GB ${acceleratorMemory.label}, available: ${totalVramGb.toFixed(1)}GB, system RAM: ${totalRamGb.toFixed(1)}GB. Choose a smaller model, a quantized/GGUF model, or a machine with more accelerator memory.`;
     }
   }
 
@@ -2251,6 +2268,13 @@ function isValidLocalDeployment(value: unknown): value is LocalModelDeployment {
 
 function isSameLocalDeployment(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {
   return left.endpointUrl === right.endpointUrl && left.modelId === right.modelId;
+}
+
+function upsertLocalDeployment(current: LocalModelDeployment[], nextDeployment: LocalModelDeployment): LocalModelDeployment[] {
+  return [
+    nextDeployment,
+    ...current.filter((item) => !isSameLocalDeployment(item, nextDeployment)),
+  ];
 }
 
 function isSameLocalDeploymentByKey(left: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>, right: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): boolean {

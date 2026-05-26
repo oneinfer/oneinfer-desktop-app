@@ -20,7 +20,7 @@ import {
   Zap,
 } from 'lucide-react';
 
-import type { ValidationResult } from '../helpers/hardwareValidation';
+import { getAcceleratorMemorySummary, type ValidationResult } from '../helpers/hardwareValidation';
 import { getModelMemoryBreakdown } from '../helpers/modelSizing';
 import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
@@ -52,7 +52,8 @@ export function HfModelDetailPanel(props: {
   const sizeGb = validation?.modelWeightGb ?? memoryBreakdown.modelWeightGb;
   const kvCacheGb = validation?.kvCacheGb ?? memoryBreakdown.kvCacheGb;
   const servingOverheadGb = validation?.servingOverheadGb ?? memoryBreakdown.servingOverheadGb;
-  const totalVramGb = machine?.gpus?.reduce((acc, gpu) => acc + (gpu.vramGb ?? 0), 0) ?? 0;
+  const acceleratorMemory = getAcceleratorMemorySummary(machine);
+  const totalVramGb = acceleratorMemory.totalGb;
   const effectiveMinVramGb = validation?.effectiveMinVramGb || memoryBreakdown.totalVramGb;
 
   const isVllmBusy = busy === 'install-vllm';
@@ -125,10 +126,6 @@ export function HfModelDetailPanel(props: {
           <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${installingLibraryName}... Please wait.`} />
         </div>
       ) : null}
-      {props.deploymentProgress.length > 0 ? (
-        <DeploymentProgressLog items={props.deploymentProgress} />
-      ) : null}
-
       <div className="panel-header model-detail-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '16px' }}>
           <div style={{ minWidth: 0 }}>
@@ -167,7 +164,12 @@ export function HfModelDetailPanel(props: {
                 <strong style={{ color: 'var(--muted)' }}>+ {kvCacheGb.toFixed(2)} GB</strong>
               </div>
               <div className="data-row" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderBottom: 'none' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Server size={16} /> Serving Overhead</span>
+                <span
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                  title="Estimated extra VRAM used by the selected serving runtime, separate from model weights and KV cache."
+                >
+                  <Server size={16} /> Serving Library VRAM (Est.)
+                </span>
                 <strong style={{ color: 'var(--muted)' }}>+ {servingOverheadGb.toFixed(2)} GB</strong>
               </div>
               <div className="data-row" style={{ padding: '12px', background: 'rgba(116, 227, 197, 0.05)', borderRadius: '8px', borderBottom: 'none' }}>
@@ -204,6 +206,10 @@ export function HfModelDetailPanel(props: {
               </div>
             </div>
 
+            {props.deploymentProgress.length > 0 ? (
+              <DeploymentProgressLog items={props.deploymentProgress} />
+            ) : null}
+
             {validation ? (
               <div className={`analysis-card ${validation.status}`} style={{
                 padding: '16px',
@@ -225,7 +231,7 @@ export function HfModelDetailPanel(props: {
                 </div>
                 <div style={{ marginTop: '14px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--muted)' }}>VRAM Capacity Used</span>
+                    <span style={{ color: 'var(--muted)' }}>{acceleratorMemory.hasUnifiedMemory ? 'Accelerator Memory Used' : 'VRAM Capacity Used'}</span>
                     <span>{effectiveMinVramGb.toFixed(1)}GB / {totalVramGb.toFixed(1)}GB</span>
                   </div>
                   <div className="progress-bar-bg" style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>

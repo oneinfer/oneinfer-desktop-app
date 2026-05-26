@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { CheckCircle2, ChevronDown, Copy, Info, LoaderCircle, Orbit, Pencil, Play, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Cloud, Copy, Cpu, Info, LoaderCircle, Orbit, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 
 import { Modal } from '../components/Common';
+import oneInferLogo from '../assets/oneinfer-logo.png';
 import type { DashboardState, EndpointItem, InstanceItem, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -186,6 +187,8 @@ export function RoutingPage(props: {
 }) {
   const [showCreateRouteModal, setShowCreateRouteModal] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [blueprintMenuOpen, setBlueprintMenuOpen] = useState(false);
+  const [blueprintGoalOpen, setBlueprintGoalOpen] = useState(false);
   const [testRoute, setTestRoute] = useState<{ id: string; name: string } | null>(null);
   const [editRoute, setEditRoute] = useState<{ id: string; name: string } | null>(null);
   const [goalInfo, setGoalInfo] = useState<(typeof routingGoals)[number] | null>(null);
@@ -351,6 +354,16 @@ export function RoutingPage(props: {
     });
   }
 
+  function updateRoutingAlgorithm(routingAlgorithm: string) {
+    setRouteDetails((current) => ({
+      ...current,
+      routingGoal: 'custom',
+      routingAlgorithm,
+      routerServingLibrary: getRecommendedRouterServingLibrary(normalizeHfRepoId(routingAlgorithm), platform),
+      description: routingAlgorithmDescriptions[routingAlgorithm] ?? current.description,
+    }));
+  }
+
   function toggleEndpoint(endpointId: string) {
     setRouteDetails((current) => {
       const selected = current.attachedEndpointIds.includes(endpointId);
@@ -459,7 +472,27 @@ export function RoutingPage(props: {
       </div>
 
       <Modal title="Create Route" isOpen={showCreateRouteModal} onClose={() => setShowCreateRouteModal(false)}>
-        <form className="stack-form" onSubmit={handleCreateRoute}>
+        <form className="stack-form route-blueprint-modal" onSubmit={handleCreateRoute}>
+          <div className="route-builder-tabs">
+            <button className="active" type="button">Route Blueprint</button>
+          </div>
+          <RouteBlueprintDiagram
+            activeEndpointSources={activeEndpointSources}
+            blueprintMenuOpen={blueprintMenuOpen}
+            endpointSources={endpointSources}
+            onMenuChange={setBlueprintMenuOpen}
+            goalMenuOpen={blueprintGoalOpen}
+            onRoutingAlgorithmChange={updateRoutingAlgorithm}
+            onRoutingGoalChange={updateRoutingGoal}
+            onGoalMenuChange={setBlueprintGoalOpen}
+            onToggleEndpointSource={toggleEndpointSource}
+            routeName={props.intelligentEndpointName}
+            routingAlgorithms={routingAlgorithms}
+            routingGoals={routingGoals}
+            selectedAlgorithm={selectedAlgorithm}
+            selectedEndpoints={selectedEndpointOptions}
+            selectedGoal={selectedGoal}
+          />
           <label>
             <span>Route Name</span>
             <input
@@ -502,7 +535,7 @@ export function RoutingPage(props: {
               </div>
             </label>
             <div>
-              <span className="field-label">Endpoint Sources</span>
+              <span className="field-label">Routing Sources</span>
               <div className="endpoint-source-options">
                 {endpointSources.map((source) => {
                   const selected = activeEndpointSources.includes(source.value);
@@ -521,20 +554,20 @@ export function RoutingPage(props: {
             </div>
             <div className="full-span">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <span className="text-[0.85rem] text-[var(--muted)]">Choose Endpoints</span>
+                <span className="text-[0.85rem] text-[var(--muted)]">Choose Routing Targets</span>
                 <span className="text-[0.75rem] text-[var(--muted)]">{selectedEndpointOptions.length} selected</span>
               </div>
               <div className="route-endpoint-list">
                 {showLocalEmptyAction ? (
                   <div className="route-empty-action">
-                    <span>No local endpoints available.</span>
+                    <span>No local routing targets available.</span>
                     <button className="secondary-button" onClick={handleCreateSelfHosting} type="button">
                       Create self hosting
                     </button>
                   </div>
                 ) : null}
                 {inferenceEndpointOptions.length === 0 && !showLocalEmptyAction ? (
-                  <div className="empty-state">No endpoints available for {selectedEndpointSourceLabels.join(', ')}</div>
+                  <div className="empty-state">No routing targets available for {selectedEndpointSourceLabels.join(', ')}</div>
                 ) : null}
                 {inferenceEndpointOptions.map((endpoint) => {
                   const selected = routeDetails.attachedEndpointIds.includes(endpoint.id);
@@ -563,7 +596,7 @@ export function RoutingPage(props: {
           </div>
           <div className="route-summary">
             <strong>{selectedGoal.title}</strong>
-            <span>{selectedEndpointOptions.length === 0 ? 'Select at least two endpoints for meaningful routing.' : `${selectedEndpointOptions.length} endpoint${selectedEndpointOptions.length === 1 ? '' : 's'} selected.`}</span>
+            <span>{selectedEndpointOptions.length === 0 ? 'Select at least two routing targets for meaningful routing.' : `${selectedEndpointOptions.length} routing target${selectedEndpointOptions.length === 1 ? '' : 's'} selected.`}</span>
             <small>Algorithm: {selectedAlgorithm.family} / {selectedAlgorithm.label}</small>
             <small>Router runtime: Local</small>
             <small>Serving library: {selectedRouterLibrary.label}</small>
@@ -605,16 +638,7 @@ export function RoutingPage(props: {
                 <span>Routing Algorithm</span>
                 <select
                   value={routeDetails.routingAlgorithm}
-                  onChange={(event) => {
-                    const routingAlgorithm = event.target.value;
-                    setRouteDetails((current) => ({
-                      ...current,
-                      routingGoal: 'custom',
-                      routingAlgorithm,
-                      routerServingLibrary: getRecommendedRouterServingLibrary(normalizeHfRepoId(routingAlgorithm), platform),
-                      description: routingAlgorithmDescriptions[routingAlgorithm] ?? current.description,
-                    }));
-                  }}
+                  onChange={(event) => updateRoutingAlgorithm(event.target.value)}
                 >
                   {routingAlgorithms.map((algorithm) => (
                     <option key={algorithm.value} value={algorithm.value}>{algorithm.family} / {algorithm.label}</option>
@@ -715,6 +739,183 @@ export function RoutingPage(props: {
 }
 
 type SupportedPlatform = 'windows' | 'macos' | 'linux' | 'unknown';
+
+type RouteEndpointOption = {
+  id: string;
+  endpointName: string;
+  modelName: string;
+  source: EndpointSource;
+  endpointUrl: string;
+  available: boolean;
+};
+
+function RouteBlueprintDiagram(props: {
+  activeEndpointSources: EndpointSource[];
+  blueprintMenuOpen: boolean;
+  endpointSources: typeof endpointSources;
+  goalMenuOpen: boolean;
+  onGoalMenuChange: (open: boolean) => void;
+  onMenuChange: (open: boolean) => void;
+  onRoutingAlgorithmChange: (algorithm: string) => void;
+  onRoutingGoalChange: (goal: RoutingGoal) => void;
+  onToggleEndpointSource: (source: EndpointSource) => void;
+  routeName: string;
+  routingAlgorithms: typeof routingAlgorithms;
+  routingGoals: typeof routingGoals;
+  selectedAlgorithm: (typeof routingAlgorithms)[number];
+  selectedEndpoints: RouteEndpointOption[];
+  selectedGoal: (typeof routingGoals)[number];
+}) {
+  const localPlaceholderEndpoints = props.activeEndpointSources.includes('local')
+    ? [
+      {
+        id: 'local-route-target-1',
+        endpointName: 'Local Route 1',
+        modelName: 'Select a local target below',
+        source: 'local' as EndpointSource,
+        endpointUrl: '',
+        available: true,
+      },
+      {
+        id: 'local-route-target-2',
+        endpointName: 'Local Route 2',
+        modelName: 'Select a local target below',
+        source: 'local' as EndpointSource,
+        endpointUrl: '',
+        available: true,
+      },
+    ]
+    : [];
+  const visibleEndpoints = props.selectedEndpoints.length > 0
+    ? props.selectedEndpoints
+    : localPlaceholderEndpoints.length > 0 ? localPlaceholderEndpoints : [{
+      id: 'candidate-endpoint',
+      endpointName: 'Routing Target',
+      modelName: 'Select routing targets below',
+      source: 'cloud' as EndpointSource,
+      endpointUrl: '',
+      available: true,
+    }];
+
+  return (
+    <div className="route-blueprint-shell">
+      <div className="route-flow-canvas">
+        <BlueprintNode
+          kind="main"
+          subtitle="Intelligent Route"
+          title={props.routeName || 'My Route'}
+        />
+        <RouteConnector />
+        <div className="route-engine-node-wrap">
+          <BlueprintNode
+            image={oneInferLogo}
+            kind="engine"
+            onClick={() => props.onGoalMenuChange(!props.goalMenuOpen)}
+            subtitle={`${props.selectedGoal.title} / ${props.selectedAlgorithm.label}`}
+            title="OneInfer Engine"
+          />
+          {props.goalMenuOpen ? (
+            <div className="route-goal-menu">
+              {props.routingGoals.map((goal) => (
+                <button
+                  className={props.selectedGoal.value === goal.value ? 'active' : ''}
+                  key={goal.value}
+                  onClick={() => {
+                    props.onRoutingGoalChange(goal.value);
+                    props.onGoalMenuChange(false);
+                  }}
+                  type="button"
+                >
+                  <strong>{goal.title}</strong>
+                  <span>{goal.algorithmLabel}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="route-engine-controls">
+            <label>
+              <span>Routing Algorithm</span>
+              <select value={props.selectedAlgorithm.value} onChange={(event) => props.onRoutingAlgorithmChange(event.target.value)}>
+                {props.routingAlgorithms.map((algorithm) => (
+                  <option key={algorithm.value} value={algorithm.value}>{algorithm.family} / {algorithm.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <button
+            className="route-engine-add"
+            onClick={() => props.onMenuChange(!props.blueprintMenuOpen)}
+            type="button"
+          >
+            <Plus size={18} />
+          </button>
+          {props.blueprintMenuOpen ? (
+            <div className="route-engine-menu">
+              {props.endpointSources.map((source) => {
+                const selected = props.activeEndpointSources.includes(source.value);
+                return (
+                  <button
+                    className={selected ? 'active' : ''}
+                    key={source.value}
+                    onClick={() => props.onToggleEndpointSource(source.value)}
+                    type="button"
+                  >
+                    {source.value === 'local' ? <Cpu size={14} /> : <Cloud size={14} />}
+                    <span>{source.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+        <RouteConnector />
+        <div className="route-blueprint-endpoints">
+          {visibleEndpoints.slice(0, 3).map((endpoint) => (
+            <BlueprintNode
+              key={endpoint.id}
+              kind="candidate"
+              subtitle={`${formatEndpointSource(endpoint.source)} / ${endpoint.modelName}`}
+              title={endpoint.endpointName}
+            />
+          ))}
+          {visibleEndpoints.length > 3 ? (
+            <div className="route-blueprint-more">+{visibleEndpoints.length - 3}</div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BlueprintNode(props: {
+  image?: string;
+  kind: 'main' | 'engine' | 'candidate';
+  onClick?: () => void;
+  subtitle: string;
+  title: string;
+}) {
+  return (
+    <button className={`route-blueprint-node ${props.kind}`} onClick={props.onClick} type="button">
+      {props.image ? (
+        <img alt="" src={props.image} />
+      ) : (
+        <span className="route-blueprint-node-icon">
+          {props.kind === 'main' ? <Orbit size={20} /> : <Cloud size={18} />}
+        </span>
+      )}
+      <strong>{props.title}</strong>
+      <small>{props.subtitle}</small>
+    </button>
+  );
+}
+
+function RouteConnector() {
+  return (
+    <div className="route-blueprint-connector" aria-hidden="true">
+      <span />
+    </div>
+  );
+}
 
 function getRouterSetupIssue(routerModelId: string, dashboard: DashboardState, localDeployments: LocalModelDeployment[]): string | null {
   void routerModelId;

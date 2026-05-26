@@ -685,7 +685,7 @@ function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpec
   const allGpuInstances = Object.entries(providerInfo).flatMap(([providerName, provider]) => {
     const instances = Array.isArray(provider.instances) ? provider.instances as Array<Record<string, unknown>> : [];
     return instances.map((instance) => ({ ...instance, providerName }));
-  });
+  }) as Array<Record<string, unknown> & { providerName: string }>;
 
   const specOptions = gpuSpecs.map((spec) => {
     const specChipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');

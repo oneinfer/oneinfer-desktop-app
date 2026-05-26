@@ -3178,6 +3178,100 @@ function toNullableNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function parseCapacityToMb(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // systeminformation normally reports controller.vram in MB, but some
+    // platform-specific fields are exposed as bytes.
+    return value > 1024 * 1024 ? value / (1024 * 1024) : value;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = value.trim().match(/^([\d.]+)\s*(b|bytes|kb|mb|mib|gb|gib)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+
+  const unit = (match[2] || 'mb').toLowerCase();
+  if (unit === 'gb' || unit === 'gib') return amount * 1024;
+  if (unit === 'kb') return amount / 1024;
+  if (unit === 'b' || unit === 'bytes') return amount / (1024 * 1024);
+  return amount;
+}
+
+function getControllerVramMb(controller) {
+  const candidates = [
+    controller.vram,
+    controller.memoryTotal,
+    controller.memoryTotalMb,
+    controller.memory,
+    controller.ram,
+  ];
+
+  for (const candidate of candidates) {
+    const parsedMb = parseCapacityToMb(candidate);
+    if (parsedMb !== null && parsedMb > 0) {
+      return Math.round(parsedMb);
+    }
+  }
+
+  return null;
+}
+
+function isAppleGpuController(controller, resolvedCpu) {
+  const text = [
+    controller.vendor,
+    controller.name,
+    controller.model,
+    controller.deviceName,
+    resolvedCpu.brand,
+    resolvedCpu.manufacturer,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return process.platform === 'darwin'
+    && (os.arch() === 'arm64' || text.includes('apple'))
+    && text.includes('apple');
+}
+
+function isAppleUnifiedMemoryGpu(controller, resolvedCpu) {
+  if (process.platform !== 'darwin' || os.arch() !== 'arm64') {
+    return false;
+  }
+
+  const text = [
+    controller.vendor,
+    controller.name,
+    controller.model,
+    controller.deviceName,
+    controller.bus,
+    resolvedCpu.brand,
+    resolvedCpu.manufacturer,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return text.includes('apple')
+    || text.includes('integrated')
+    || text.includes('apple silicon')
+    || text.includes('m1')
+    || text.includes('m2')
+    || text.includes('m3')
+    || text.includes('m4');
+}
+
+function getConservativeUnifiedGpuMemoryBytes(totalMemoryBytes) {
+  if (typeof totalMemoryBytes !== 'number' || !Number.isFinite(totalMemoryBytes) || totalMemoryBytes <= 0) {
+    return null;
+  }
+
+  return Math.round(totalMemoryBytes * 0.75);
+}
+
 function toNullableInteger(value) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null;
 }
@@ -3310,18 +3404,44 @@ async function collectMachineDetails() {
     type: toTrimmedString(entry.type),
   }));
 
-  const gpus = Array.isArray(graphics.controllers) ? graphics.controllers.map((controller) => {
-    const vramMb = toNullableNumber(controller.vram);
-    const vramBytes = vramMb !== null ? Math.round(vramMb * 1024 * 1024) : null;
+  const graphicsControllers = Array.isArray(graphics.controllers) ? graphics.controllers : [];
+  const normalizedGraphicsControllers = graphicsControllers.length > 0
+    ? graphicsControllers
+    : process.platform === 'darwin' && os.arch() === 'arm64'
+      ? [{
+        name: resolvedCpu.brand || 'Apple GPU',
+        vendor: 'Apple',
+        model: resolvedCpu.brand || 'Apple Silicon',
+        bus: 'integrated',
+      }]
+      : [];
+
+  const gpus = normalizedGraphicsControllers.map((controller) => {
+    const reportedVramMb = getControllerVramMb(controller);
+    const isAppleUnifiedGpu = isAppleUnifiedMemoryGpu(controller, resolvedCpu) || isAppleGpuController(controller, resolvedCpu);
+    const unifiedMemoryBytes = isAppleUnifiedGpu
+      ? getConservativeUnifiedGpuMemoryBytes(resolvedMemory.total)
+      : null;
+    const vramBytes = unifiedMemoryBytes !== null
+      ? unifiedMemoryBytes
+      : reportedVramMb !== null
+        ? Math.round(reportedVramMb * 1024 * 1024)
+        : null;
+    const vramMb = vramBytes !== null ? Math.round(vramBytes / (1024 * 1024)) : null;
 
     return {
       name: toTrimmedString(controller.name) || toTrimmedString(controller.model),
       vendor: toTrimmedString(controller.vendor),
       model: toTrimmedString(controller.model) || toTrimmedString(controller.name),
       gpuType: controller.bus ? String(controller.bus).toLowerCase() : null,
+      memoryKind: isAppleUnifiedGpu ? 'unified' : 'dedicated',
+      memorySource: unifiedMemoryBytes !== null ? 'macos-unified-memory' : 'systeminformation',
       vramBytes,
       vramMb,
       vramGb: vramBytes !== null ? toGb(vramBytes) : null,
+      reportedVramMb,
+      unifiedMemoryBytes,
+      unifiedMemoryGb: toGb(unifiedMemoryBytes),
       driverVersion: toTrimmedString(controller.driverVersion),
       temperatureC: toNullableNumber(controller.temperatureGpu),
       utilizationPercent: toNullableNumber(controller.utilizationGpu),
@@ -3329,7 +3449,7 @@ async function collectMachineDetails() {
       pciBus: toTrimmedString(controller.pciBus),
       deviceName: toTrimmedString(controller.deviceName),
     };
-  }) : [];
+  });
 
   return {
     machineId: getOrCreateMachineId(),

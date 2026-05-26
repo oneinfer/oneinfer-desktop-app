@@ -1,10 +1,9 @@
-import { Blocks, Bot, Copy, LoaderCircle, Orbit, Server, Sparkles, Terminal, Zap } from 'lucide-react';
+import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
-import { EmptyState, MiniTable, Panel } from '../components/Common';
+import { EmptyState, MiniTable } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
-import type { DashboardState, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
+import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
-import { PlanRow } from './BandwidthPage';
 
 export function OverviewPage(props: {
   dashboard: DashboardState;
@@ -25,7 +24,8 @@ export function OverviewPage(props: {
   const isClaudeBusy = props.busy === 'configure-claude-code';
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isOpenClawBusy = props.busy === 'configure-openclaw';
-  const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => String(endpoint.deployment_target).toLowerCase() === 'local' && !isRouterEndpoint(endpoint));
+  const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local' && !isRouterEndpoint(endpoint));
+  const cloudEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'cloud' && !isRouterEndpoint(endpoint));
   const validLocalDeployments = props.localDeployments.filter((deployment) => isVisibleLocalDeployment(deployment, props.localModelMetrics));
   const localDeploymentKeys = new Set(validLocalDeployments.map((deployment) => getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)));
   const visibleLocalDeployments = [
@@ -42,157 +42,238 @@ export function OverviewPage(props: {
       deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? new Date().toISOString()),
     })).filter((deployment) => deployment.endpointUrl && !localDeploymentKeys.has(getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)) && isVisibleLocalDeployment(deployment, props.localModelMetrics)),
   ];
-
-  const activePlanId = props.dashboard.activeDeveloperPlan?.planId ?? null;
-  const activePlan = props.dashboard.developerPlans?.find((p) => p.planId === activePlanId);
+  const activePlan = props.dashboard.activeDeveloperPlan
+    ? props.dashboard.developerPlans.find((plan) => plan.planId === props.dashboard.activeDeveloperPlan?.planId) ?? {
+        ...props.dashboard.activeDeveloperPlan,
+        ctaText: 'Current Plan',
+      }
+    : null;
 
   return (
     <div className="overview-page">
-      {activePlan ? (
-        <div style={{ marginBottom: '20px' }}>
-          <PlanRow plan={activePlan} isCurrent={true} />
-        </div>
-      ) : null}
-
       <div className="overview-two-column">
-        <aside className="glass-panel" style={{ padding: '20px' }}>
-          <div className="cc-toggle" style={{ marginBottom: '20px' }}>
-            <button className={`cc-toggle-btn ${props.infraTab === 'self-hosted' ? 'active' : ''}`} onClick={() => props.onInfraTabChange('self-hosted')} type="button">
-              <Server size={14} />
-              Self-hosted
-            </button>
-            <button className={`cc-toggle-btn ${props.infraTab === 'cloud' ? 'active' : ''}`} onClick={() => props.onInfraTabChange('cloud')} type="button">
-              <Server size={14} />
-              Cloud
-            </button>
-          </div>
+        <aside className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
+            <div className="cc-toggle" style={{ marginBottom: '20px' }}>
+              <button className={`cc-toggle-btn ${props.infraTab === 'self-hosted' ? 'active' : ''}`} onClick={() => props.onInfraTabChange('self-hosted')} type="button">
+                <Server size={14} />
+                Self Hosting
+              </button>
+              <button className={`cc-toggle-btn ${props.infraTab === 'cloud' ? 'active' : ''}`} onClick={() => props.onInfraTabChange('cloud')} type="button">
+                <Server size={14} />
+                Cloud
+              </button>
+            </div>
 
-          <div className="card-stack">
-            {props.infraTab === 'self-hosted' ? (
-              <>
-                <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
-                  <Server size={18} className="panel-icon" />
-                  <h3 className="panel-title">Self-hosted Models</h3>
-                </div>
-                <div className="instance-list">
-                  {visibleLocalDeployments.length === 0 ? <EmptyState text="No local models registered." /> : null}
-                  {visibleLocalDeployments.map((deployment) => {
-                    const metrics = props.localModelMetrics[deployment.endpointUrl];
-                    return (
-                      <LocalDeploymentSummary key={`${deployment.modelId}-${deployment.endpointUrl}`} deployment={deployment} metrics={metrics} />
-                    );
-                  })}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
-                  <Server size={18} className="panel-icon" />
-                  <h3 className="panel-title">Cloud Instances</h3>
-                </div>
-                <div className="instance-list">
-                  {props.dashboard.instances.length === 0 ? <EmptyState text="No active cloud instances." /> : null}
-                  {props.dashboard.instances.map((instance, index) => {
-                    const instanceId = String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
-                    return (
-                      <div className="sub-card" key={instanceId} style={{ padding: '12px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                          <div>
-                            <h4 style={{ fontSize: '0.9rem' }}>{String(instance.instance_name ?? instanceId)}</h4>
-                            <p style={{ fontSize: '0.75rem', margin: 0 }}>{String(instance.provider_name)} - {String(instance.region)}</p>
+            <div className="card-stack">
+              {props.infraTab === 'self-hosted' ? (
+                <>
+                  <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
+                    <Server size={18} className="panel-icon" />
+                    <h3 className="panel-title">Self Hosting</h3>
+                  </div>
+                  <div className="instance-list">
+                    {visibleLocalDeployments.length === 0 ? <EmptyState text="No local models registered." /> : null}
+                    {visibleLocalDeployments.map((deployment) => {
+                      const metrics = props.localModelMetrics[deployment.endpointUrl];
+                      return (
+                        <LocalDeploymentSummary key={`${deployment.modelId}-${deployment.endpointUrl}`} deployment={deployment} metrics={metrics} />
+                      );
+                    })}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
+                    <Server size={18} className="panel-icon" />
+                    <h3 className="panel-title">Cloud Instances</h3>
+                  </div>
+                  <div className="instance-list">
+                    {props.dashboard.instances.length === 0 ? <EmptyState text="No active cloud instances." /> : null}
+                    {props.dashboard.instances.map((instance, index) => {
+                      const instanceId = String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
+                      return (
+                        <div className="sub-card" key={instanceId} style={{ padding: '12px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                            <div>
+                              <h4 style={{ fontSize: '0.9rem' }}>{String(instance.instance_name ?? instanceId)}</h4>
+                              <p style={{ fontSize: '0.75rem', margin: 0 }}>{String(instance.provider_name)} - {String(instance.region)}</p>
+                            </div>
+                            <span className="status-pill" style={{ fontSize: '0.7rem', padding: '4px 8px' }}>
+                              {formatValue(instance.instance_status ?? instance.status)}
+                            </span>
                           </div>
-                          <span className="status-pill" style={{ fontSize: '0.7rem', padding: '4px 8px' }}>
-                            {formatValue(instance.instance_status ?? instance.status)}
-                          </span>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
         </aside>
 
-        <main className="glass-panel" style={{ padding: '20px' }}>
-          <div className="settings-list overview-tab-list">
-            <div className="settings-list-item settings-list-card active">
-              <span className="settings-list-icon"><Bot size={16} /></span>
-              <span className="settings-list-copy">
-                <strong>Claude Code</strong>
-                <span>Configure your Claude Code provider.</span>
-              </span>
-              <div className="settings-list-actions">
-                <button
-                  className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
-                  disabled={isClaudeBusy}
-                  onClick={() => props.onClaudeProviderChange('oneinfer')}
-                  type="button"
-                >
-                  {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
-                  OneInfer
+        <main className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
+            <h3 className="overview-settings-heading">AI Coding Tool</h3>
+            <div className="settings-list overview-tab-list">
+              <div className="settings-list-item settings-list-card active">
+                <span className="settings-list-icon"><Bot size={16} /></span>
+                <span className="settings-list-copy">
+                  <strong>Claude Code</strong>
+                  <span>Configure your Claude Code provider.</span>
+                </span>
+                <div className="settings-list-actions">
+                  <button
+                    className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
+                    disabled={isClaudeBusy}
+                    onClick={() => props.onClaudeProviderChange('oneinfer')}
+                    type="button"
+                  >
+                    {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
+                    OneInfer
+                  </button>
+                  <button
+                    className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
+                    disabled={isClaudeBusy}
+                    onClick={() => props.onClaudeProviderChange('anthropic')}
+                    type="button"
+                  >
+                    {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+                    Anthropic
+                  </button>
+                </div>
+              </div>
+              <div className="settings-list-item settings-list-card">
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <span className="settings-list-copy">
+                  <strong>OpenCode</strong>
+                  <span>Enable a global OneInfer-backed config.</span>
+                </span>
+                <button className="settings-list-status settings-action-button" disabled={isOpenCodeBusy} onClick={props.onEnableOpenCode} type="button">
+                  {isOpenCodeBusy ? 'Enabling...' : 'Enable'}
                 </button>
-                <button
-                  className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
-                  disabled={isClaudeBusy}
-                  onClick={() => props.onClaudeProviderChange('anthropic')}
-                  type="button"
-                >
-                  {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                  Anthropic
+              </div>
+              <div className="settings-list-item settings-list-card">
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <span className="settings-list-copy">
+                  <strong>OpenClaw</strong>
+                  <span>Enable OpenClaw for this user account.</span>
+                </span>
+                <button className="settings-list-status settings-action-button" disabled={isOpenClawBusy} onClick={props.onEnableOpenClaw} type="button">
+                  {isOpenClawBusy ? 'Enabling...' : 'Enable'}
                 </button>
               </div>
             </div>
-            <div className="settings-list-item settings-list-card">
-              <span className="settings-list-icon"><Blocks size={16} /></span>
-              <span className="settings-list-copy">
-                <strong>OpenCode</strong>
-                <span>Enable a global OneInfer-backed config.</span>
-              </span>
-              <button className="settings-list-status settings-action-button" disabled={isOpenCodeBusy} onClick={props.onEnableOpenCode} type="button">
-                {isOpenCodeBusy ? 'Enabling...' : 'Enable'}
-              </button>
-            </div>
-            <div className="settings-list-item settings-list-card">
-              <span className="settings-list-icon"><Blocks size={16} /></span>
-              <span className="settings-list-copy">
-                <strong>OpenClaw</strong>
-                <span>Enable OpenClaw for this user account.</span>
-              </span>
-              <button className="settings-list-status settings-action-button" disabled={isOpenClawBusy} onClick={props.onEnableOpenClaw} type="button">
-                {isOpenClawBusy ? 'Enabling...' : 'Enable'}
-              </button>
-            </div>
-          </div>
 
-          <div className="card-stack">
-            {props.infraTab === 'self-hosted' && visibleLocalDeployments.length > 0 ? (
-              <LocalAccessPanel deployment={visibleLocalDeployments[0]} metrics={props.localModelMetrics[visibleLocalDeployments[0].endpointUrl]} />
-            ) : null}
-
-            {localEndpoints.length > 0 && (
-              <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
-                <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-                  <Zap size={20} />
-                </div>
-                <div className="status-card-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                  <div style={{ textAlign: 'left' }}>
-                    <h4 style={{ color: '#10b981', margin: '0 0 4px 0' }}>Local Models Active</h4>
-                    <p style={{ fontSize: '0.85rem', opacity: 0.8, margin: 0 }}>{localEndpoints.length} local inference server(s) registered and ready.</p>
+            <div className="card-stack">
+              {localEndpoints.length > 0 && (
+                <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
+                  <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+                    <Zap size={20} />
                   </div>
-                  <button className="ghost-button" onClick={() => props.onSectionChange('routing')} style={{ fontSize: '0.75rem' }} type="button">Manage Routing</button>
+                  <div className="status-card-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <div style={{ textAlign: 'left' }}>
+                      <h4 style={{ color: '#10b981', margin: '0 0 4px 0' }}>Local Models Active</h4>
+                      <p style={{ fontSize: '0.85rem', opacity: 0.8, margin: 0 }}>{localEndpoints.length} local inference server(s) registered and ready.</p>
+                    </div>
+                    <button className="ghost-button" onClick={() => props.onSectionChange('routing')} style={{ fontSize: '0.75rem' }} type="button">Manage Routing</button>
+                  </div>
                 </div>
-              </div>
-            )}
-
-          </div>
+              )}
+            </div>
         </main>
+
+        <RoutingSummaryCard
+          routeCount={props.dashboard.intelligentEndpoints.length}
+          localTargetCount={visibleLocalDeployments.length}
+          cloudTargetCount={cloudEndpoints.length}
+          onManage={() => props.onSectionChange('routing')}
+        />
+
+        <section className="overview-standalone-section">
+          <div className="panel-header" style={{ padding: 0, justifyContent: 'flex-start', gap: '10px' }}>
+            <Zap size={18} className="panel-icon" />
+            <h3 className="panel-title">Active Plans</h3>
+          </div>
+          <ActivePlansCard activePlan={activePlan} />
+        </section>
       </div>
 
       <div className="section-grid dashboard-row compact-row hardware-full-row overview-hardware-row">
         <HardwareWidget machine={props.dashboard.machineDetails} />
       </div>
     </div>
+  );
+}
+
+function ActivePlansCard(props: { activePlan: DeveloperPlanItem | ActiveDeveloperPlanItem | null }) {
+  if (!props.activePlan) {
+    return (
+      <div className="sub-card" style={{ padding: '16px', color: 'var(--muted)', fontSize: '0.88rem' }}>
+        No active plan found.
+      </div>
+    );
+  }
+
+  const planName = normalizePlanName(props.activePlan.planTier);
+  const status = 'status' in props.activePlan ? props.activePlan.status : undefined;
+
+  return (
+    <div className="sub-card" style={{ alignItems: 'stretch', display: 'grid', gap: '14px', padding: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
+        <div style={{ display: 'flex', gap: '12px', minWidth: 0 }}>
+          <span className="settings-list-icon" style={{ flexShrink: 0 }}>
+            <Zap size={16} />
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ fontSize: '0.95rem', margin: '0 0 4px' }}>{planName}</h3>
+            <p style={{ color: 'var(--muted)', fontSize: '0.78rem', margin: 0 }}>
+              {formatPlanPrice(props.activePlan.pricing, props.activePlan.currency)} /mo
+            </p>
+          </div>
+        </div>
+        <span className="status-pill active" style={{ whiteSpace: 'nowrap' }}>
+          {formatValue(status ?? 'Current')}
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }}>
+        <MetricChip label="Bandwidth" value={`${formatMetric(props.activePlan.requestsPerMinute)} RPM`} />
+        <MetricChip label="Concurrency" value={formatMetric(props.activePlan.concurrency)} />
+      </div>
+    </div>
+  );
+}
+
+function RoutingSummaryCard(props: { routeCount: number; localTargetCount: number; cloudTargetCount: number; onManage: () => void }) {
+  const targetCount = props.localTargetCount + props.cloudTargetCount;
+
+  return (
+    <section className="sub-card" style={{ alignItems: 'stretch', display: 'grid', gap: '14px', padding: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
+        <div style={{ display: 'flex', gap: '12px', minWidth: 0 }}>
+          <span className="status-card-icon" style={{ background: 'rgba(116, 227, 197, 0.1)', color: 'var(--accent)', height: '38px', width: '38px' }}>
+            <Orbit size={18} />
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ fontSize: '0.95rem', margin: '0 0 4px' }}>Routing</h3>
+            <p style={{ fontSize: '0.78rem', margin: 0 }}>Route requests across self-hosted and cloud targets.</p>
+          </div>
+        </div>
+        <span className={`status-pill ${props.routeCount > 0 ? 'active' : ''}`} style={{ whiteSpace: 'nowrap' }}>
+          {props.routeCount} route{props.routeCount === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '8px' }}>
+        <MetricChip label="Targets" value={formatMetric(targetCount)} />
+        <MetricChip label="Local" value={formatMetric(props.localTargetCount)} />
+        <MetricChip label="Cloud" value={formatMetric(props.cloudTargetCount)} />
+      </div>
+
+      <button className="ghost-button" onClick={props.onManage} style={{ fontSize: '0.8rem', justifySelf: 'flex-start', minHeight: '36px', padding: '8px 12px' }} type="button">
+        <Orbit size={14} />
+        Manage Routing
+      </button>
+    </section>
   );
 }
 
@@ -223,14 +304,18 @@ function getLocalDeploymentKey(endpointUrl: string, modelId: string): string {
   return `${normalizeLocalEndpointUrl(endpointUrl)}::${modelId}`;
 }
 
-function isVisibleLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId' | 'name'>, metricsMap: Record<string, LocalModelMetrics>): boolean {
+function isVisibleLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointId' | 'endpointUrl' | 'modelId' | 'name'>, metricsMap: Record<string, LocalModelMetrics>): boolean {
   if (isRouterText(deployment.name, deployment.modelId)) {
     return false;
   }
 
+  if (deployment.endpointId) {
+    return true;
+  }
+
   const metrics = metricsMap[deployment.endpointUrl] ?? metricsMap[normalizeLocalEndpointUrl(deployment.endpointUrl)];
   if (metrics?.healthy && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
-    return metrics.modelIds.includes(deployment.modelId);
+    return metrics.modelIds.some((modelId) => isSameLocalModelId(modelId, deployment.modelId));
   }
 
   return true;
@@ -246,8 +331,75 @@ function isRouterText(name: string, modelId: string): boolean {
   return text.includes(' router') || text.endsWith('router') || text.includes('arch-router') || text.includes('routellm') || text.includes('router-r1');
 }
 
+type EndpointSource = 'local' | 'cloud' | 'openbandwidth' | 'closed_source_api';
+
+function getEndpointSource(endpoint: Record<string, unknown>): EndpointSource {
+  const sourceText = [
+    endpoint.endpoint_source,
+    endpoint.source,
+    endpoint.endpoint_type,
+    endpoint.provider,
+    endpoint.deployment_target,
+    endpoint.endpoint_url,
+    endpoint.name,
+    endpoint.endpoint_name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (sourceText.includes('openbandwidth') || sourceText.includes('open_bandwidth') || sourceText.includes('open bandwidth')) {
+    return 'openbandwidth';
+  }
+
+  if (String(endpoint.deployment_target ?? '').toLowerCase() === 'local' || isLocalEndpointUrl(endpoint.endpoint_url)) {
+    return 'local';
+  }
+
+  if (
+    sourceText.includes('closed_source_api')
+    || sourceText.includes('closed source')
+    || sourceText.includes('close source')
+    || isClosedSourceProvider(endpoint.provider)
+  ) {
+    return 'closed_source_api';
+  }
+
+  return 'cloud';
+}
+
+function isLocalEndpointUrl(value: unknown): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const endpointUrl = String(value).toLowerCase();
+  return endpointUrl.includes('localhost')
+    || endpointUrl.includes('127.0.0.1')
+    || endpointUrl.includes('0.0.0.0');
+}
+
+function isClosedSourceProvider(value: unknown): boolean {
+  const provider = String(value ?? '').toLowerCase();
+  return ['openai', 'anthropic', 'gemini', 'google', 'groq', 'cohere', 'mistral'].some((item) => provider.includes(item));
+}
+
 function normalizeLocalEndpointUrl(endpointUrl: string): string {
   return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
+}
+
+function isSameLocalModelId(left: string, right: string): boolean {
+  const leftAliases = getLocalModelIdAliases(left);
+  const rightAliases = getLocalModelIdAliases(right);
+  return leftAliases.some((alias) => rightAliases.includes(alias));
+}
+
+function getLocalModelIdAliases(value: string): string[] {
+  const rawValue = value.trim();
+  const normalized = rawValue.toLowerCase();
+  const withoutHfPrefix = normalized.startsWith('hf.co/') ? normalized.slice('hf.co/'.length) : normalized;
+  const withHfPrefix = normalized.includes('/') && !normalized.startsWith('hf.co/') ? `hf.co/${normalized}` : normalized;
+  return Array.from(new Set([normalized, withoutHfPrefix, withHfPrefix].filter(Boolean)));
 }
 
 function normalizeServingLibrary(value: unknown, endpointUrl = ''): ServingLibrary {
@@ -271,48 +423,6 @@ function normalizeServingLibrary(value: unknown, endpointUrl = ''): ServingLibra
     dynamo: 'dynamo',
   };
   return aliases[normalized] ?? (endpointUrl.includes(':11434') ? 'ollama' : 'vllm');
-}
-
-function LocalAccessPanel(props: { deployment: LocalModelDeployment; metrics?: LocalModelMetrics }) {
-  const curlExample = `curl ${props.deployment.endpointUrl}/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d "{\\"model\\":\\"${props.deployment.modelId}\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"Hello\\"}]}"`;
-
-  return (
-    <section className="content-panel glass-panel" style={{ padding: '18px', marginBottom: '16px' }}>
-      <div className="panel-header" style={{ marginBottom: '14px' }}>
-        <div className="panel-title">
-          <Terminal size={18} />
-          <h3>Access Local Model</h3>
-        </div>
-        <span className={`status-pill ${props.metrics?.healthy ? 'active' : ''}`}>
-          {props.metrics?.healthy ? 'online' : 'checking'}
-        </span>
-      </div>
-
-      <div style={{ display: 'grid', gap: '12px' }}>
-        <div className="data-row" style={{ padding: '10px 0' }}>
-          <span>Base URL</span>
-          <strong style={{ fontFamily: 'monospace', color: 'var(--accent)', wordBreak: 'break-all' }}>{props.deployment.endpointUrl}</strong>
-        </div>
-        <div className="data-row" style={{ padding: '10px 0' }}>
-          <span>Model</span>
-          <strong>{props.deployment.modelId}</strong>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
-          <MetricCard label="Requests" value={formatMetric(props.metrics?.requestSuccessTotal)} />
-          <MetricCard label="Running" value={formatMetric(props.metrics?.requestsRunning)} />
-          <MetricCard label="Waiting" value={formatMetric(props.metrics?.requestsWaiting)} />
-          <MetricCard label="Uptime" value={formatDuration(props.metrics?.uptimeSeconds)} />
-        </div>
-        <pre style={{ margin: 0, padding: '12px', overflowX: 'auto', borderRadius: '10px', background: 'rgba(0,0,0,0.24)', border: '1px solid rgba(255,255,255,0.06)', color: 'var(--text)', fontSize: '0.75rem' }}>{curlExample}</pre>
-        <button className="ghost-button" onClick={() => navigator.clipboard?.writeText(curlExample)} style={{ justifySelf: 'flex-start', fontSize: '0.8rem' }} type="button">
-          <Copy size={14} />
-          Copy curl
-        </button>
-      </div>
-    </section>
-  );
 }
 
 function MetricChip(props: { label: string; value: string }) {
@@ -356,4 +466,19 @@ function formatDuration(value?: number | null) {
     return `${minutes}m ${seconds}s`;
   }
   return `${seconds}s`;
+}
+
+function normalizePlanName(value: string): string {
+  return value.replace(/\s+plan$/i, '').trim() || 'Plan';
+}
+
+function formatPlanPrice(value: number, currency: string): string {
+  const normalizedCurrency = currency === 'INR' ? 'INR' : 'USD';
+  const locale = normalizedCurrency === 'INR' ? 'en-IN' : 'en-US';
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: normalizedCurrency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }

@@ -3,7 +3,7 @@ import type { HfModelInfo } from '../types';
 const BYTES_PER_GIB = 1024 ** 3;
 const DEFAULT_CONTEXT_LENGTH = 4096;
 const DEFAULT_KV_CACHE_GIB = 1;
-const DEFAULT_ACTIVATION_OVERHEAD_GIB = 2;
+export const DEFAULT_SERVING_LIBRARY_OVERHEAD_GIB = 2;
 
 const modelWeightExtensions = [
   '.safetensors',
@@ -86,7 +86,7 @@ export function getModelMemoryBreakdown(
 ): ModelMemoryBreakdown {
   const modelWeightGb = Math.max(0, options.modelWeightGb ?? bytesToGiB(getModelWeightBytes(model)));
   const contextLength = Math.max(1, options.contextLength ?? getContextLength(model));
-  const servingOverheadGb = Math.max(0, options.servingOverheadGb ?? DEFAULT_ACTIVATION_OVERHEAD_GIB);
+  const servingOverheadGb = Math.max(0, options.servingOverheadGb ?? DEFAULT_SERVING_LIBRARY_OVERHEAD_GIB);
   const kvCacheGb = Math.max(0, estimateKvCacheGb(model, contextLength));
 
   return {

@@ -43,9 +43,14 @@ export interface MachineGpuDetails {
   vendor?: string;
   model?: string;
   gpuType?: string;
+  memoryKind?: 'dedicated' | 'unified' | string;
+  memorySource?: string;
   vramBytes?: number;
   vramMb?: number;
   vramGb?: number;
+  reportedVramMb?: number | null;
+  unifiedMemoryBytes?: number | null;
+  unifiedMemoryGb?: number | null;
   driverVersion?: string;
   temperatureC?: number;
   utilizationPercent?: number;
