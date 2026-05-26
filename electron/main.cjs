@@ -2415,7 +2415,12 @@ async function deleteLocalModel(payload = {}) {
       await runCommand(getOllamaCommand(), ['rm', modelId], { timeoutMs: 2 * 60 * 1000 });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!message.toLowerCase().includes('not found')) {
+      const normalizedMessage = message.toLowerCase();
+      const alreadyMissing = normalizedMessage.includes('not found')
+        || normalizedMessage.includes('does not exist')
+        || normalizedMessage.includes('no such model')
+        || normalizedMessage.includes('model not found');
+      if (!alreadyMissing) {
         throw error;
       }
     }

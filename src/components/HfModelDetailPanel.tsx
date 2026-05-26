@@ -22,10 +22,9 @@ import {
 
 import { getAcceleratorMemorySummary, type ValidationResult } from '../helpers/hardwareValidation';
 import { getModelMemoryBreakdown } from '../helpers/modelSizing';
-import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
+import { isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
-import { Banner } from './Common';
 
 export function HfModelDetailPanel(props: {
   model: HfModelInfo | null;
@@ -42,8 +41,6 @@ export function HfModelDetailPanel(props: {
   onCancelDeploy: () => Promise<boolean | void> | boolean | void;
 }) {
   const { model, validation, machine, libraries, busy, selectedLibrary, onInstall, onSelectLibrary, onRegister, onCancelDeploy } = props;
-  const [localError, setLocalError] = React.useState<string | null>(null);
-  const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
   const [servingLibraryMenuOpen, setServingLibraryMenuOpen] = React.useState(false);
 
   if (!model) return null;
@@ -59,13 +56,10 @@ export function HfModelDetailPanel(props: {
   const isVllmBusy = busy === 'install-vllm';
   const isOllamaBusy = busy === 'install-ollama';
   const isRegisterBusy = busy === 'register-self-hosted';
-  const isAnyInstalling = Boolean(busy?.startsWith('install-'));
-  const installingLibraryName = busy?.startsWith('install-') ? formatServingLibraryName(busy.replace('install-', '') as ServingLibrary) : '';
   const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
   const platform = getSupportedPlatform(machine?.platform);
   const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
   const selectedSupported = isLibrarySupported(selectedOption.value, platform, model);
-  const selectedCompatibility = getServingLibraryCompatibility(selectedOption.value, model);
   const selectedInstalled = selectedSupported && libraries[selectedOption.value];
   const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
   const selectedLaunchable = isOneClickLaunchable(selectedOption.value);
@@ -73,19 +67,14 @@ export function HfModelDetailPanel(props: {
   const selectedBusy = busy === `install-${selectedOption.value}`;
 
   const handleInstall = async (name: ServingLibrary) => {
-    setLocalError(null);
-    setLocalSuccess(null);
     try {
       await onInstall(name);
-      setLocalSuccess(`${formatServingLibraryName(name)} installed successfully.`);
     } catch (error: any) {
-      setLocalError(error?.message || 'Installation failed');
+      console.error('[model-detail] installation failed', error);
     }
   };
 
   const handleDeploy = async () => {
-    setLocalError(null);
-    setLocalSuccess(null);
     try {
       if (selectedSupported && !selectedInstalled) {
         await handleInstall(selectedOption.value);
@@ -96,36 +85,17 @@ export function HfModelDetailPanel(props: {
       if (deployed === false) {
         return;
       }
-      setLocalSuccess(selectedLaunchable ? 'Model deployed successfully to your local machine.' : 'Local endpoint registered successfully.');
     } catch (error: any) {
-      setLocalError(error?.message || 'Deployment failed');
+      console.error('[model-detail] deployment failed', error);
     }
   };
 
   const handleCancelDeploy = async () => {
-    setLocalError(null);
-    setLocalSuccess(null);
-    const cancelled = await onCancelDeploy();
-    if (cancelled) {
-      setLocalSuccess('Deployment cancelled.');
-    }
+    await onCancelDeploy();
   };
 
   return (
     <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent' }}>
-      {props.message ? <div style={{ marginBottom: '12px' }}><Banner tone={props.message.tone} text={props.message.text} /></div> : null}
-      {localError ? <div style={{ marginBottom: '12px' }}><Banner tone="error" text={localError} /></div> : null}
-      {localSuccess ? <div style={{ marginBottom: '12px' }}><Banner tone="success" text={localSuccess} /></div> : null}
-      {!selectedSupported ? (
-        <div style={{ marginBottom: '12px' }}>
-          <Banner tone="error" text={selectedCompatibility.reason || `${selectedOption.label} is not compatible with this model or operating system.`} />
-        </div>
-      ) : null}
-      {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess ? (
-        <div style={{ marginBottom: '20px' }}>
-          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${installingLibraryName}... Please wait.`} />
-        </div>
-      ) : null}
       <div className="panel-header model-detail-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '16px' }}>
           <div style={{ minWidth: 0 }}>

@@ -470,7 +470,17 @@ function getLocalModelIdAliases(value: string): string[] {
 }
 
 function getEndpointId(endpoint: EndpointItem, index: number): string {
-  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+  const record = endpoint as Record<string, unknown>;
+  return String(
+    endpoint.inference_endpoint_id
+    ?? record.inference_api_id
+    ?? record.inference_api_endpoint_id
+    ?? record.inferenceApiId
+    ?? record.inferenceApiEndpointId
+    ?? endpoint.endpoint_id
+    ?? endpoint.id
+    ?? `endpoint-${index + 1}`,
+  );
 }
 
 function isLocalEndpoint(endpoint: EndpointItem): boolean {

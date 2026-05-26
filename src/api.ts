@@ -624,6 +624,7 @@ export async function deleteInferenceEndpoint(
   inferenceEndpointId: string,
   intelligentEndpointId = '',
 ): Promise<AnyRecord> {
+  const endpointId = inferenceEndpointId.trim();
   return request<AnyRecord>({
     baseUrl,
     path: `/developer/${session.developerId}/delete-inference-api-endpoint`,
@@ -631,7 +632,10 @@ export async function deleteInferenceEndpoint(
     token: session.accessToken,
     query: {
       intelligent_endpoint_id: intelligentEndpointId,
-      inference_endpoint_id: inferenceEndpointId,
+      inference_endpoint_id: endpointId,
+      inference_api_id: endpointId,
+      inference_api_endpoint_id: endpointId,
+      endpoint_id: endpointId,
     },
   });
 }

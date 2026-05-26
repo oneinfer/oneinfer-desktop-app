@@ -26,6 +26,7 @@ interface DesktopState {
   settings: Partial<DesktopSettings>;
   session: DesktopSession | null;
   localDeployments?: DesktopLocalModelDeployment[];
+  deletedLocalEndpointKeys?: string[];
 }
 
 interface DesktopLocalModelDeployment {
