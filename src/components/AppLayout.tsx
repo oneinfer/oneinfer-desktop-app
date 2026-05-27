@@ -134,7 +134,7 @@ export function AppLayout(props: {
         </div>
       </aside>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+      <div className="content-stage">
         {props.children}
       </div>
     </div>

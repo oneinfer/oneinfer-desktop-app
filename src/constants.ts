@@ -43,6 +43,14 @@ export const defaultInstanceForm: CreateInstanceFormState = {
   image_url: 'vllm/vllm-openai:latest',
   region: 'US-IL-1',
   startup_script: 'echo OneInfer Desktop instance ready',
+  model_id: '',
+  model_source: 'catalog',
+  hf_model_url: '',
+  serving_library: 'vllm',
+  hf_access_token: '',
+  top_p: 0.9,
+  temperature: 0.7,
+  max_tokens: 4096,
 };
 
 export const defaultInferenceForm: CreateInferenceFormState = {

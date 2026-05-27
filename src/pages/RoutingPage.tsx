@@ -471,7 +471,7 @@ export function RoutingPage(props: {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="routing-page">
       <header className="mb-5 flex h-8 shrink-0 items-center justify-between">
         <h2 className="m-0 text-lg font-semibold leading-none">Routing</h2>
         <button
@@ -483,9 +483,9 @@ export function RoutingPage(props: {
         </button>
       </header>
 
-      <div className="glass-panel w-full overflow-hidden">
+      <div className={`glass-panel w-full overflow-hidden ${props.dashboard.intelligentEndpoints.length === 0 ? 'routing-empty-panel' : ''}`}>
         {props.dashboard.intelligentEndpoints.length === 0 ? (
-          <div className="p-10 text-center">
+          <div className="routing-empty-state">
             <p className="mb-5 text-base text-[var(--muted)]">No routers returned yet. Create a new router to get started.</p>
             <button className="primary-button mx-auto" onClick={openCreateRouteModal} type="button">
               Create Router

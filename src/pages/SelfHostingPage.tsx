@@ -266,9 +266,6 @@ export function SelfHostingPage(props: {
       ) : null}
 
       <Panel title="Local Deployments" icon={Server}>
-        <div className="form-hint">
-          Local deployments registered with OneInfer are available as routing candidates when the Local source is selected.
-        </div>
         <div className="local-deployment-list">
           {localDeploymentRows.length === 0 ? (
             <div className="empty-state">No local deployments registered yet.</div>

@@ -1,9 +1,7 @@
 import React from 'react';
 import {
-  AlertCircle,
   Calendar,
   CheckCircle2,
-  Clock,
   Download,
   ExternalLink,
   FileText,
@@ -16,11 +14,10 @@ import {
   Server,
   Tag,
   User,
-  X,
   Zap,
 } from 'lucide-react';
 
-import { getAcceleratorMemorySummary, type ValidationResult } from '../helpers/hardwareValidation';
+import type { ValidationResult } from '../helpers/hardwareValidation';
 import { getModelMemoryBreakdown } from '../helpers/modelSizing';
 import { isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
@@ -49,14 +46,11 @@ export function HfModelDetailPanel(props: {
   const sizeGb = validation?.modelWeightGb ?? memoryBreakdown.modelWeightGb;
   const kvCacheGb = validation?.kvCacheGb ?? memoryBreakdown.kvCacheGb;
   const servingOverheadGb = validation?.servingOverheadGb ?? memoryBreakdown.servingOverheadGb;
-  const acceleratorMemory = getAcceleratorMemorySummary(machine);
-  const totalVramGb = acceleratorMemory.totalGb;
   const effectiveMinVramGb = validation?.effectiveMinVramGb || memoryBreakdown.totalVramGb;
 
   const isVllmBusy = busy === 'install-vllm';
   const isOllamaBusy = busy === 'install-ollama';
   const isRegisterBusy = busy === 'register-self-hosted';
-  const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
   const platform = getSupportedPlatform(machine?.platform);
   const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
   const selectedSupported = isLibrarySupported(selectedOption.value, platform, model);
@@ -180,41 +174,6 @@ export function HfModelDetailPanel(props: {
               <DeploymentProgressLog items={props.deploymentProgress} />
             ) : null}
 
-            {validation ? (
-              <div className={`analysis-card ${validation.status}`} style={{
-                padding: '16px',
-                borderRadius: '12px',
-                border: '1px solid',
-                background: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.05)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.05)' : 'rgba(239, 68, 68, 0.05)',
-                borderColor: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.2)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-              }}>
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                  <div style={{ padding: '6px', borderRadius: '6px', background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444', color: '#fff' }}>
-                    {validation.status === 'supported' ? <CheckCircle2 size={16} /> : validation.status === 'warning' ? <AlertCircle size={16} /> : <X size={16} />}
-                  </div>
-                  <div>
-                    <h5 style={{ margin: '0 0 2px 0', fontSize: '0.95rem', color: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444' }}>
-                      {validation.status === 'supported' ? 'Hardware Ready' : validation.status === 'warning' ? 'Performance Alert' : 'Incompatible'}
-                    </h5>
-                    <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.9, lineHeight: 1.4 }}>{validation.message}</p>
-                  </div>
-                </div>
-                <div style={{ marginTop: '14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--muted)' }}>{acceleratorMemory.hasUnifiedMemory ? 'Accelerator Memory Used' : 'VRAM Capacity Used'}</span>
-                    <span>{effectiveMinVramGb.toFixed(1)}GB / {totalVramGb.toFixed(1)}GB</span>
-                  </div>
-                  <div className="progress-bar-bg" style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
-                    <div className="progress-bar-fill" style={{ height: '100%', width: `${vramUsage}%`, background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444' }} />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div style={{ padding: '24px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                <Clock size={24} style={{ opacity: 0.2, marginBottom: '8px' }} />
-                <p style={{ margin: 0, color: 'var(--muted)', fontSize: '0.85rem' }}>Analyzing hardware...</p>
-              </div>
-            )}
           </div>
         </div>
       </div>

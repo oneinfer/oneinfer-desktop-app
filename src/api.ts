@@ -348,6 +348,39 @@ export async function loginWithOtp(baseUrl: string, email: string, otp: string):
   };
 }
 
+export async function loginWithGoogle(
+  baseUrl: string,
+  payload: {
+    clientId: string;
+    credential: AnyRecord;
+    selectBy?: string | null;
+    email?: string;
+  },
+): Promise<DesktopSession> {
+  const data = await request<AnyRecord>({
+    baseUrl,
+    path: '/developer/google-login',
+    method: 'POST',
+    body: {
+      client_id: payload.clientId,
+      credential: payload.credential,
+      select_by: payload.selectBy ?? '',
+    },
+  });
+
+  const accessToken = String(data.access_token ?? '');
+  const developerId = String(data.developer_id ?? '');
+  if (!accessToken || !developerId) {
+    throw new Error('Google login response did not include access_token or developer_id.');
+  }
+
+  return {
+    accessToken,
+    developerId,
+    email: String(data.email ?? payload.email ?? payload.credential.email ?? ''),
+  };
+}
+
 export async function getProfile(baseUrl: string, session: DesktopSession): Promise<AnyRecord> {
   return request<AnyRecord>({
     baseUrl,
@@ -446,6 +479,35 @@ export async function createInstance(
     method: 'POST',
     token: session.accessToken,
     body: payload,
+  });
+}
+
+export async function deployCloudModel(
+  baseUrl: string,
+  session: DesktopSession,
+  payload: CreateInstanceFormState,
+): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: `/developer/${session.developerId}/deploy-cloud-model`,
+    method: 'POST',
+    token: session.accessToken,
+    body: {
+      provider_name: payload.provider_name,
+      instance_name: payload.instance_name,
+      gpu_id: payload.gpu_id,
+      gpu_num: payload.gpu_num,
+      disk_size: payload.disk_size,
+      image_url: payload.image_url,
+      region: payload.region,
+      startup_script: payload.startup_script,
+      model_id: payload.model_id,
+      serving_library: payload.serving_library,
+      hf_access_token: payload.hf_access_token,
+      top_p: payload.top_p,
+      temperature: payload.temperature,
+      max_tokens: payload.max_tokens,
+    },
   });
 }
 
