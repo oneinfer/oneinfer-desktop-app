@@ -531,6 +531,11 @@ label span,
   align-content: stretch;
 }
 
+.main-stage:has(> .routing-page) {
+  grid-template-rows: minmax(0, 1fr);
+  align-content: stretch;
+}
+
 .app-topbar {
   display: flex;
   align-items: center;
@@ -804,6 +809,15 @@ label span,
   margin-top: 12px;
 }
 
+.cloud-endpoint-description {
+  margin: 4px 0 0;
+  max-width: 680px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
 .local-deployment-card {
   display: grid;
   gap: 10px;
@@ -995,6 +1009,26 @@ label span,
   max-height: 260px;
   overflow-y: auto;
   padding-right: 3px;
+}
+
+.routing-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100%;
+}
+
+.routing-empty-panel {
+  align-self: center;
+  display: grid;
+  place-items: center;
+}
+
+.routing-empty-state {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  padding: 40px;
+  text-align: center;
 }
 
 .route-empty-action {

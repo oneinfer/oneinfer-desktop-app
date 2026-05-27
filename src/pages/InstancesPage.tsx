@@ -181,7 +181,10 @@ export function InstancesPage(props: {
         <div className="panel-header" style={{ marginBottom: '12px' }}>
           <div className="panel-title">
             <Server size={18} />
-            <h3>Cloud Endpoints</h3>
+            <div>
+              <h3>Cloud Endpoints</h3>
+              <p className="cloud-endpoint-description">List of registered cloud model endpoints from GPU deployments. Use these endpoints as routing targets once the model server is ready.</p>
+            </div>
           </div>
           <span className="status-pill soft">{cloudEndpoints.length} registered</span>
         </div>
