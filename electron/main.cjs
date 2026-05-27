@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -33,6 +33,57 @@ const DEFAULT_ONEINFER_MODEL = 'MiniMax-M2.7';
 const DEFAULT_ONEINFER_CODE_MODEL = 'glm-5.1';
 const DEFAULT_KILOCODE_MODEL = 'MiniMax-M2.7';
 const DEFAULT_CLAUDE_MODEL = 'haiku';
+
+function readEnvFileValue(name) {
+  const candidates = [
+    path.join(process.cwd(), '.env'),
+    path.join(process.cwd(), '.env.local'),
+    path.join(__dirname, '..', '.env'),
+    path.join(__dirname, '..', '.env.local'),
+  ];
+
+  for (const filePath of candidates) {
+    if (!fs.existsSync(filePath)) {
+      continue;
+    }
+
+    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine || trimmedLine.startsWith('#')) {
+        continue;
+      }
+
+      const separatorIndex = trimmedLine.indexOf('=');
+      if (separatorIndex === -1) {
+        continue;
+      }
+
+      const key = trimmedLine.slice(0, separatorIndex).trim();
+      if (key !== name) {
+        continue;
+      }
+
+      return trimmedLine
+        .slice(separatorIndex + 1)
+        .trim()
+        .replace(/^['"]|['"]$/g, '');
+    }
+  }
+
+  return '';
+}
+
+const GOOGLE_DESKTOP_CLIENT_ID = process.env.ONEINFER_GOOGLE_DESKTOP_CLIENT_ID
+  || process.env.GOOGLE_DESKTOP_CLIENT_ID
+  || readEnvFileValue('ONEINFER_GOOGLE_DESKTOP_CLIENT_ID')
+  || readEnvFileValue('GOOGLE_DESKTOP_CLIENT_ID')
+  || '';
+const GOOGLE_DESKTOP_CLIENT_SECRET = process.env.ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET
+  || process.env.GOOGLE_DESKTOP_CLIENT_SECRET
+  || readEnvFileValue('ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET')
+  || readEnvFileValue('GOOGLE_DESKTOP_CLIENT_SECRET')
+  || '';
 const CLAUDE_CODE_SETUP_DOCS_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 const OPENCODE_SETUP_DOCS_URL = 'https://opencode.ai/docs/';
 const WINDOWS_VLLM_VERSION = '0.21.0';
@@ -90,6 +141,174 @@ function sendDeploymentProgress(progress) {
     timestamp: Date.now(),
     ...progress,
   });
+}
+
+function decodeJwtPayload(token) {
+  const payload = String(token || '').split('.')[1];
+  if (!payload) {
+    throw new Error('Google did not return a valid identity token.');
+  }
+
+  const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+  return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+}
+
+function createGoogleAuthHtml(title, body) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>${title}</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f8fafc; color: #111827; }
+      main { max-width: 420px; padding: 32px; text-align: center; }
+      h1 { font-size: 22px; margin: 0 0 12px; }
+      p { color: #4b5563; line-height: 1.5; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${title}</h1>
+      <p>${body}</p>
+    </main>
+    <script>window.setTimeout(() => window.close(), 1200);</script>
+  </body>
+</html>`;
+}
+
+function writeGoogleAuthResponse(res, statusCode, title, body) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(createGoogleAuthHtml(title, body));
+}
+
+async function startGoogleDesktopLogin() {
+  if (!GOOGLE_DESKTOP_CLIENT_ID || GOOGLE_DESKTOP_CLIENT_ID.includes('YOUR_')) {
+    throw new Error('Google Desktop OAuth client ID is not configured.');
+  }
+
+  const state = crypto.randomBytes(24).toString('base64url');
+  const codeVerifier = crypto.randomBytes(48).toString('base64url');
+  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+
+  let server;
+
+  try {
+    const authResult = await new Promise((resolve, reject) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        reject(new Error('Google sign-in timed out.'));
+      }, 5 * 60 * 1000);
+
+      const settle = (fn, value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        fn(value);
+      };
+
+      server = http.createServer((req, res) => {
+        try {
+          const requestUrl = new URL(req.url || '/', `http://${req.headers.host}`);
+          if (requestUrl.pathname !== '/oauth/google/callback') {
+            writeGoogleAuthResponse(res, 404, 'Not found', 'This local callback is only used for OneInfer Google sign-in.');
+            return;
+          }
+
+          const returnedState = requestUrl.searchParams.get('state');
+          const code = requestUrl.searchParams.get('code');
+          const error = requestUrl.searchParams.get('error');
+
+          if (error) {
+            writeGoogleAuthResponse(res, 400, 'Google sign-in failed', 'You can close this browser tab and return to OneInfer Desktop.');
+            settle(reject, new Error(`Google sign-in failed: ${error}`));
+            return;
+          }
+
+          if (!code || returnedState !== state) {
+            writeGoogleAuthResponse(res, 400, 'Google sign-in failed', 'The sign-in response was invalid. Please try again from OneInfer Desktop.');
+            settle(reject, new Error('Google sign-in response was invalid.'));
+            return;
+          }
+
+          writeGoogleAuthResponse(res, 200, 'Signed in to Google', 'You can close this browser tab and return to OneInfer Desktop.');
+          settle(resolve, { code, redirectUri: `http://127.0.0.1:${server.address().port}/oauth/google/callback` });
+        } catch (error) {
+          writeGoogleAuthResponse(res, 500, 'Google sign-in failed', 'Please return to OneInfer Desktop and try again.');
+          settle(reject, error);
+        }
+      });
+
+      server.on('error', (error) => settle(reject, error));
+      server.listen(0, '127.0.0.1', async () => {
+        try {
+          const { port } = server.address();
+          const redirectUri = `http://127.0.0.1:${port}/oauth/google/callback`;
+          const params = new URLSearchParams({
+            client_id: GOOGLE_DESKTOP_CLIENT_ID,
+            redirect_uri: redirectUri,
+            response_type: 'code',
+            scope: 'openid email profile',
+            state,
+            code_challenge: codeChallenge,
+            code_challenge_method: 'S256',
+            access_type: 'offline',
+            prompt: 'select_account',
+          });
+
+          await shell.openExternal(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+        } catch (error) {
+          settle(reject, error);
+        }
+      });
+    });
+
+    const tokenBody = new URLSearchParams({
+      client_id: GOOGLE_DESKTOP_CLIENT_ID,
+      code: authResult.code,
+      code_verifier: codeVerifier,
+      grant_type: 'authorization_code',
+      redirect_uri: authResult.redirectUri,
+    });
+
+    if (GOOGLE_DESKTOP_CLIENT_SECRET) {
+      tokenBody.set('client_secret', GOOGLE_DESKTOP_CLIENT_SECRET);
+    }
+
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: tokenBody.toString(),
+    });
+
+    const tokenPayload = await tokenResponse.json().catch(() => ({}));
+    if (!tokenResponse.ok) {
+      const message = tokenPayload.error_description || tokenPayload.error || tokenResponse.statusText;
+      throw new Error(`Google token exchange failed: ${message}`);
+    }
+
+    if (!tokenPayload.id_token) {
+      throw new Error('Google token response did not include an identity token.');
+    }
+
+    return {
+      clientId: GOOGLE_DESKTOP_CLIENT_ID,
+      credential: decodeJwtPayload(tokenPayload.id_token),
+      idToken: tokenPayload.id_token,
+      selectBy: 'browser',
+    };
+  } finally {
+    if (server) {
+      server.close();
+    }
+  }
 }
 
 function configureAutoUpdater() {
@@ -2415,7 +2634,12 @@ async function deleteLocalModel(payload = {}) {
       await runCommand(getOllamaCommand(), ['rm', modelId], { timeoutMs: 2 * 60 * 1000 });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!message.toLowerCase().includes('not found')) {
+      const normalizedMessage = message.toLowerCase();
+      const alreadyMissing = normalizedMessage.includes('not found')
+        || normalizedMessage.includes('does not exist')
+        || normalizedMessage.includes('no such model')
+        || normalizedMessage.includes('model not found');
+      if (!alreadyMissing) {
         throw error;
       }
     }
@@ -4037,6 +4261,7 @@ app.whenReady().then(() => {
     return payload;
   });
   ipcMain.handle('app:get-version', () => app.getVersion());
+  ipcMain.handle('app:start-google-login', async () => startGoogleDesktopLogin());
   ipcMain.handle('app:get-update-status', () => ({ ...updateState }));
   ipcMain.handle('app:check-for-updates', async () => {
     if (isDev) {

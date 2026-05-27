@@ -1,9 +1,7 @@
 import React from 'react';
 import {
-  AlertCircle,
   Calendar,
   CheckCircle2,
-  Clock,
   Download,
   ExternalLink,
   FileText,
@@ -16,16 +14,14 @@ import {
   Server,
   Tag,
   User,
-  X,
   Zap,
 } from 'lucide-react';
 
-import { getAcceleratorMemorySummary, type ValidationResult } from '../helpers/hardwareValidation';
+import type { ValidationResult } from '../helpers/hardwareValidation';
 import { getModelMemoryBreakdown } from '../helpers/modelSizing';
-import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
+import { isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
-import { Banner } from './Common';
 
 export function HfModelDetailPanel(props: {
   model: HfModelInfo | null;
@@ -42,8 +38,6 @@ export function HfModelDetailPanel(props: {
   onCancelDeploy: () => Promise<boolean | void> | boolean | void;
 }) {
   const { model, validation, machine, libraries, busy, selectedLibrary, onInstall, onSelectLibrary, onRegister, onCancelDeploy } = props;
-  const [localError, setLocalError] = React.useState<string | null>(null);
-  const [localSuccess, setLocalSuccess] = React.useState<string | null>(null);
   const [servingLibraryMenuOpen, setServingLibraryMenuOpen] = React.useState(false);
 
   if (!model) return null;
@@ -52,20 +46,14 @@ export function HfModelDetailPanel(props: {
   const sizeGb = validation?.modelWeightGb ?? memoryBreakdown.modelWeightGb;
   const kvCacheGb = validation?.kvCacheGb ?? memoryBreakdown.kvCacheGb;
   const servingOverheadGb = validation?.servingOverheadGb ?? memoryBreakdown.servingOverheadGb;
-  const acceleratorMemory = getAcceleratorMemorySummary(machine);
-  const totalVramGb = acceleratorMemory.totalGb;
   const effectiveMinVramGb = validation?.effectiveMinVramGb || memoryBreakdown.totalVramGb;
 
   const isVllmBusy = busy === 'install-vllm';
   const isOllamaBusy = busy === 'install-ollama';
   const isRegisterBusy = busy === 'register-self-hosted';
-  const isAnyInstalling = Boolean(busy?.startsWith('install-'));
-  const installingLibraryName = busy?.startsWith('install-') ? formatServingLibraryName(busy.replace('install-', '') as ServingLibrary) : '';
-  const vramUsage = totalVramGb > 0 ? Math.min(100, (effectiveMinVramGb / totalVramGb) * 100) : 0;
   const platform = getSupportedPlatform(machine?.platform);
   const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
   const selectedSupported = isLibrarySupported(selectedOption.value, platform, model);
-  const selectedCompatibility = getServingLibraryCompatibility(selectedOption.value, model);
   const selectedInstalled = selectedSupported && libraries[selectedOption.value];
   const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
   const selectedLaunchable = isOneClickLaunchable(selectedOption.value);
@@ -73,19 +61,14 @@ export function HfModelDetailPanel(props: {
   const selectedBusy = busy === `install-${selectedOption.value}`;
 
   const handleInstall = async (name: ServingLibrary) => {
-    setLocalError(null);
-    setLocalSuccess(null);
     try {
       await onInstall(name);
-      setLocalSuccess(`${formatServingLibraryName(name)} installed successfully.`);
     } catch (error: any) {
-      setLocalError(error?.message || 'Installation failed');
+      console.error('[model-detail] installation failed', error);
     }
   };
 
   const handleDeploy = async () => {
-    setLocalError(null);
-    setLocalSuccess(null);
     try {
       if (selectedSupported && !selectedInstalled) {
         await handleInstall(selectedOption.value);
@@ -96,36 +79,17 @@ export function HfModelDetailPanel(props: {
       if (deployed === false) {
         return;
       }
-      setLocalSuccess(selectedLaunchable ? 'Model deployed successfully to your local machine.' : 'Local endpoint registered successfully.');
     } catch (error: any) {
-      setLocalError(error?.message || 'Deployment failed');
+      console.error('[model-detail] deployment failed', error);
     }
   };
 
   const handleCancelDeploy = async () => {
-    setLocalError(null);
-    setLocalSuccess(null);
-    const cancelled = await onCancelDeploy();
-    if (cancelled) {
-      setLocalSuccess('Deployment cancelled.');
-    }
+    await onCancelDeploy();
   };
 
   return (
     <section className="model-detail-panel" style={{ animation: 'fadeIn 0.4s ease-out', background: 'transparent' }}>
-      {props.message ? <div style={{ marginBottom: '12px' }}><Banner tone={props.message.tone} text={props.message.text} /></div> : null}
-      {localError ? <div style={{ marginBottom: '12px' }}><Banner tone="error" text={localError} /></div> : null}
-      {localSuccess ? <div style={{ marginBottom: '12px' }}><Banner tone="success" text={localSuccess} /></div> : null}
-      {!selectedSupported ? (
-        <div style={{ marginBottom: '12px' }}>
-          <Banner tone="error" text={selectedCompatibility.reason || `${selectedOption.label} is not compatible with this model or operating system.`} />
-        </div>
-      ) : null}
-      {(isAnyInstalling || isRegisterBusy) && !localError && !localSuccess ? (
-        <div style={{ marginBottom: '20px' }}>
-          <Banner tone="info" text={isRegisterBusy ? 'Deploying model to local machine...' : `Installing ${installingLibraryName}... Please wait.`} />
-        </div>
-      ) : null}
       <div className="panel-header model-detail-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '16px' }}>
           <div style={{ minWidth: 0 }}>
@@ -210,41 +174,6 @@ export function HfModelDetailPanel(props: {
               <DeploymentProgressLog items={props.deploymentProgress} />
             ) : null}
 
-            {validation ? (
-              <div className={`analysis-card ${validation.status}`} style={{
-                padding: '16px',
-                borderRadius: '12px',
-                border: '1px solid',
-                background: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.05)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.05)' : 'rgba(239, 68, 68, 0.05)',
-                borderColor: validation.status === 'supported' ? 'rgba(16, 185, 129, 0.2)' : validation.status === 'warning' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-              }}>
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                  <div style={{ padding: '6px', borderRadius: '6px', background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444', color: '#fff' }}>
-                    {validation.status === 'supported' ? <CheckCircle2 size={16} /> : validation.status === 'warning' ? <AlertCircle size={16} /> : <X size={16} />}
-                  </div>
-                  <div>
-                    <h5 style={{ margin: '0 0 2px 0', fontSize: '0.95rem', color: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444' }}>
-                      {validation.status === 'supported' ? 'Hardware Ready' : validation.status === 'warning' ? 'Performance Alert' : 'Incompatible'}
-                    </h5>
-                    <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.9, lineHeight: 1.4 }}>{validation.message}</p>
-                  </div>
-                </div>
-                <div style={{ marginTop: '14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--muted)' }}>{acceleratorMemory.hasUnifiedMemory ? 'Accelerator Memory Used' : 'VRAM Capacity Used'}</span>
-                    <span>{effectiveMinVramGb.toFixed(1)}GB / {totalVramGb.toFixed(1)}GB</span>
-                  </div>
-                  <div className="progress-bar-bg" style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
-                    <div className="progress-bar-fill" style={{ height: '100%', width: `${vramUsage}%`, background: validation.status === 'supported' ? '#10b981' : validation.status === 'warning' ? '#f59e0b' : '#ef4444' }} />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div style={{ padding: '24px', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                <Clock size={24} style={{ opacity: 0.2, marginBottom: '8px' }} />
-                <p style={{ margin: 0, color: 'var(--muted)', fontSize: '0.85rem' }}>Analyzing hardware...</p>
-              </div>
-            )}
           </div>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { LoaderCircle } from 'lucide-react';
 
 import {
@@ -22,12 +22,12 @@ import {
   listInferenceEndpoints,
   listIntelligentEndpoints,
   listModels,
+  loginWithGoogle,
   loginWithOtp,
   requestOtp,
   runInstanceAction,
 } from './api';
 import { AppLayout } from './components/AppLayout';
-import { Banner } from './components/Common';
 import { HfModelDetailPanel } from './components/HfModelDetailPanel';
 import {
   createLoadedSections,
@@ -149,10 +149,20 @@ function App() {
   const [libraries, setLibraries] = useState<Record<ServingLibrary, boolean>>(initialLibraryStatus);
   const [deploymentProgress, setDeploymentProgress] = useState<DesktopDeploymentProgress[]>([]);
   const [localDeployments, setLocalDeployments] = useState<LocalModelDeployment[]>([]);
+  const [deletedLocalEndpointKeys, setDeletedLocalEndpointKeys] = useState<string[]>([]);
   const [localRouteUrls, setLocalRouteUrls] = useState<Record<string, string>>({});
   const [localModelMetrics, setLocalModelMetrics] = useState<Record<string, LocalModelMetrics>>({});
   const [routeInitialEndpointId, setRouteInitialEndpointId] = useState<string | null>(null);
   const [routeInitialViewId, setRouteInitialViewId] = useState<string | null>(null);
+  const deletedLocalEndpointKeySet = useMemo(() => new Set(deletedLocalEndpointKeys), [deletedLocalEndpointKeys]);
+  const visibleLocalDeployments = useMemo(
+    () => localDeployments.filter((deployment) => !isDeletedLocalDeployment(deployment, deletedLocalEndpointKeySet)),
+    [deletedLocalEndpointKeySet, localDeployments],
+  );
+  const visibleDashboard = useMemo(() => ({
+    ...dashboard,
+    inferenceEndpoints: dashboard.inferenceEndpoints.filter((endpoint, index) => !isDeletedLocalInferenceEndpoint(endpoint, deletedLocalEndpointKeySet, index)),
+  }), [dashboard, deletedLocalEndpointKeySet]);
 
   useEffect(() => {
     let active = true;
@@ -289,10 +299,10 @@ function App() {
       return;
     }
 
-    persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments).catch((error) => {
+    persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments, deletedLocalEndpointKeys).catch((error) => {
       console.error('[state] failed to persist local deployments', error);
     });
-  }, [booting, session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments]);
+  }, [booting, session, settingsDraft.apiBaseUrl, claudeCodeProvider, localDeployments, deletedLocalEndpointKeys]);
 
   useEffect(() => {
     if (!window.desktopBridge?.onDeploymentProgress) {
@@ -370,6 +380,7 @@ function App() {
     nextApiBaseUrl: string,
     nextClaudeCodeProvider: 'oneinfer' | 'anthropic',
     nextLocalDeployments: LocalModelDeployment[] = localDeployments,
+    nextDeletedLocalEndpointKeys: string[] = deletedLocalEndpointKeys,
   ) {
     if (!window.desktopBridge) {
       return;
@@ -382,6 +393,7 @@ function App() {
         claudeCodeProvider: nextClaudeCodeProvider,
       },
       localDeployments: nextLocalDeployments,
+      deletedLocalEndpointKeys: nextDeletedLocalEndpointKeys,
     });
   }
 
@@ -582,6 +594,9 @@ function App() {
       if (Array.isArray(storedState?.localDeployments)) {
         setLocalDeployments(storedState.localDeployments.filter(isValidLocalDeployment));
       }
+      if (Array.isArray(storedState?.deletedLocalEndpointKeys)) {
+        setDeletedLocalEndpointKeys(uniqueStrings(storedState.deletedLocalEndpointKeys));
+      }
       setLoadedSections(createLoadedSections());
       setEmail(storedState?.session?.email ?? '');
       setAppVersion(version ?? '');
@@ -693,6 +708,39 @@ function App() {
       setBusy(null);
     }
   }
+
+  const handleGoogleLogin = useCallback(async () => {
+    setBusy('google');
+    setMessage(null);
+
+    try {
+      if (!window.desktopBridge?.startGoogleLogin) {
+        throw new Error('Google desktop login is not available in this build.');
+      }
+
+      const googleAuth = await window.desktopBridge.startGoogleLogin();
+      const nextSession = await loginWithGoogle(settingsDraft.apiBaseUrl, {
+        clientId: googleAuth.clientId,
+        credential: googleAuth.credential,
+        selectBy: googleAuth.selectBy ?? '',
+        email: typeof googleAuth.credential.email === 'string' ? googleAuth.credential.email : email,
+      });
+
+      setEmail(nextSession.email);
+      setOtp('');
+      setLoginStep('email');
+      setSession(nextSession);
+      setLoadedSections(createLoadedSections());
+      setDashboard(defaultDashboardState);
+      await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
+      await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
+      setMessage({ tone: 'success', text: 'Logged in with Google.' });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Google login failed.' });
+    } finally {
+      setBusy(null);
+    }
+  }, [claudeCodeProvider, email, settingsDraft.apiBaseUrl]);
 
   async function handleEnableClaudeCode() {
     if (!session || !window.desktopBridge?.enableClaudeCode) {
@@ -1018,6 +1066,8 @@ function App() {
         runtime: deployment.runtime,
         deployedAt,
       };
+      let nextDeletedLocalEndpointKeys = deletedLocalEndpointKeys.filter((key) => !getLocalEndpointDeletionKeys(localDeploymentRecord).includes(key));
+      setDeletedLocalEndpointKeys(nextDeletedLocalEndpointKeys);
       let nextLocalDeployments = upsertLocalDeployment(localDeployments, localDeploymentRecord);
       setLocalDeployments((current) => {
         nextLocalDeployments = upsertLocalDeployment(current, localDeploymentRecord);
@@ -1060,8 +1110,13 @@ function App() {
             ? { ...item, endpointId: registeredEndpointId }
             : item
         )));
+        nextDeletedLocalEndpointKeys = nextDeletedLocalEndpointKeys.filter((key) => !getLocalEndpointDeletionKeys({
+          ...localDeploymentRecord,
+          endpointId: registeredEndpointId,
+        }).includes(key));
+        setDeletedLocalEndpointKeys(nextDeletedLocalEndpointKeys);
       }
-      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments);
+      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments, nextDeletedLocalEndpointKeys);
 
       const registeredProgress: DesktopDeploymentProgress = {
         id: progressId,
@@ -1536,7 +1591,7 @@ function App() {
       return [];
     }
 
-    const selectedLocalDeployments = localDeployments.filter((deployment) => endpointIds.includes(getLocalDeploymentSelectionId(deployment)));
+    const selectedLocalDeployments = visibleLocalDeployments.filter((deployment) => endpointIds.includes(getLocalDeploymentSelectionId(deployment)));
     if (selectedLocalDeployments.length === 0) {
       return [];
     }
@@ -1746,23 +1801,46 @@ function App() {
     setBusy(`delete-local:${deployment.endpointUrl}`);
     try {
       if (deployment.registered) {
-        await deleteInferenceEndpoint(settingsDraft.apiBaseUrl, session, deployment.endpointId);
-      }
-
-      if (window.desktopBridge?.deleteLocalModel) {
-        await window.desktopBridge.deleteLocalModel({
+        console.info('[local-delete] Deleting registered inference endpoint', {
+          endpointId: deployment.endpointId,
           endpointUrl: deployment.endpointUrl,
           modelId: deployment.modelId,
           runtime: deployment.runtime,
         });
+        try {
+          const deleteResult = await deleteInferenceEndpoint(settingsDraft.apiBaseUrl, session, deployment.endpointId);
+          console.info('[local-delete] Backend delete result', deleteResult);
+        } catch (error) {
+          console.warn('[local-delete] Backend delete failed; hiding local endpoint in desktop state.', error);
+        }
       }
 
-      setLocalDeployments((current) => current.filter((item) => !isSameLocalDeploymentByKey(item, deployment)));
+      if (window.desktopBridge?.deleteLocalModel) {
+        try {
+          await window.desktopBridge.deleteLocalModel({
+            endpointUrl: deployment.endpointUrl,
+            modelId: deployment.modelId,
+            runtime: deployment.runtime,
+          });
+        } catch (error) {
+          console.warn('[local-delete] Local runtime cleanup failed after registration delete.', error);
+        }
+      }
+
+      const nextDeletedLocalEndpointKeys = uniqueStrings([
+        ...deletedLocalEndpointKeys,
+        ...getLocalEndpointDeletionKeys(deployment),
+      ]);
+      const nextLocalDeployments = localDeployments.filter((item) => !isSameLocalDeploymentByKey(item, deployment));
+      setDeletedLocalEndpointKeys(nextDeletedLocalEndpointKeys);
+      setLocalDeployments(nextLocalDeployments);
       setLocalModelMetrics((current) => {
         const next = { ...current };
         delete next[deployment.endpointUrl];
+        delete next[normalizeLocalEndpointUrl(deployment.endpointUrl)];
         return next;
       });
+      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments, nextDeletedLocalEndpointKeys);
       setMessage({ tone: 'success', text: 'Local model deleted.' });
       await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
@@ -1823,6 +1901,7 @@ function App() {
         onOtpChange={setOtp}
         onOtpRequest={handleOtpRequest}
         onLogin={handleLogin}
+        onGoogleLogin={handleGoogleLogin}
         onBackToEmail={() => setLoginStep('email')}
       />
     );
@@ -1832,19 +1911,13 @@ function App() {
     <AppLayout
       appVersion={appVersion}
       activeSection={activeSection}
-      dashboard={dashboard}
+      dashboard={visibleDashboard}
       sidebarOpen={sidebarOpen}
       onSidebarOpen={setSidebarOpen}
       onSectionChange={setActiveSection}
       onRefresh={handleRefreshCurrentSection}
       onLogout={handleLogout}
     >
-      {message ? (
-        <div style={{ padding: '20px 20px 0 20px' }}>
-          <Banner tone={message.tone} text={message.text} />
-        </div>
-      ) : null}
-
       {activeSection === 'overview' ? (
         <div className="app-topbar">
           <div className="welcome-copy">
@@ -1861,12 +1934,12 @@ function App() {
       <main className="main-stage" style={{ padding: '20px' }}>
         {activeSection === 'overview' ? (
           <OverviewPage
-            dashboard={dashboard}
+            dashboard={visibleDashboard}
             busy={busy}
             infraTab={infraTab}
             overviewTab={overviewTab}
             claudeCodeProvider={claudeCodeProvider}
-            localDeployments={localDeployments}
+            localDeployments={visibleLocalDeployments}
             localModelMetrics={localModelMetrics}
             onInfraTabChange={setInfraTab}
             onOverviewTabChange={setOverviewTab}
@@ -1884,7 +1957,7 @@ function App() {
 
         {activeSection === 'selfHosting' ? (
           <SelfHostingPage
-            dashboard={dashboard}
+            dashboard={visibleDashboard}
             selfHostForm={selfHostForm}
             validationResult={validationResult}
             hfModelMetadata={hfModelMetadata}
@@ -1896,7 +1969,7 @@ function App() {
               <HfModelDetailPanel
                 model={hfModelMetadata}
                 validation={validationResult}
-                machine={dashboard.machineDetails}
+                machine={visibleDashboard.machineDetails}
                 libraries={libraries}
                 selectedLibrary={selfHostForm.serving_library}
                 busy={busy}
@@ -1908,7 +1981,7 @@ function App() {
                 onCancelDeploy={handleCancelSelfHostedDeployment}
               />
             )}
-            localDeployments={localDeployments}
+            localDeployments={visibleLocalDeployments}
             localModelMetrics={localModelMetrics}
             onFormChange={setSelfHostForm}
             onSubmit={(event) => {
@@ -1923,7 +1996,7 @@ function App() {
 
         {activeSection === 'instances' ? (
           <InstancesPage
-            dashboard={dashboard}
+            dashboard={visibleDashboard}
             instanceForm={instanceForm}
             busy={busy}
             showCreateInstanceModal={showCreateInstanceModal}
@@ -1938,7 +2011,7 @@ function App() {
 
         {activeSection === 'apiKeys' ? (
           <ApiKeysPage
-            dashboard={dashboard}
+            dashboard={visibleDashboard}
             apiKeyName={apiKeyName}
             busy={busy}
             showCreateKeyModal={showCreateKeyModal}
@@ -1951,7 +2024,7 @@ function App() {
 
         {activeSection === 'routing' ? (
           <RoutingPage
-            dashboard={dashboard}
+            dashboard={visibleDashboard}
             intelligentEndpointName={intelligentEndpointName}
             busy={busy}
             onIntelligentEndpointNameChange={setIntelligentEndpointName}
@@ -1962,7 +2035,7 @@ function App() {
             onSetupRouterEndpoint={handleSetupRouterEndpoint}
             onInstallLibrary={handleInstallLibrary}
             libraries={libraries}
-            localDeployments={localDeployments}
+            localDeployments={visibleLocalDeployments}
             localModelMetrics={localModelMetrics}
             initialEndpointId={routeInitialEndpointId}
             onInitialEndpointConsumed={() => setRouteInitialEndpointId(null)}
@@ -1971,11 +2044,11 @@ function App() {
           />
         ) : null}
 
-        {activeSection === 'bandwidth' ? <BandwidthPage dashboard={dashboard} /> : null}
+        {activeSection === 'bandwidth' ? <BandwidthPage dashboard={visibleDashboard} /> : null}
 
         {activeSection === 'settings' ? (
           <SettingsPage
-            dashboard={dashboard}
+            dashboard={visibleDashboard}
             session={session}
             settingsTab={settingsTab}
             onSettingsTabChange={setSettingsTab}
@@ -2323,7 +2396,47 @@ function isSameLocalDeploymentByKey(left: Pick<LocalModelDeployment, 'endpointUr
 }
 
 function getLocalDeploymentIdentityKey(deployment: Pick<LocalModelDeployment, 'endpointUrl' | 'modelId'>): string {
-  return `${normalizeLocalEndpointUrl(deployment.endpointUrl)}::${deployment.modelId}`;
+  return `${normalizeLocalEndpointUrl(deployment.endpointUrl)}::${normalizeLocalModelKey(deployment.modelId)}`;
+}
+
+function isDeletedLocalDeployment(deployment: Pick<LocalModelDeployment, 'endpointId' | 'endpointUrl' | 'modelId'>, deletedKeys: Set<string>): boolean {
+  return getLocalEndpointDeletionKeys(deployment).some((key) => deletedKeys.has(key));
+}
+
+function isDeletedLocalInferenceEndpoint(endpoint: EndpointItem, deletedKeys: Set<string>, index: number): boolean {
+  if (!isLocalInferenceEndpoint(endpoint)) {
+    return false;
+  }
+
+  const endpointId = getInferenceEndpointIdFromRecord(endpoint, index);
+  const modelId = String(endpoint.model_id ?? endpoint.name ?? '');
+  const endpointUrl = String(endpoint.endpoint_url ?? '');
+  return getLocalEndpointDeletionKeys({ endpointId, endpointUrl, modelId }).some((key) => deletedKeys.has(key));
+}
+
+function isLocalInferenceEndpoint(endpoint: EndpointItem): boolean {
+  const endpointUrl = String(endpoint.endpoint_url ?? '').toLowerCase();
+  return String(endpoint.deployment_target ?? '').toLowerCase() === 'local'
+    || endpointUrl.includes('localhost')
+    || endpointUrl.includes('127.0.0.1')
+    || endpointUrl.includes('0.0.0.0');
+}
+
+function getLocalEndpointDeletionKeys(deployment: { endpointId?: string; endpointUrl?: string; modelId?: string }): string[] {
+  return uniqueStrings([
+    deployment.endpointId ? `id:${deployment.endpointId.trim()}` : '',
+    deployment.endpointUrl && deployment.modelId
+      ? `local:${normalizeLocalEndpointUrl(deployment.endpointUrl)}::${normalizeLocalModelKey(deployment.modelId)}`
+      : '',
+  ]);
+}
+
+function normalizeLocalModelKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  return Array.from(new Set(values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim())));
 }
 
 function normalizeLocalEndpointUrl(endpointUrl: string): string {

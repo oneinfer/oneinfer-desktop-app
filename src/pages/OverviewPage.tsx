@@ -1,8 +1,6 @@
-import { Blocks, Bot, Orbit, Server, Zap } from 'lucide-react';
+import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
-import { HardwareWidget } from '../components/HardwareWidget';
-import { ClaudeCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel, OpenCodeSetupPanel } from '../components/SetupPanels';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -23,6 +21,11 @@ export function OverviewPage(props: {
   onSectionChange: (section: SectionKey) => void;
   onOpenRoute: (routeId: string) => void;
 }) {
+  const isClaudeOneInfer = props.claudeCodeProvider === 'oneinfer';
+  const isClaudeBusy = props.busy === 'configure-claude-code';
+  const isOpenCodeBusy = props.busy === 'configure-opencode';
+  const isKiloCodeBusy = props.busy === 'configure-kilocode';
+  const isOpenClawBusy = props.busy === 'configure-openclaw';
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local' && !isRouterEndpoint(endpoint));
   const cloudEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'cloud' && !isRouterEndpoint(endpoint));
   const validLocalDeployments = props.localDeployments.filter((deployment) => isVisibleLocalDeployment(deployment, props.localModelMetrics));
@@ -70,7 +73,7 @@ export function OverviewPage(props: {
                     <Server size={18} className="panel-icon" />
                     <h3 className="panel-title">Self Hosting</h3>
                   </div>
-                  <div className="instance-list">
+                  <div className="instance-list overview-self-host-list">
                     {visibleLocalDeployments.length === 0 ? <EmptyState text="No local models registered." /> : null}
                     {visibleLocalDeployments.map((deployment) => {
                       const metrics = props.localModelMetrics[deployment.endpointUrl];
@@ -112,25 +115,6 @@ export function OverviewPage(props: {
 
         <main className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
           <h3 className="overview-settings-heading">AI Coding Tool</h3>
-          <div className="cc-toggle" style={{ marginBottom: '20px' }}>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'claude-code' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('claude-code')} type="button">
-              <Bot size={14} />
-              Claude Code
-            </button>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'opencode' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('opencode')} type="button">
-              <Blocks size={14} />
-              OpenCode
-            </button>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'kilocode' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('kilocode')} type="button">
-              <Blocks size={14} />
-              Kilo Code
-            </button>
-            <button className={`cc-toggle-btn ${props.overviewTab === 'openclaw' ? 'active' : ''}`} onClick={() => props.onOverviewTabChange('openclaw')} type="button">
-              <Blocks size={14} />
-              OpenClaw
-            </button>
-          </div>
-
           <div className="card-stack">
             {localEndpoints.length > 0 && (
               <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
@@ -147,10 +131,74 @@ export function OverviewPage(props: {
               </div>
             )} 
 
-            {props.overviewTab === 'claude-code' ? <ClaudeCodeSetupPanel provider={props.claudeCodeProvider} onSetProvider={props.onClaudeProviderChange} busy={props.busy} /> : null}
-            {props.overviewTab === 'opencode' ? <OpenCodeSetupPanel busy={props.busy} onEnable={props.onEnableOpenCode} /> : null}
-            {props.overviewTab === 'kilocode' ? <KiloCodeSetupPanel busy={props.busy} onEnable={props.onEnableKiloCode} /> : null}
-            {props.overviewTab === 'openclaw' ? <OpenClawSetupPanel busy={props.busy} onEnable={props.onEnableOpenClaw} /> : null}
+            <div className="settings-list overview-tab-list">
+              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'claude-code' ? 'active' : ''}`}>
+                <span className="settings-list-icon"><Bot size={16} /></span>
+                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('claude-code')} type="button">
+                  <strong>Claude Code</strong>
+                  <span>Choose the provider Claude Code should use.</span>
+                </button>
+                <div className="settings-list-actions">
+                  <button
+                    className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
+                    disabled={isClaudeBusy}
+                    onClick={() => {
+                      props.onOverviewTabChange('claude-code');
+                      props.onClaudeProviderChange('oneinfer');
+                    }}
+                    type="button"
+                  >
+                    {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
+                    OneInfer
+                  </button>
+                  <button
+                    className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
+                    disabled={isClaudeBusy}
+                    onClick={() => {
+                      props.onOverviewTabChange('claude-code');
+                      props.onClaudeProviderChange('anthropic');
+                    }}
+                    type="button"
+                  >
+                    {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
+                    Anthropic
+                  </button>
+                </div>
+              </div>
+
+              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'opencode' ? 'active' : ''}`}>
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('opencode')} type="button">
+                  <strong>OpenCode</strong>
+                  <span>Install OpenCode if needed and write a OneInfer-backed user config.</span>
+                </button>
+                <button className="settings-list-status settings-action-button" disabled={isOpenCodeBusy} onClick={props.onEnableOpenCode} type="button">
+                  {isOpenCodeBusy ? 'Enabling...' : 'Enable'}
+                </button>
+              </div>
+
+              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'kilocode' ? 'active' : ''}`}>
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('kilocode')} type="button">
+                  <strong>Kilo Code</strong>
+                  <span>Install Kilo Code if needed and write a OneInfer-backed user config.</span>
+                </button>
+                <button className="settings-list-status settings-action-button" disabled={isKiloCodeBusy} onClick={props.onEnableKiloCode} type="button">
+                  {isKiloCodeBusy ? 'Enabling...' : 'Enable'}
+                </button>
+              </div>
+
+              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'openclaw' ? 'active' : ''}`}>
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('openclaw')} type="button">
+                  <strong>OpenClaw</strong>
+                  <span>Install OpenClaw if needed and write a OneInfer-backed user config.</span>
+                </button>
+                <button className="settings-list-status settings-action-button" disabled={isOpenClawBusy} onClick={props.onEnableOpenClaw} type="button">
+                  {isOpenClawBusy ? 'Enabling...' : 'Enable'}
+                </button>
+              </div>
+            </div>
           </div>
         </main>
 
@@ -172,9 +220,6 @@ export function OverviewPage(props: {
         </section>
       </div>
 
-      <div className="section-grid dashboard-row compact-row hardware-full-row overview-hardware-row">
-        <HardwareWidget machine={props.dashboard.machineDetails} />
-      </div>
     </div>
   );
 }

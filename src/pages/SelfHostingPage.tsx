@@ -266,9 +266,6 @@ export function SelfHostingPage(props: {
       ) : null}
 
       <Panel title="Local Deployments" icon={Server}>
-        <div className="form-hint">
-          Local deployments registered with OneInfer are available as routing candidates when the Local source is selected.
-        </div>
         <div className="local-deployment-list">
           {localDeploymentRows.length === 0 ? (
             <div className="empty-state">No local deployments registered yet.</div>
@@ -470,7 +467,17 @@ function getLocalModelIdAliases(value: string): string[] {
 }
 
 function getEndpointId(endpoint: EndpointItem, index: number): string {
-  return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+  const record = endpoint as Record<string, unknown>;
+  return String(
+    endpoint.inference_endpoint_id
+    ?? record.inference_api_id
+    ?? record.inference_api_endpoint_id
+    ?? record.inferenceApiId
+    ?? record.inferenceApiEndpointId
+    ?? endpoint.endpoint_id
+    ?? endpoint.id
+    ?? `endpoint-${index + 1}`,
+  );
 }
 
 function isLocalEndpoint(endpoint: EndpointItem): boolean {

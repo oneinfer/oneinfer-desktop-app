@@ -389,12 +389,6 @@ export function InstancesPage(props: {
                 <span className="status-pill soft">{detailsGpu.providerName}</span>
               </div>
               {detailsGpu.notes ? <p className="gpu-spec-note">{detailsGpu.notes}</p> : null}
-              <div className="gpu-spec-basic-grid">
-                <DetailStat label="Best price" value={detailsGpu.bestPriceLabel} />
-                <DetailStat label="VRAM" value={detailsGpu.vram || 'N/A'} />
-                <DetailStat label="CPU" value={detailsGpu.cpuInfo || 'N/A'} />
-                <DetailStat label="RAM" value={detailsGpu.ram || 'N/A'} />
-              </div>
             </div>
 
             <GpuSpecSection
