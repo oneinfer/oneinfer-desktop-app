@@ -134,6 +134,28 @@ button {
   padding: 28px;
 }
 
+.auth-hero {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(116, 227, 197, 0.1), transparent 34%),
+    linear-gradient(180deg, rgba(14, 24, 37, 0.92), rgba(7, 13, 20, 0.9));
+}
+
+.auth-hero::before {
+  content: '';
+  position: absolute;
+  inset: 24px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+}
+
+.auth-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
 .auth-hero h1,
 .loading-card h1 {
   font-size: clamp(2rem, 3vw, 3.6rem);
@@ -142,11 +164,23 @@ button {
   letter-spacing: -0.04em;
 }
 
+.auth-hero h1 {
+  max-width: 680px;
+  font-size: 2rem;
+  line-height: 1.12;
+  letter-spacing: 0;
+}
+
 .auth-hero p,
 .hero-panel p,
 .loading-card p {
   color: var(--muted);
   line-height: 1.7;
+}
+
+.auth-lede {
+  max-width: 720px;
+  font-size: 1rem;
 }
 
 .eyebrow {
@@ -180,10 +214,24 @@ button {
 }
 
 .hero-chip {
+  min-height: 124px;
   padding: 18px;
   display: flex;
   gap: 12px;
   align-items: flex-start;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
+}
+
+.hero-chip svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.hero-chip p {
+  margin: 8px 0 0;
+  line-height: 1.45;
 }
 
 .hero-chip p,
@@ -318,6 +366,82 @@ label span,
 
 .login-hint-stack {
   margin-top: 24px;
+}
+
+.auth-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  margin: 4px 0 2px;
+}
+
+.auth-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.auth-notice.success {
+  color: #c8ffec;
+  background: linear-gradient(135deg, rgba(116, 227, 197, 0.16), rgba(116, 227, 197, 0.07));
+  border: 1px solid rgba(116, 227, 197, 0.24);
+}
+
+.auth-notice.error {
+  color: #ffd5d2;
+  background: linear-gradient(135deg, rgba(255, 124, 120, 0.16), rgba(255, 124, 120, 0.06));
+  border: 1px solid rgba(255, 124, 120, 0.24);
+}
+
+.auth-notice.info {
+  color: #d6efff;
+  background: linear-gradient(135deg, rgba(113, 190, 255, 0.15), rgba(113, 190, 255, 0.06));
+  border: 1px solid rgba(113, 190, 255, 0.22);
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.google-login-button {
+  width: 100%;
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.94);
+  color: #1f2937;
+  font-weight: 700;
+}
+
+.google-login-button:hover:not(:disabled) {
+  background: #ffffff;
+  transform: translateY(-1px);
+}
+
+.google-login-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .sidebar-footer {
@@ -525,6 +649,18 @@ label span,
 .ghost-button {
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.auth-enter-button {
+  color: #071217;
+  background: linear-gradient(135deg, var(--accent), #b9ffe9);
+  margin-top: 8px;
+  box-shadow: 0 14px 34px rgba(116, 227, 197, 0.18);
+}
+
+.auth-change-email-button {
+  margin-top: 12px;
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .danger-button {
@@ -1836,6 +1972,21 @@ th {
   min-height: 100%;
 }
 
+.overview-self-host-list {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 6px;
+  overscroll-behavior: contain;
+}
+
+.overview-self-host-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.overview-self-host-list::-webkit-scrollbar-thumb {
+  background: rgba(116, 227, 197, 0.22);
+}
+
 .overview-standalone-section {
   display: grid;
   gap: 12px;
@@ -2278,6 +2429,10 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .auth-hero h1 {
+    font-size: 1.8rem;
+  }
+
 }
 
 /* ── 860px: slide-out sidebar drawer + mobile header ─────────── */
@@ -2386,6 +2541,10 @@ th {
 
   .hero-grid {
     grid-template-columns: 1fr;
+  }
+
+  .auth-hero h1 {
+    font-size: 1.65rem;
   }
 
   .auth-shell {

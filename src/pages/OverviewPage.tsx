@@ -1,7 +1,6 @@
 import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
-import { HardwareWidget } from '../components/HardwareWidget';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -74,7 +73,7 @@ export function OverviewPage(props: {
                     <Server size={18} className="panel-icon" />
                     <h3 className="panel-title">Self Hosting</h3>
                   </div>
-                  <div className="instance-list">
+                  <div className="instance-list overview-self-host-list">
                     {visibleLocalDeployments.length === 0 ? <EmptyState text="No local models registered." /> : null}
                     {visibleLocalDeployments.map((deployment) => {
                       const metrics = props.localModelMetrics[deployment.endpointUrl];
@@ -221,9 +220,6 @@ export function OverviewPage(props: {
         </section>
       </div>
 
-      <div className="section-grid dashboard-row compact-row hardware-full-row overview-hardware-row">
-        <HardwareWidget machine={props.dashboard.machineDetails} />
-      </div>
     </div>
   );
 }

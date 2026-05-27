@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { LoaderCircle } from 'lucide-react';
 
 import {
@@ -22,6 +22,7 @@ import {
   listInferenceEndpoints,
   listIntelligentEndpoints,
   listModels,
+  loginWithGoogle,
   loginWithOtp,
   requestOtp,
   runInstanceAction,
@@ -707,6 +708,39 @@ function App() {
       setBusy(null);
     }
   }
+
+  const handleGoogleLogin = useCallback(async () => {
+    setBusy('google');
+    setMessage(null);
+
+    try {
+      if (!window.desktopBridge?.startGoogleLogin) {
+        throw new Error('Google desktop login is not available in this build.');
+      }
+
+      const googleAuth = await window.desktopBridge.startGoogleLogin();
+      const nextSession = await loginWithGoogle(settingsDraft.apiBaseUrl, {
+        clientId: googleAuth.clientId,
+        credential: googleAuth.credential,
+        selectBy: googleAuth.selectBy ?? '',
+        email: typeof googleAuth.credential.email === 'string' ? googleAuth.credential.email : email,
+      });
+
+      setEmail(nextSession.email);
+      setOtp('');
+      setLoginStep('email');
+      setSession(nextSession);
+      setLoadedSections(createLoadedSections());
+      setDashboard(defaultDashboardState);
+      await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
+      await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
+      setMessage({ tone: 'success', text: 'Logged in with Google.' });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Google login failed.' });
+    } finally {
+      setBusy(null);
+    }
+  }, [claudeCodeProvider, email, settingsDraft.apiBaseUrl]);
 
   async function handleEnableClaudeCode() {
     if (!session || !window.desktopBridge?.enableClaudeCode) {
@@ -1867,6 +1901,7 @@ function App() {
         onOtpChange={setOtp}
         onOtpRequest={handleOtpRequest}
         onLogin={handleLogin}
+        onGoogleLogin={handleGoogleLogin}
         onBackToEmail={() => setLoginStep('email')}
       />
     );

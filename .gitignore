@@ -4,3 +4,5 @@ dist-electron/
 release/
 *.log
 *.pyc
+.env
+.env.local
