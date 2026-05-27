@@ -4,12 +4,12 @@ import { LoaderCircle } from 'lucide-react';
 import {
   createApiKey,
   createInferenceEndpoint,
-  createInstance,
   createIntelligentEndpoint,
   deleteApiKey,
   deleteInstance,
   deleteInferenceEndpoint,
   deleteIntelligentEndpoint,
+  deployCloudModel,
   getActiveDeveloperPlan,
   getCredits,
   getDeveloperPlans,
@@ -475,6 +475,8 @@ function App() {
           getInstances(currentBaseUrl, currentSession),
           getProviderInfo(currentBaseUrl),
           getGpuSpecs(currentBaseUrl),
+          listModels(currentBaseUrl),
+          listInferenceEndpoints(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
@@ -482,9 +484,11 @@ function App() {
           instances: results[0].status === 'fulfilled' ? results[0].value : current.instances,
           providerInfo: results[1].status === 'fulfilled' ? results[1].value : current.providerInfo,
           gpuSpecs: results[2].status === 'fulfilled' ? results[2].value : current.gpuSpecs,
+          models: results[3].status === 'fulfilled' ? results[3].value : current.models,
+          inferenceEndpoints: results[4].status === 'fulfilled' ? results[4].value : current.inferenceEndpoints,
         }));
 
-        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs']);
+        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs', 'models', 'inference endpoints']);
       }
 
       if (section === 'apiKeys') {
@@ -1205,20 +1209,33 @@ function App() {
     setMessage({ tone: 'info', text: 'Local session cleared.' });
   }
 
-  async function handleCreateInstance(event: FormEvent<HTMLFormElement>) {
+  async function handleDeployCloudModel(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) {
       return false;
     }
 
-    setBusy('create-instance');
+    const rawModelInput = instanceForm.model_source === 'huggingface'
+      ? instanceForm.hf_model_url
+      : instanceForm.model_id;
+    const normalizedModelId = resolveCloudModelId(rawModelInput, dashboard.models);
+    if (!normalizedModelId) {
+      setMessage({ tone: 'error', text: 'Select a model before deploying to a cloud GPU.' });
+      return false;
+    }
+
+    setBusy('deploy-cloud-model');
     try {
-      await createInstance(settingsDraft.apiBaseUrl, session, instanceForm);
-      setMessage({ tone: 'success', text: 'Instance creation request submitted.' });
+      await deployCloudModel(settingsDraft.apiBaseUrl, session, {
+        ...instanceForm,
+        model_id: normalizedModelId,
+      });
+      setMessage({ tone: 'success', text: 'Cloud model deployment request submitted.' });
       await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
+      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
       return true;
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to create instance.' });
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy cloud model.' });
       return false;
     } finally {
       setBusy(null);
@@ -1922,7 +1939,7 @@ function App() {
         <div className="app-topbar">
           <div className="welcome-copy">
             <strong>Welcome</strong>
-            <span>{getGreeting()}, {getWelcomeName(session)}</span>
+            <span>{getGreeting()}, {getWelcomeName(session, visibleDashboard.profile)}</span>
           </div>
           <div className="top-credit-pill">
             <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
@@ -2002,7 +2019,7 @@ function App() {
             showCreateInstanceModal={showCreateInstanceModal}
             onFormChange={setInstanceForm}
             onModalChange={setShowCreateInstanceModal}
-            onCreate={handleCreateInstance}
+            onCreate={handleDeployCloudModel}
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}
             onUseEndpointInRoute={handleUseEndpointInRoute}
@@ -2055,13 +2072,16 @@ function App() {
           />
         ) : null}
 
-        {busy?.startsWith('load-') ? (
-          <div className="floating-status">
-            <LoaderCircle className="spin" size={16} />
-            Syncing {busy.replace('load-', '')}
-          </div>
-        ) : null}
       </main>
+
+      {busy?.startsWith('load-') ? (
+        <div className="sync-status-overlay" role="status" aria-live="polite">
+          <div className="sync-status-card">
+            <LoaderCircle className="spin" size={20} />
+            <span>Syncing {busy.replace('load-', '')}</span>
+          </div>
+        </div>
+      ) : null}
     </AppLayout>
   );
 }
@@ -2443,9 +2463,39 @@ function normalizeLocalEndpointUrl(endpointUrl: string): string {
   return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
 }
 
-function getWelcomeName(session: DesktopSession): string {
+function resolveCloudModelId(input: string, models: any[]): string {
+  const rawInput = input.trim();
+  if (!rawInput) {
+    return '';
+  }
+
+  const hfRepoId = normalizeHfRepoId(rawInput);
+  if (hfRepoId) {
+    return hfRepoId;
+  }
+
+  const matchingModel = models.find((model: any) => {
+    const modelName = String(model.model_name ?? model.modelName ?? model.displayName ?? '').trim();
+    const modelId = String(model.model_id ?? model.modelId ?? model.id ?? '').trim();
+    return modelName === rawInput || modelId === rawInput;
+  });
+
+  return String(matchingModel?.model_id ?? matchingModel?.modelId ?? matchingModel?.id ?? rawInput).trim();
+}
+
+function getWelcomeName(session: DesktopSession, profile: Record<string, unknown> | null): string {
+  const rawProfile = (profile?.developer || profile || {}) as Record<string, unknown>;
+  const profileName = [
+    rawProfile.first_name,
+    rawProfile.firstName,
+    rawProfile.name,
+    rawProfile.full_name,
+    rawProfile.fullName,
+  ].find((value) => typeof value === 'string' && value.trim().length > 0);
   const emailName = session.email?.split('@')[0]?.trim();
-  return emailName || 'back';
+  const candidateName = String(profileName || emailName || '').trim();
+  const firstName = candidateName.split(/[\s._-]+/).find(Boolean);
+  return firstName || 'back';
 }
 
 function getGreeting(): string {

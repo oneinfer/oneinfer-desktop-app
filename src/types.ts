@@ -205,6 +205,14 @@ export interface CreateInstanceFormState {
   image_url: string;
   region: string;
   startup_script: string;
+  model_id: string;
+  model_source: 'catalog' | 'huggingface';
+  hf_model_url: string;
+  serving_library: ServingLibrary;
+  hf_access_token: string;
+  top_p: number;
+  temperature: number;
+  max_tokens: number;
 }
 
 export interface CreateInferenceFormState {

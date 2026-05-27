@@ -1,6 +1,7 @@
 import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
+import { HardwareWidget } from '../components/HardwareWidget';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -220,6 +221,9 @@ export function OverviewPage(props: {
         </section>
       </div>
 
+      <div className="section-grid dashboard-row compact-row hardware-full-row overview-hardware-row">
+        <HardwareWidget machine={props.dashboard.machineDetails} />
+      </div>
     </div>
   );
 }
@@ -275,15 +279,15 @@ function RoutingSummaryCard(props: {
   const previewRoutes = props.routes.slice(0, 3);
 
   return (
-    <section className="sub-card" style={{ alignItems: 'stretch', display: 'grid', gap: '14px', padding: '16px' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
-        <div style={{ display: 'flex', gap: '12px', minWidth: 0 }}>
-          <span className="status-card-icon" style={{ background: 'rgba(116, 227, 197, 0.1)', color: 'var(--accent)', height: '38px', width: '38px' }}>
+    <section className="sub-card overview-routing-card">
+      <div className="overview-routing-header">
+        <div className="overview-routing-title">
+          <span className="status-card-icon" style={{ background: 'rgba(116, 227, 197, 0.1)', color: 'var(--accent)' }}>
             <Orbit size={18} />
           </span>
-          <div style={{ minWidth: 0 }}>
-            <h3 style={{ fontSize: '0.95rem', margin: '0 0 4px' }}>Routing</h3>
-            <p style={{ fontSize: '0.78rem', margin: 0 }}>Route requests across self-hosted and cloud targets.</p>
+          <div>
+            <h3>Routing</h3>
+            <p>Route requests across self-hosted and cloud targets.</p>
           </div>
         </div>
         <span className={`status-pill ${props.routeCount > 0 ? 'active' : ''}`} style={{ whiteSpace: 'nowrap' }}>
@@ -291,46 +295,53 @@ function RoutingSummaryCard(props: {
         </span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '8px' }}>
+      <div className="overview-routing-metrics">
         <MetricChip label="Targets" value={formatMetric(targetCount)} />
         <MetricChip label="Local" value={formatMetric(props.localTargetCount)} />
         <MetricChip label="Cloud" value={formatMetric(props.cloudTargetCount)} />
       </div>
 
       {previewRoutes.length > 0 ? (
-        <div style={{ display: 'grid', gap: '8px' }}>
-          {previewRoutes.map((route, index) => {
-            const routeId = getRouteId(route, index);
-            const routeName = String(route.name ?? route.endpoint_name ?? routeId);
-            const status = String(route.status ?? route.creation_status ?? 'active');
-            return (
-              <button
-                className="overview-router-row"
-                key={routeId}
-                onClick={() => props.onOpenRoute(routeId)}
-                type="button"
-              >
-                <span>
-                  <strong>{routeName}</strong>
-                  <small>{routeId}</small>
-                </span>
-                <span className={`status-pill ${isActiveStatus(status) ? 'active' : 'soft'}`}>
-                  {formatValue(status)}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="overview-routing-routes">
+            {previewRoutes.map((route, index) => {
+              const routeId = getRouteId(route, index);
+              const routeName = String(route.name ?? route.endpoint_name ?? routeId);
+              const status = String(route.status ?? route.creation_status ?? 'active');
+              return (
+                <button
+                  className="overview-router-row"
+                  key={routeId}
+                  onClick={() => props.onOpenRoute(routeId)}
+                  type="button"
+                >
+                  <span>
+                    <strong>{routeName}</strong>
+                    <small>{routeId}</small>
+                  </span>
+                  <span className={`status-pill ${isActiveStatus(status) ? 'active' : 'soft'}`}>
+                    {formatValue(status)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <button className="ghost-button overview-routing-action" onClick={props.onManage} type="button">
+            <Orbit size={14} />
+            Manage Routing
+          </button>
+        </>
       ) : (
-        <div style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
-          No routers created yet.
+        <div className="overview-routing-footer">
+          <div className="overview-routing-empty">
+            No routers created yet.
+          </div>
+          <button className="ghost-button overview-routing-action" onClick={props.onManage} type="button">
+            <Orbit size={14} />
+            Manage Routing
+          </button>
         </div>
       )}
-
-      <button className="ghost-button" onClick={props.onManage} style={{ fontSize: '0.8rem', justifySelf: 'flex-start', minHeight: '36px', padding: '8px 12px' }} type="button">
-        <Orbit size={14} />
-        Manage Routing
-      </button>
     </section>
   );
 }
