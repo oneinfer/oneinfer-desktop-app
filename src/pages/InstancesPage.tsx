@@ -182,50 +182,6 @@ export function InstancesPage(props: {
         ))}
       </div>
 
-      {props.dashboard.instances.length > 0 ? (
-        <div className="glass-panel w-full overflow-hidden">
-          <div className="table-shell">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr>
-                  {['Name', 'Provider', 'Region', 'Status', 'GPU', 'Actions'].map((heading) => (
-                    <th key={heading} className={`px-4 py-3 text-[0.7rem] uppercase tracking-[0.05em] text-[var(--muted)] ${heading === 'Actions' ? 'text-right' : 'text-left'}`}>{heading}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {props.dashboard.instances.map((instance, index) => {
-                  const instanceId = String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
-                  const provider = String(instance.provider_name ?? 'runpod');
-                  const status = formatValue(instance.instance_status ?? instance.status);
-                  return (
-                    <tr key={instanceId} className="border-t border-white/[0.04]">
-                      <td className="px-4 py-6 font-semibold">{String(instance.instance_name ?? instanceId)}</td>
-                      <td className="px-4 py-6 text-[0.85rem]">{provider}</td>
-                      <td className="px-4 py-6 text-[0.85rem]">{String(instance.region ?? 'unknown region')}</td>
-                      <td className="px-4 py-6">
-                        <span className={`status-pill ${
-                          status.toLowerCase() === 'running' || status.toLowerCase() === 'active' || status.toLowerCase() === 'deploying' ? 'active' : ''
-                        }`.trim()}>{status}</span>
-                      </td>
-                      <td className="px-4 py-6 text-[0.85rem] text-[var(--muted)]">{formatValue(instance.gpu_name ?? instance.gpu_id)}</td>
-                      <td className="px-4 py-6 text-right">
-                        <div className="inline-flex flex-wrap justify-end gap-2">
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" type="button" onClick={() => props.onAction('start-instance', instanceId, provider)}>Start</button>
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" type="button" onClick={() => props.onAction('stop-instance', instanceId, provider)}>Stop</button>
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" type="button" onClick={() => props.onAction('restart-instance', instanceId, provider)}>Restart</button>
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem] !text-[#818cf8]" type="button" onClick={() => props.onDelete(instanceId, provider)}>Delete</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : null}
-
       <div className="glass-panel mt-5 p-5">
         <div className="panel-header" style={{ marginBottom: '12px' }}>
           <div className="panel-title">
