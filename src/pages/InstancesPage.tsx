@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
 
 import { Modal } from '../components/Common';
-import type { CreateInstanceFormState, DashboardState, EndpointItem, ServingLibrary } from '../types';
+import type { CreateInstanceFormState, DashboardState, EndpointItem, InstanceItem, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
 export function InstancesPage(props: {
@@ -18,6 +18,7 @@ export function InstancesPage(props: {
   onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
 }) {
   const [detailsGpu, setDetailsGpu] = useState<GpuCardOption | null>(null);
+  const [hfAccessCheck, setHfAccessCheck] = useState<HfAccessCheckState>({ status: 'idle' });
   const providers = getProviderOptions(props.dashboard.providerInfo);
   const validProviderName = providers.some((provider) => provider.value === props.instanceForm.provider_name)
     ? props.instanceForm.provider_name
@@ -34,13 +35,15 @@ export function InstancesPage(props: {
   const gpuPricePerHour = selectedGpu?.pricePerHourUsd ?? 0;
   const diskPricePerHour = calculateDiskPricePerHour(props.instanceForm.disk_size);
   const totalPricePerHour = gpuPricePerHour + diskPricePerHour;
-  const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints);
+  const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints, props.dashboard.instances);
   const gpuCards = getGpuCardOptions(props.dashboard.providerInfo, props.dashboard.gpuSpecs);
   const modelOptions = getModelOptions(props.dashboard.models);
   const selectedModel = modelOptions.find((model) => model.value === props.instanceForm.model_id);
   const selectedModelLabel = props.instanceForm.model_source === 'huggingface'
     ? (props.instanceForm.hf_model_url || 'Not selected')
     : (selectedModel?.label ?? 'Not selected');
+  const shouldShowHfTokenInput = props.instanceForm.model_source === 'huggingface'
+    && hfAccessCheck.status === 'requires-token';
 
   useEffect(() => {
     if (!props.showCreateInstanceModal || providers.length === 0) {
@@ -82,6 +85,52 @@ export function InstancesPage(props: {
     props.showCreateInstanceModal,
     providers,
     validProviderName,
+  ]);
+
+  useEffect(() => {
+    if (!props.showCreateInstanceModal || props.instanceForm.model_source !== 'huggingface') {
+      setHfAccessCheck({ status: 'idle' });
+      return;
+    }
+
+    const rawValue = props.instanceForm.hf_model_url.trim();
+    if (!rawValue) {
+      setHfAccessCheck({ status: 'idle' });
+      return;
+    }
+
+    const repoId = normalizeHfRepoId(rawValue);
+    if (!repoId) {
+      setHfAccessCheck({ status: 'invalid', message: 'Enter a valid Hugging Face URL or owner/model id.' });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setHfAccessCheck({ status: 'checking', repoId });
+      try {
+        const result = await checkHfModelAccess(repoId, controller.signal);
+        setHfAccessCheck(result);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        setHfAccessCheck({
+          status: 'error',
+          repoId,
+          message: 'Unable to check Hugging Face model access.',
+        });
+      }
+    }, 500);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    props.instanceForm.hf_model_url,
+    props.instanceForm.model_source,
+    props.showCreateInstanceModal,
   ]);
 
   function openCreateModal() {
@@ -132,50 +181,6 @@ export function InstancesPage(props: {
           />
         ))}
       </div>
-
-      {props.dashboard.instances.length > 0 ? (
-        <div className="glass-panel w-full overflow-hidden">
-          <div className="table-shell">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr>
-                  {['Name', 'Provider', 'Region', 'Status', 'GPU', 'Actions'].map((heading) => (
-                    <th key={heading} className={`px-4 py-3 text-[0.7rem] uppercase tracking-[0.05em] text-[var(--muted)] ${heading === 'Actions' ? 'text-right' : 'text-left'}`}>{heading}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {props.dashboard.instances.map((instance, index) => {
-                  const instanceId = String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
-                  const provider = String(instance.provider_name ?? 'runpod');
-                  const status = formatValue(instance.instance_status ?? instance.status);
-                  return (
-                    <tr key={instanceId} className="border-t border-white/[0.04]">
-                      <td className="px-4 py-6 font-semibold">{String(instance.instance_name ?? instanceId)}</td>
-                      <td className="px-4 py-6 text-[0.85rem]">{provider}</td>
-                      <td className="px-4 py-6 text-[0.85rem]">{String(instance.region ?? 'unknown region')}</td>
-                      <td className="px-4 py-6">
-                        <span className={`status-pill ${
-                          status.toLowerCase() === 'running' || status.toLowerCase() === 'active' || status.toLowerCase() === 'deploying' ? 'active' : ''
-                        }`.trim()}>{status}</span>
-                      </td>
-                      <td className="px-4 py-6 text-[0.85rem] text-[var(--muted)]">{formatValue(instance.gpu_name ?? instance.gpu_id)}</td>
-                      <td className="px-4 py-6 text-right">
-                        <div className="inline-flex flex-wrap justify-end gap-2">
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" type="button" onClick={() => props.onAction('start-instance', instanceId, provider)}>Start</button>
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" type="button" onClick={() => props.onAction('stop-instance', instanceId, provider)}>Stop</button>
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem]" type="button" onClick={() => props.onAction('restart-instance', instanceId, provider)}>Restart</button>
-                          <button className="ghost-button !border-0 !bg-transparent !px-2 !py-1 !text-[0.8rem] !text-[#818cf8]" type="button" onClick={() => props.onDelete(instanceId, provider)}>Delete</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : null}
 
       <div className="glass-panel mt-5 p-5">
         <div className="panel-header" style={{ marginBottom: '12px' }}>
@@ -266,13 +271,35 @@ export function InstancesPage(props: {
                         ))}
                       </select>
                     ) : (
-                      <input
-                        value={props.instanceForm.hf_model_url}
-                        onChange={(event) => props.onFormChange({ ...props.instanceForm, hf_model_url: event.target.value })}
-                        placeholder="owner/model or https://huggingface.co/owner/model"
-                      />
+                      <>
+                        <input
+                          value={props.instanceForm.hf_model_url}
+                          onChange={(event) => props.onFormChange({ ...props.instanceForm, hf_model_url: event.target.value })}
+                          placeholder="owner/model or https://huggingface.co/owner/model"
+                        />
+                        {hfAccessCheck.status === 'checking' ? (
+                          <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Checking model access...</div>
+                        ) : null}
+                        {hfAccessCheck.status === 'invalid' || hfAccessCheck.status === 'error' ? (
+                          <div className="mt-2 text-xs text-[#fca5a5]">{hfAccessCheck.message}</div>
+                        ) : null}
+                      </>
                     )}
                   </label>
+                  {shouldShowHfTokenInput ? (
+                    <label className="cloud-model-field">
+                      <span>Hugging Face Token</span>
+                      <input
+                        type="password"
+                        value={props.instanceForm.hf_access_token}
+                        onChange={(event) => props.onFormChange({ ...props.instanceForm, hf_access_token: event.target.value })}
+                        placeholder="Token for gated/private models"
+                      />
+                      {hfAccessCheck.message ? (
+                        <div className="mt-2 text-xs text-[var(--muted)] opacity-80">{hfAccessCheck.message}</div>
+                      ) : null}
+                    </label>
+                  ) : null}
                 </div>
                 <label className="full-span">
                   <span>Serving Library</span>
@@ -326,7 +353,7 @@ export function InstancesPage(props: {
                     });
                   }}
                 >
-                  <option value="" disabled>{providerGpus.length === 0 ? 'Loading GPUs...' : 'Select a GPU'}</option>
+                  <option value="" disabled>{providerGpus.length === 0 ? 'No GPUs available' : 'Select a GPU'}</option>
                   {providerGpus.map((gpu) => (
                     <option key={gpu.gpu_id} value={gpu.gpu_id}>{gpu.label}</option>
                   ))}
@@ -347,7 +374,7 @@ export function InstancesPage(props: {
                     });
                   }}
                 >
-                  <option value="" disabled>{providerImages.length === 0 ? 'Loading images...' : 'Choose a container image...'}</option>
+                  <option value="" disabled>{providerImages.length === 0 ? 'No images available' : 'Choose a container image...'}</option>
                   {providerImages.map((image) => (
                     <option key={`${image.name}-${image.image_url}`} value={image.image_url}>{image.name}</option>
                   ))}
@@ -364,31 +391,6 @@ export function InstancesPage(props: {
                   ))}
                 </select>
                 <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Select the deployment region.</div>
-              </label>
-
-              <div className="grid gap-4 md:grid-cols-3">
-                <label>
-                  <span>Temperature</span>
-                  <input type="number" min={0} max={2} step={0.1} value={props.instanceForm.temperature} onChange={(event) => props.onFormChange({ ...props.instanceForm, temperature: Number(event.target.value) })} />
-                </label>
-                <label>
-                  <span>Top P</span>
-                  <input type="number" min={0} max={1} step={0.05} value={props.instanceForm.top_p} onChange={(event) => props.onFormChange({ ...props.instanceForm, top_p: Number(event.target.value) })} />
-                </label>
-                <label>
-                  <span>Max Tokens</span>
-                  <input type="number" min={1} value={props.instanceForm.max_tokens} onChange={(event) => props.onFormChange({ ...props.instanceForm, max_tokens: Number(event.target.value) })} />
-                </label>
-              </div>
-
-              <label>
-                <span>Hugging Face Token</span>
-                <input
-                  type="password"
-                  value={props.instanceForm.hf_access_token}
-                  onChange={(event) => props.onFormChange({ ...props.instanceForm, hf_access_token: event.target.value })}
-                  placeholder="Optional token for gated/private models"
-                />
               </label>
 
               <label>
@@ -523,6 +525,7 @@ interface CloudEndpointRow {
   provider: string;
   status: string;
   updatedAt: string;
+  canUseInRoute: boolean;
 }
 
 interface ModelOption {
@@ -549,7 +552,7 @@ function CloudEndpointCard(props: {
         <span>{props.endpoint.updatedAt}</span>
       </div>
       <div className="cloud-endpoint-actions">
-        <button className="ghost-button" type="button" onClick={() => props.onUseEndpointInRoute(props.endpoint.endpointId, props.endpoint.name)}>
+        <button className="ghost-button" type="button" disabled={!props.endpoint.canUseInRoute} onClick={() => props.onUseEndpointInRoute(props.endpoint.endpointId, props.endpoint.name)}>
           <Orbit size={14} />
           Use in route
         </button>
@@ -572,8 +575,8 @@ function getModelOptions(models: any[]): ModelOption[] {
     .filter((model): model is ModelOption => Boolean(model));
 }
 
-function getCloudEndpointRows(endpoints: EndpointItem[]): CloudEndpointRow[] {
-  return endpoints
+function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem[]): CloudEndpointRow[] {
+  const endpointRows = endpoints
     .filter((endpoint) => getEndpointSource(endpoint) === 'cloud')
     .map((endpoint, index) => {
       const endpointId = getEndpointId(endpoint, index);
@@ -586,12 +589,45 @@ function getCloudEndpointRows(endpoints: EndpointItem[]): CloudEndpointRow[] {
         provider: String(endpoint.provider ?? endpoint.endpoint_source ?? 'cloud'),
         status: String(endpoint.status ?? endpoint.creation_status ?? 'ready'),
         updatedAt: String(endpoint.updated_at ?? endpoint.created_at ?? 'Registered endpoint'),
+        canUseInRoute: true,
       };
     });
+
+  const knownInstanceIds = new Set(endpointRows.map((endpoint) => endpoint.endpointId));
+  const instanceRows = instances
+    .map((instance, index) => {
+      const endpointId = getInstanceEndpointId(instance, index);
+      const endpointUrl = getStringValue(instance.endpoint_url ?? instance.endpointUrl ?? instance.url ?? '');
+      const modelId = getStringValue(instance.model_id ?? instance.modelId ?? instance.model_name ?? instance.modelName ?? instance.gpu_name ?? 'Cloud model');
+      return {
+        endpointId,
+        endpointUrl,
+        modelId,
+        name: getStringValue(instance.instance_name ?? instance.name ?? endpointId) || `Cloud instance ${index + 1}`,
+        provider: getStringValue(instance.provider_name ?? instance.provider ?? 'cloud') || 'cloud',
+        status: getStringValue(instance.instance_status ?? instance.status ?? 'unknown') || 'unknown',
+        updatedAt: getStringValue(instance.updated_at ?? instance.created_at ?? instance.region ?? 'Cloud instance') || 'Cloud instance',
+        canUseInRoute: Boolean(endpointUrl || instance.inference_endpoint_id || instance.endpoint_id),
+      };
+    })
+    .filter((instance) => !knownInstanceIds.has(instance.endpointId));
+
+  return [...endpointRows, ...instanceRows];
 }
 
 function getEndpointId(endpoint: EndpointItem, index: number): string {
   return String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+}
+
+function getInstanceEndpointId(instance: InstanceItem, index: number): string {
+  return String(
+    instance.inference_endpoint_id
+    ?? instance.endpoint_id
+    ?? instance.instance_id
+    ?? instance.unique_instance_id
+    ?? instance.id
+    ?? `instance-${index + 1}`,
+  );
 }
 
 type EndpointSource = 'local' | 'cloud' | 'openbandwidth' | 'closed_source_api';
@@ -805,19 +841,31 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
   instances: ProviderGpuOption[];
 } {
   const rawProvider = providerInfo[providerName] as Record<string, unknown> | undefined;
-  const rawImages = Array.isArray(rawProvider?.images) ? rawProvider.images as Array<Record<string, unknown>> : [];
-  const rawInstances = Array.isArray(rawProvider?.instances) ? rawProvider.instances as Array<Record<string, unknown>> : [];
+  const rawImages = getArrayValue(rawProvider, 'images', 'container_images', 'containerImages', 'image_list', 'imageList');
+  const rawInstances = getArrayValue(rawProvider, 'instances', 'gpus', 'gpu_instances', 'gpuInstances', 'instance_types', 'instanceTypes');
 
   const images = rawImages
-    .filter((image) => typeof image.image_url === 'string' && image.image_url.trim() !== '')
-    .map((image) => ({
-      name: String(image.name ?? image.image_url ?? 'Image'),
-      image_url: String(image.image_url),
-      start_command: typeof image.start_command === 'string' ? image.start_command : '',
-    }));
+    .map((image) => {
+      const imageUrl = getStringValue(image.image_url ?? image.imageUrl ?? image.url ?? image.id ?? image.image_id);
+      if (!imageUrl) {
+        return null;
+      }
+
+      return {
+        name: getStringValue(image.name ?? image.display_name ?? image.displayName ?? imageUrl) || 'Image',
+        image_url: imageUrl,
+        start_command: getStringValue(image.start_command ?? image.startCommand),
+      };
+    })
+    .filter((image): image is ProviderImageOption => Boolean(image));
 
   const instances = rawInstances
-    .filter((instance) => typeof instance.gpu_id === 'string' && instance.gpu_id.trim() !== '')
+    .filter(isGpuInstanceRecord)
+    .map((instance): Record<string, unknown> & { gpu_id: string } => ({
+      ...instance,
+      gpu_id: getStringValue(instance.gpu_id ?? instance.gpuId ?? instance.id ?? instance.instance_id ?? instance.instanceId),
+    }))
+    .filter((instance) => instance.gpu_id.trim() !== '')
     .map((instance) => {
       const gpu = typeof instance.gpu === 'object' && instance.gpu ? instance.gpu as Record<string, unknown> : {};
       const cpu = typeof instance.cpu === 'object' && instance.cpu ? instance.cpu as Record<string, unknown> : {};
@@ -856,7 +904,7 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
 function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpecs: DashboardState['gpuSpecs']): GpuCardOption[] {
   const allGpuInstances = Object.entries(providerInfo).flatMap(([providerName, provider]) => {
     const instances = Array.isArray(provider.instances) ? provider.instances as Array<Record<string, unknown>> : [];
-    return instances.map((instance) => ({ ...instance, providerName }));
+    return instances.filter(isGpuInstanceRecord).map((instance) => ({ ...instance, providerName }));
   }) as Array<Record<string, unknown> & { providerName: string }>;
 
   const specOptions = gpuSpecs.map((spec) => {
@@ -1034,6 +1082,26 @@ function getNestedRecord(record: Record<string, unknown>, ...keys: string[]): Re
   return (value ?? {}) as Record<string, unknown>;
 }
 
+function getArrayValue(record: Record<string, unknown> | undefined, ...keys: string[]): Array<Record<string, unknown>> {
+  const value = keys.map((key) => record?.[key]).find(Array.isArray);
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
+}
+
+function isGpuInstanceRecord(instance: Record<string, unknown>): boolean {
+  const gpu = getNestedRecord(instance, 'gpu');
+  const gpuCount = typeof gpu.number_of_gpus === 'number'
+    ? gpu.number_of_gpus
+    : Number(instance.gpu_num ?? instance.gpuCount ?? 0);
+  const instanceType = getStringValue(instance.instance_type ?? instance.instanceType).toLowerCase();
+  const gpuId = getStringValue(instance.gpu_id ?? instance.gpuId);
+  const name = getStringValue(instance.name ?? instance.instance_name).toLowerCase();
+
+  return gpuCount > 0
+    && gpuId.length > 0
+    && instanceType !== 'cpu'
+    && !name.includes('cpu only');
+}
+
 function getNestedSpecRecord(spec: Record<string, unknown> | undefined, ...keys: string[]): Record<string, unknown> {
   if (!spec) {
     return {};
@@ -1138,6 +1206,67 @@ function formatUsd(value: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+type HfAccessCheckState = {
+  status: 'idle' | 'checking' | 'open' | 'requires-token' | 'invalid' | 'error';
+  repoId?: string;
+  message?: string;
+};
+
+function normalizeHfRepoId(value: string): string {
+  const rawValue = value.trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
+    try {
+      const url = new URL(rawValue);
+      const parts = url.pathname.split('/').filter(Boolean);
+      return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+    } catch {
+      return '';
+    }
+  }
+
+  const parts = rawValue.split('/').filter(Boolean);
+  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+}
+
+async function checkHfModelAccess(repoId: string, signal: AbortSignal): Promise<HfAccessCheckState> {
+  const encodedRepoId = repoId.split('/').map(encodeURIComponent).join('/');
+  const response = await fetch(`https://huggingface.co/api/models/${encodedRepoId}`, { signal });
+
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    return {
+      status: 'requires-token',
+      repoId,
+      message: 'This model requires a Hugging Face token.',
+    };
+  }
+
+  if (!response.ok) {
+    return {
+      status: 'error',
+      repoId,
+      message: `Hugging Face returned HTTP ${response.status}.`,
+    };
+  }
+
+  const metadata = await response.json() as { gated?: unknown; private?: unknown };
+  const isGated = metadata.gated !== undefined && metadata.gated !== false && metadata.gated !== 'false';
+  const isPrivate = metadata.private === true || metadata.private === 'true';
+
+  if (isGated || isPrivate) {
+    return {
+      status: 'requires-token',
+      repoId,
+      message: 'This model requires a Hugging Face token.',
+    };
+  }
+
+  return { status: 'open', repoId };
 }
 
 function isSameInstanceForm(left: CreateInstanceFormState, right: CreateInstanceFormState) {
