@@ -517,7 +517,21 @@ label span,
   padding-right: 4px;
 }
 
+.content-stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .main-stage:has(> .overview-page) {
+  grid-template-rows: minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.main-stage:has(> .routing-page) {
   grid-template-rows: minmax(0, 1fr);
   align-content: stretch;
 }
@@ -723,6 +737,24 @@ label span,
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.cloud-model-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cloud-model-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cloud-model-field > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .full-span {
   grid-column: 1 / -1;
 }
@@ -775,6 +807,15 @@ label span,
   display: grid;
   gap: 10px;
   margin-top: 12px;
+}
+
+.cloud-endpoint-description {
+  margin: 4px 0 0;
+  max-width: 680px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .local-deployment-card {
@@ -970,6 +1011,26 @@ label span,
   padding-right: 3px;
 }
 
+.routing-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100%;
+}
+
+.routing-empty-panel {
+  align-self: center;
+  display: grid;
+  place-items: center;
+}
+
+.routing-empty-state {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  padding: 40px;
+  text-align: center;
+}
+
 .route-empty-action {
   display: flex;
   align-items: center;
@@ -1133,6 +1194,73 @@ label span,
 .overview-router-row small {
   color: var(--muted);
   font-size: 0.7rem;
+}
+
+.overview-routing-card {
+  align-items: stretch;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: 18px;
+}
+
+.overview-routing-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overview-routing-title {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.overview-routing-title h3 {
+  font-size: 0.95rem;
+  margin: 0 0 4px;
+}
+
+.overview-routing-title p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.overview-routing-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-self: center;
+}
+
+.overview-routing-routes {
+  display: grid;
+  gap: 8px;
+}
+
+.overview-routing-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 2px;
+}
+
+.overview-routing-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+  min-width: 0;
+}
+
+.overview-routing-action {
+  align-self: center;
+  font-size: 0.8rem;
+  min-height: 36px;
+  padding: 8px 12px;
+  white-space: nowrap;
 }
 
 .modal-content:has(.route-blueprint-modal) {
@@ -1927,6 +2055,44 @@ th {
   z-index: 100;
 }
 
+.sync-status-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at center, rgba(116, 227, 197, 0.08), transparent 36%),
+    rgba(2, 8, 14, 0.72);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+.sync-status-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  min-width: min(520px, calc(100vw - 48px));
+  justify-content: center;
+  padding: 30px 38px;
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(12, 23, 34, 0.96), rgba(5, 12, 20, 0.96));
+  border: 1px solid rgba(116, 227, 197, 0.34);
+  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  color: var(--text);
+  font-size: 1.24rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sync-status-card svg {
+  color: var(--accent);
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+}
+
 .loading-card {
   flex-direction: column;
   text-align: center;
@@ -2425,8 +2591,13 @@ th {
   .auth-stage,
   .hero-panel,
   .section-grid.two-col,
-  .hero-grid {
+  .hero-grid,
+  .overview-routing-card {
     grid-template-columns: 1fr;
+  }
+
+  .overview-routing-action {
+    justify-self: flex-start;
   }
 
   .auth-hero h1 {

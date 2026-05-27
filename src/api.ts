@@ -482,6 +482,35 @@ export async function createInstance(
   });
 }
 
+export async function deployCloudModel(
+  baseUrl: string,
+  session: DesktopSession,
+  payload: CreateInstanceFormState,
+): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: `/developer/${session.developerId}/deploy-cloud-model`,
+    method: 'POST',
+    token: session.accessToken,
+    body: {
+      provider_name: payload.provider_name,
+      instance_name: payload.instance_name,
+      gpu_id: payload.gpu_id,
+      gpu_num: payload.gpu_num,
+      disk_size: payload.disk_size,
+      image_url: payload.image_url,
+      region: payload.region,
+      startup_script: payload.startup_script,
+      model_id: payload.model_id,
+      serving_library: payload.serving_library,
+      hf_access_token: payload.hf_access_token,
+      top_p: payload.top_p,
+      temperature: payload.temperature,
+      max_tokens: payload.max_tokens,
+    },
+  });
+}
+
 export async function runInstanceAction(
   baseUrl: string,
   session: DesktopSession,
