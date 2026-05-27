@@ -472,7 +472,7 @@ export function RoutingPage(props: {
 
   return (
     <div className="flex flex-col">
-      <header className="mb-0.5 flex h-8 shrink-0 items-center justify-between">
+      <header className="mb-5 flex h-8 shrink-0 items-center justify-between">
         <h2 className="m-0 text-lg font-semibold leading-none">Routing</h2>
         <button
           className="primary-button !h-7 !rounded-[0.625rem] !px-3 !py-0 !text-[0.8rem] !leading-none"
@@ -482,10 +482,6 @@ export function RoutingPage(props: {
           Create Router
         </button>
       </header>
-
-      <div className="glass-panel mb-5 mt-4 flex shrink-0 items-center rounded-[0.875rem] px-5 py-3 text-[0.9rem] text-[var(--muted)]">
-        Loaded {props.dashboard.intelligentEndpoints.length} routes, {props.dashboard.inferenceEndpoints.length} inference endpoints, and {props.dashboard.models.length} catalog models for routing setup.
-      </div>
 
       <div className="glass-panel w-full overflow-hidden">
         {props.dashboard.intelligentEndpoints.length === 0 ? (

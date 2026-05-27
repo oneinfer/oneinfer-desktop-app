@@ -1,7 +1,7 @@
 import type { FormEvent } from 'react';
 import { KeyRound, LoaderCircle, Orbit, Rocket, Send, Server, ShieldCheck } from 'lucide-react';
 
-import { Banner, HeroChip } from '../components/Common';
+import { HeroChip } from '../components/Common';
 
 export function AuthPage(props: {
   email: string;
@@ -40,8 +40,6 @@ export function AuthPage(props: {
             </div>
             <ShieldCheck size={20} />
           </div>
-
-          {props.message ? <Banner tone={props.message.tone} text={props.message.text} /> : null}
 
           {props.loginStep === 'email' ? (
             <form className="stack-form" onSubmit={props.onOtpRequest}>
