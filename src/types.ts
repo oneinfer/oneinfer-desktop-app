@@ -223,6 +223,11 @@ export interface CreateInferenceFormState {
   endpoint_url: string;
   machine_id: string;
   machine_name: string;
+  model_description?: string;
+  model_context_length?: string | number;
+  model_parameters?: string | number;
+  model_tags?: string[];
+  model_pipeline_tag?: string;
   top_p: number;
   temperature: number;
   max_tokens: number;
@@ -247,6 +252,11 @@ export interface LocalModelDeployment {
   endpointId?: string;
   endpointUrl: string;
   modelId: string;
+  modelDescription?: string;
+  modelContextLength?: string | number;
+  modelParameters?: string | number;
+  modelTags?: string[];
+  modelPipelineTag?: string;
   name: string;
   pid: number | null;
   runtime: ServingLibrary;

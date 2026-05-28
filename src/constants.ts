@@ -42,7 +42,7 @@ export const defaultInstanceForm: CreateInstanceFormState = {
   disk_size: 80,
   image_url: 'vllm/vllm-openai:latest',
   region: 'US-IL-1',
-  startup_script: 'echo OneInfer Desktop instance ready',
+  startup_script: 'echo OneInfer Edge instance ready',
   model_id: '',
   model_source: 'catalog',
   hf_model_url: '',

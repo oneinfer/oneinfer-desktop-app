@@ -1,3 +1,4 @@
+import { useState, type ChangeEvent } from 'react';
 import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
@@ -16,9 +17,9 @@ export function OverviewPage(props: {
   onInfraTabChange: (tab: 'self-hosted' | 'cloud') => void;
   onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw') => void;
   onClaudeProviderChange: (provider: 'oneinfer' | 'anthropic') => void;
-  onEnableOpenCode: () => void;
-  onEnableKiloCode: () => void;
-  onEnableOpenClaw: () => void;
+  onEnableOpenCode: () => void | Promise<void>;
+  onEnableKiloCode: () => void | Promise<void>;
+  onEnableOpenClaw: () => void | Promise<void>;
   onSectionChange: (section: SectionKey) => void;
   onOpenRoute: (routeId: string) => void;
 }) {
@@ -70,7 +71,7 @@ export function OverviewPage(props: {
             <div className="card-stack">
               {props.infraTab === 'self-hosted' ? (
                 <>
-                  <div className="panel-header" style={{ padding: '0 0 12px 0', justifyContent: 'flex-start', gap: '10px' }}>
+                  <div className="panel-header overview-self-host-header" style={{ padding: '0 0 6px 0', justifyContent: 'flex-start', gap: '10px' }}>
                     <Server size={18} className="panel-icon" />
                     <h3 className="panel-title">Self Hosting</h3>
                   </div>
@@ -117,21 +118,6 @@ export function OverviewPage(props: {
         <main className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
           <h3 className="overview-settings-heading">AI Coding Tool</h3>
           <div className="card-stack">
-            {localEndpoints.length > 0 && (
-              <div className="status-card success" style={{ marginBottom: '16px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.1)' }}>
-                <div className="status-card-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-                  <Zap size={20} />
-                </div>
-                <div className="status-card-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                  <div style={{ textAlign: 'left' }}>
-                    <h4 style={{ color: '#10b981', margin: '0 0 4px 0' }}>Local Models Active</h4>
-                    <p style={{ fontSize: '0.85rem', opacity: 0.8, margin: 0 }}>{localEndpoints.length} local inference server(s) registered and ready.</p>
-                  </div>
-                  <button className="ghost-button" onClick={() => props.onSectionChange('routing')} style={{ fontSize: '0.75rem' }} type="button">Manage Routing</button>
-                </div>
-              </div>
-            )} 
-
             <div className="settings-list overview-tab-list">
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'claude-code' ? 'active' : ''}`}>
                 <span className="settings-list-icon"><Bot size={16} /></span>
@@ -173,9 +159,7 @@ export function OverviewPage(props: {
                   <strong>OpenCode</strong>
                   <span>Install OpenCode if needed and write a OneInfer-backed user config.</span>
                 </button>
-                <button className="settings-list-status settings-action-button" disabled={isOpenCodeBusy} onClick={props.onEnableOpenCode} type="button">
-                  {isOpenCodeBusy ? 'Enabling...' : 'Enable'}
-                </button>
+                <EnableIntegrationSwitch busy={isOpenCodeBusy} label="OpenCode" onEnable={props.onEnableOpenCode} />
               </div>
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'kilocode' ? 'active' : ''}`}>
@@ -184,9 +168,7 @@ export function OverviewPage(props: {
                   <strong>Kilo Code</strong>
                   <span>Install Kilo Code if needed and write a OneInfer-backed user config.</span>
                 </button>
-                <button className="settings-list-status settings-action-button" disabled={isKiloCodeBusy} onClick={props.onEnableKiloCode} type="button">
-                  {isKiloCodeBusy ? 'Enabling...' : 'Enable'}
-                </button>
+                <EnableIntegrationSwitch busy={isKiloCodeBusy} label="Kilo Code" onEnable={props.onEnableKiloCode} />
               </div>
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'openclaw' ? 'active' : ''}`}>
@@ -195,9 +177,7 @@ export function OverviewPage(props: {
                   <strong>OpenClaw</strong>
                   <span>Install OpenClaw if needed and write a OneInfer-backed user config.</span>
                 </button>
-                <button className="settings-list-status settings-action-button" disabled={isOpenClawBusy} onClick={props.onEnableOpenClaw} type="button">
-                  {isOpenClawBusy ? 'Enabling...' : 'Enable'}
-                </button>
+                <EnableIntegrationSwitch busy={isOpenClawBusy} label="OpenClaw" onEnable={props.onEnableOpenClaw} />
               </div>
             </div>
           </div>
@@ -225,6 +205,42 @@ export function OverviewPage(props: {
         <HardwareWidget machine={props.dashboard.machineDetails} />
       </div>
     </div>
+  );
+}
+
+function EnableIntegrationSwitch(props: {
+  busy: boolean;
+  label: string;
+  onEnable: () => void | Promise<void>;
+}) {
+  const [enabled, setEnabled] = useState(false);
+  const checked = enabled || props.busy;
+
+  async function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const nextChecked = event.currentTarget.checked;
+
+    setEnabled(nextChecked);
+
+    if (nextChecked) {
+      await props.onEnable();
+    }
+  }
+
+  return (
+    <label className={`settings-enable-switch${props.busy ? ' is-busy' : ''}`}>
+      <input
+        aria-label={`Enable ${props.label}`}
+        checked={checked}
+        disabled={props.busy}
+        onChange={handleChange}
+        type="checkbox"
+      />
+      <span className="settings-enable-switch-track" aria-hidden="true">
+        <span className="settings-enable-switch-thumb">
+          {props.busy ? <LoaderCircle className="spin" size={12} /> : null}
+        </span>
+      </span>
+    </label>
   );
 }
 
@@ -358,7 +374,7 @@ function isActiveStatus(status: string): boolean {
 function LocalDeploymentSummary(props: { deployment: LocalModelDeployment; metrics?: LocalModelMetrics }) {
   const healthy = props.metrics?.healthy;
   return (
-    <div className="sub-card" style={{ padding: '12px' }}>
+    <div className="sub-card overview-local-card" style={{ padding: '12px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
         <div style={{ minWidth: 0 }}>
           <h4 style={{ fontSize: '0.9rem', marginBottom: '4px' }}>{props.deployment.name}</h4>

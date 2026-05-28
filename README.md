@@ -1,72 +1,112 @@
-# OneInfer Desktop App
+# OneInfer Desktop
 
-Cross-platform Electron and Vite desktop client for the OneInfer developer APIs.
+OneInfer Desktop is an Electron app for managing OneInfer developer workflows from one place: account access, GPU instances, API keys, model routing, local self-hosting, and coding-tool setup.
 
-## API Base URL
+OneInfer Edge provides one focused workspace for AI infrastructure. It helps developers manage GPU instances, developer keys, credits, models, and routing from a desktop edge app.
 
-- Desktop app default: `https://api.oneinfer.ai/v1`
-- Override the desktop app default at build time with `VITE_ONEINFER_API_BASE_URL`
-- Override the Python helper scripts with `ONEINFER_API_BASE_URL`
-- If `https://oneinfer.ai/` is provided, the app normalizes it to the API backend automatically.
+## What It Does
 
-## Build
+- Sign in with email OTP
+- Manage credits, plans, API keys, routes, and GPU instances
+- Deploy local models and expose local inference endpoints
+- Build routes across local and cloud targets
+- Configure desktop coding tools to use OneInfer models
 
-Install dependencies and generate a local production build:
+## Product Areas
+
+- GPU Control: launch, inspect, and manage GPU instances.
+- Routing Studio: route requests across local and cloud endpoints.
+- Quantization: explore model formats, memory, and latency tradeoffs.
+- Model Evals: compare quality, cost, latency, and reliability.
+- Training & Finetuning: prepare datasets and track model improvement runs.
+- Kernel Optimizations: tune inference paths for better hardware efficiency.
+
+## Authentication
+
+The desktop app uses a developer login flow:
+
+1. Enter the developer email address.
+2. Request an OTP from OneInfer.
+3. Complete verification to access the workspace.
+
+## Tech Stack
+
+Electron, React 18, Vite, TypeScript, CSS, `lucide-react`, `systeminformation`, and `electron-builder`.
+
+## Requirements
+
+- Node.js 20+
+- npm
+- Python only for local model/runtime flows and helper scripts
+- Native OS build environment for platform-specific packaging
+
+## Setup
 
 ```bash
 npm install
-npm run build
+npm run dev
 ```
 
-Create installers on the target operating system:
+Useful scripts:
 
 ```bash
-npm run dist:win
-npm run dist:linux
-npm run dist:mac
+npm run lint          # TypeScript checks
+npm run build         # Generate assets and build renderer
+npm run preview       # Preview Vite build
+npm run dist          # Build desktop installer/package
+npm run dist:win      # Windows package
+npm run dist:linux    # Linux AppImage
+npm run dist:mac      # macOS DMG
 ```
 
-Build each installer on its native operating system for the most reliable results:
+## Config
 
-- Windows: NSIS installer as `OneInfer Desktop windows.exe`
-- Linux: single-file AppImage as `OneInfer Desktop linux.AppImage`
+Default API backend:
+
+```text
+https://api.oneinfer.ai/v1
+```
+
+Common environment variables:
+
+- `VITE_ONEINFER_API_BASE_URL`
+- `ONEINFER_API_BASE_URL`
+- `CLAUDE_CONFIG_DIR`
+- `OPENCODE_CONFIG_DIR` / `OPENCODE_CONFIG`
+- `KILO_CONFIG_DIR` / `KILO_CONFIG`
+
+Example `.env`:
+
+```bash
+VITE_ONEINFER_API_BASE_URL=https://api.oneinfer.ai/v1
+ONEINFER_GOOGLE_DESKTOP_CLIENT_ID=your-google-desktop-client-id
+ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET=your-google-desktop-client-secret
+```
+
+## Structure
+
+```text
+electron/              Electron main and preload processes
+src/                   React app, API client, pages, components, helpers, styles
+scripts/               Asset generation and packaging helpers
+.github/workflows/     Desktop release workflow
+developer_*.py         API helper scripts
+get_gpus.py            GPU/provider helper script
+package.json           scripts, dependencies, Electron Builder config
+```
+
+## Packaging
+
+Generated artifacts are written under `release/`.
+
+- Windows: NSIS installer
+- Linux: AppImage
 - macOS: DMG
 
-Linux users cannot install a Windows `.exe`, so the Linux release artifact remains an AppImage with a Linux-specific name.
-
-`npm run dist:win` now packages into a temporary output directory and then copies only `OneInfer Desktop windows.exe` back into `release/`, which avoids repeated-build failures caused by stale locks in `release/win-unpacked/`.
-
-If you want fixed upload names after a local build, run:
+For upload-ready artifact names after a local build:
 
 ```bash
 npm run prepare:upload
 ```
 
-That command creates upload-ready files in `release/` named `OneInfer Desktop windows.exe` and `OneInfer Desktop linux.AppImage` by copying the latest built installer and AppImage.
-
-Linux packaging is intentionally blocked on native Windows because Electron Builder's Linux packaging flow uses symlink behavior that is unreliable there. Run `npm run dist:linux` from WSL2 Ubuntu or a Linux machine instead.
-
-`npm run dist:linux` produces only the AppImage so the Linux upload stays as a single-file distribution.
-
-The Linux packaging script reuses the existing production `dist/` output and generated icons from `build/` instead of rebuilding them inside WSL. Recommended flow:
-
-```bash
-# Windows PowerShell
-npm run build
-
-# WSL2 Ubuntu
-npm run dist:linux
-```
-
-This avoids Linux-native optional dependency issues from packages such as `sharp` and Rollup when the workspace `node_modules` were originally installed on Windows.
-
-Recommended WSL2 flow for Linux artifacts:
-
-```bash
-# inside WSL2 Ubuntu, preferably from /home/<user>/...
-npm run dist:linux
-```
-
-If you open the repo through WSL but keep it under `/mnt/c/...`, the build may still work, but packaging is slower and more prone to filesystem edge cases than a repo stored under `/home/<user>/...`.
-
-The asset pipeline generates `build/icon.png`, `build/icon.ico`, and `build/icon.icns` from `src/assets/oneinfer-logo.png`, so packaging no longer depends on machine-specific paths.
+Linux packaging should run on Linux or WSL2. When using WSL2, keep the repo under `/home/<user>/...` for best packaging reliability.

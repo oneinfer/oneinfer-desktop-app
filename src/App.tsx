@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { LoaderCircle } from 'lucide-react';
+import { LoaderCircle, Plus } from 'lucide-react';
 
 import {
   createApiKey,
@@ -22,7 +22,6 @@ import {
   listInferenceEndpoints,
   listIntelligentEndpoints,
   listModels,
-  loginWithGoogle,
   loginWithOtp,
   requestOtp,
   runInstanceAction,
@@ -49,6 +48,7 @@ import { RoutingPage, type CreateRoutePayload } from './pages/RoutingPage';
 import { SelfHostingPage, type SelfHostFormState } from './pages/SelfHostingPage';
 import { SettingsPage, type SettingsTab } from './pages/SettingsPage';
 import type {
+  CreateInferenceFormState,
   CreateInstanceFormState,
   DashboardState,
   DesktopSession,
@@ -63,6 +63,8 @@ import type {
 import { getBalance } from './utils/format';
 
 const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
+const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console/credits';
+const DEV_UPDATE_DISABLED_MESSAGE = 'Auto-update is disabled in development mode.';
 
 const initialLibraryStatus: Record<ServingLibrary, boolean> = {
   vllm: false,
@@ -193,7 +195,9 @@ function App() {
               setHfModelMetadata(info);
             }
 
-            const memoryBreakdown = getModelMemoryBreakdown(info);
+            const memoryBreakdown = getModelMemoryBreakdown(info, {
+              servingLibrary: selfHostForm.serving_library,
+            });
             const sizeGb = memoryBreakdown.modelWeightGb;
 
             if (sizeGb > 0) {
@@ -240,6 +244,7 @@ function App() {
           const catalogMemoryBreakdown = getModelMemoryBreakdown(virtualMetadata, {
             modelWeightGb: catalogModelWeightGb,
             contextLength: catalogContextLength || undefined,
+            servingLibrary: selfHostForm.serving_library,
           });
           const catalogMinVramGb = Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0);
 
@@ -273,7 +278,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.hfAccessToken, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models, session]);
+  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.hfAccessToken, selfHostForm.useHfUrl, selfHostForm.serving_library, dashboard.machineDetails, dashboard.models, session]);
 
   useEffect(() => {
     async function checkLibs() {
@@ -606,7 +611,7 @@ function App() {
       setAppVersion(version ?? '');
       if (initialUpdateStatus) {
         setUpdateStatus(initialUpdateStatus);
-        if (initialUpdateStatus.message) {
+        if (initialUpdateStatus.message && initialUpdateStatus.message !== DEV_UPDATE_DISABLED_MESSAGE) {
           setMessage({ tone: 'info', text: initialUpdateStatus.message });
         }
       }
@@ -635,7 +640,7 @@ function App() {
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onUpdateStatus?.((status) => {
       setUpdateStatus(status);
-      if (status.message) {
+      if (status.message && status.message !== DEV_UPDATE_DISABLED_MESSAGE) {
         setMessage({ tone: 'info', text: status.message });
       }
     });
@@ -712,39 +717,6 @@ function App() {
       setBusy(null);
     }
   }
-
-  const handleGoogleLogin = useCallback(async () => {
-    setBusy('google');
-    setMessage(null);
-
-    try {
-      if (!window.desktopBridge?.startGoogleLogin) {
-        throw new Error('Google desktop login is not available in this build.');
-      }
-
-      const googleAuth = await window.desktopBridge.startGoogleLogin();
-      const nextSession = await loginWithGoogle(settingsDraft.apiBaseUrl, {
-        clientId: googleAuth.clientId,
-        credential: googleAuth.credential,
-        selectBy: googleAuth.selectBy ?? '',
-        email: typeof googleAuth.credential.email === 'string' ? googleAuth.credential.email : email,
-      });
-
-      setEmail(nextSession.email);
-      setOtp('');
-      setLoginStep('email');
-      setSession(nextSession);
-      setLoadedSections(createLoadedSections());
-      setDashboard(defaultDashboardState);
-      await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
-      await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
-      setMessage({ tone: 'success', text: 'Logged in with Google.' });
-    } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Google login failed.' });
-    } finally {
-      setBusy(null);
-    }
-  }, [claudeCodeProvider, email, settingsDraft.apiBaseUrl]);
 
   async function handleEnableClaudeCode() {
     if (!session || !window.desktopBridge?.enableClaudeCode) {
@@ -921,6 +893,7 @@ function App() {
     setBusy('register-self-hosted');
     try {
       const manualRuntime = selfHostForm.serving_library || getLocalRuntimeFromEndpointUrl(selfHostForm.endpoint_url);
+      const routingMetadata = buildHfRoutingMetadata(hfModelMetadata);
       await validateSelfHostedEndpointRegistration(selfHostForm.endpoint_url.trim(), modelId, selfHostForm.name.trim() || modelId);
       const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
@@ -930,6 +903,7 @@ function App() {
         endpoint_url: selfHostForm.endpoint_url.trim(),
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
+        ...routingMetadata.endpointFields,
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
@@ -940,6 +914,7 @@ function App() {
           endpointId: getEndpointIdFromPayload(registeredEndpoint),
           endpointUrl: selfHostForm.endpoint_url.trim(),
           modelId,
+          ...routingMetadata.deploymentFields,
           name: selfHostForm.name.trim() || modelId,
           pid: null,
           runtime: manualRuntime,
@@ -1062,9 +1037,11 @@ function App() {
         endpoint_url: deployment.endpointUrl,
       }));
       const deployedAt = new Date().toISOString();
+      const routingMetadata = buildHfRoutingMetadata(hfModelMetadata);
       const localDeploymentRecord: LocalModelDeployment = {
         endpointUrl: deployment.endpointUrl,
         modelId: deployment.modelId,
+        ...routingMetadata.deploymentFields,
         name: selfHostForm.name.trim() || repoId,
         pid: deployment.pid,
         runtime: deployment.runtime,
@@ -1096,6 +1073,7 @@ function App() {
         endpoint_url: deployment.endpointUrl,
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
+        ...routingMetadata.endpointFields,
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
@@ -1138,7 +1116,7 @@ function App() {
     } catch (error) {
       const rawErrorMessage = error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.';
       const errorMessage = rawErrorMessage.includes('Unsupported local deployment runtime: ollama')
-        ? 'Ollama deploy support is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then deploy again.'
+        ? 'Ollama deploy support is not loaded in the Electron main process yet. Fully quit OneInfer Edge, restart with npm run dev, then deploy again.'
         : rawErrorMessage;
       const errorProgress: DesktopDeploymentProgress = {
         id: `${repoId}-${Date.now()}`,
@@ -1504,6 +1482,7 @@ function App() {
           const localRoute = await window.desktopBridge.startLocalRoute({
             routeId: createdRouteId,
             name: routeName,
+            description: payload.description,
             routerEndpointUrl: routerDeployment.endpointUrl,
             routerModelId: routerDeployment.modelId,
             candidates: localRouteCandidates,
@@ -1593,7 +1572,7 @@ function App() {
     }));
 
     if (!pytorchInstalled || !transformersInstalled) {
-      throw new Error('PyTorch and Transformers installation finished, but the app could not import both packages. Restart OneInfer Desktop or check your Python environment.');
+      throw new Error('PyTorch and Transformers installation finished, but the app could not import both packages. Restart OneInfer Edge or check your Python environment.');
     }
   }
 
@@ -1663,6 +1642,11 @@ function App() {
         endpoint_url: deployment.endpointUrl,
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
+        model_description: deployment.modelDescription,
+        model_context_length: deployment.modelContextLength,
+        model_parameters: deployment.modelParameters,
+        model_tags: deployment.modelTags,
+        model_pipeline_tag: deployment.modelPipelineTag,
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
@@ -1753,6 +1737,7 @@ function App() {
     return window.desktopBridge.startLocalRoute({
       routeId,
       name: String(record.name ?? routeId),
+      description: String(routingConfig.description ?? record.description ?? ''),
       routerEndpointUrl,
       routerModelId: String(routingConfig.routing_algorithm ?? ''),
       candidates,
@@ -1812,6 +1797,91 @@ function App() {
     setActiveSection('routing');
     if (session) {
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => undefined);
+    }
+  }
+
+  async function handleStartLocalDeployment(deployment: {
+    endpointId: string;
+    endpointUrl: string;
+    modelId: string;
+    name: string;
+    runtime: string;
+  }) {
+    if (!window.desktopBridge?.deployHfModel) {
+      setMessage({ tone: 'error', text: 'Local model start is not available in this app build.' });
+      return;
+    }
+
+    const runtime = deployment.runtime as ServingLibrary;
+    if (!isLaunchableLocalRuntime(runtime)) {
+      setMessage({ tone: 'error', text: `${formatLocalRuntime(runtime)} endpoints must be started manually, then registered with their OpenAI-compatible URL.` });
+      return;
+    }
+
+    if (!libraries[runtime]) {
+      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(runtime)} before starting this local endpoint.` });
+      return;
+    }
+
+    const port = getPortFromLocalEndpointUrl(deployment.endpointUrl);
+    if (runtime !== 'ollama' && !port) {
+      setMessage({ tone: 'error', text: `Could not read a local port from ${deployment.endpointUrl}. Update the endpoint URL, then try again.` });
+      return;
+    }
+
+    const progressId = `${deployment.modelId}-${Date.now()}`;
+    setBusy(`start-local:${deployment.endpointUrl}`);
+    setDeploymentProgress([{
+      id: progressId,
+      stage: 'starting',
+      message: `Starting ${deployment.name}.`,
+      detail: deployment.endpointUrl,
+      level: 'info',
+      timestamp: Date.now(),
+    }]);
+
+    try {
+      const started = await window.desktopBridge.deployHfModel({
+        repoId: deployment.modelId,
+        runtime,
+        port: runtime === 'ollama' ? undefined : port,
+        exactPort: runtime !== 'ollama',
+        progressId,
+      });
+      const nextDeployment: LocalModelDeployment = {
+        endpointId: deployment.endpointId,
+        endpointUrl: deployment.endpointUrl,
+        modelId: started.modelId || deployment.modelId,
+        name: deployment.name,
+        pid: started.pid,
+        runtime: started.runtime,
+        deployedAt: new Date().toISOString(),
+      };
+      let nextLocalDeployments: LocalModelDeployment[] = [];
+      setLocalDeployments((current) => {
+        nextLocalDeployments = [
+          nextDeployment,
+          ...current.filter((item) => !isSameLocalDeploymentByKey(item, nextDeployment)),
+        ];
+        return nextLocalDeployments;
+      });
+
+      if (window.desktopBridge.getLocalModelMetrics) {
+        const metrics = await window.desktopBridge.getLocalModelMetrics({ endpointUrl: deployment.endpointUrl });
+        setLocalModelMetrics((current) => ({
+          ...current,
+          [deployment.endpointUrl]: metrics,
+          [normalizeLocalEndpointUrl(deployment.endpointUrl)]: metrics,
+        }));
+      }
+
+      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments);
+      setMessage({ tone: 'success', text: `${deployment.name} is online.` });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to start local model.';
+      setMessage({ tone: 'error', text: errorMessage });
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -1881,7 +1951,7 @@ function App() {
     } catch (error) {
       const rawErrorMessage = error instanceof Error ? error.message : 'Failed to delete local model.';
       const errorMessage = rawErrorMessage.includes("No handler registered for 'app:delete-local-model'")
-        ? 'Local model deletion is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then delete again.'
+        ? 'Local model deletion is not loaded in the Electron main process yet. Fully quit OneInfer Edge, restart with npm run dev, then delete again.'
         : rawErrorMessage;
       setMessage({ tone: 'error', text: errorMessage });
     } finally {
@@ -1911,12 +1981,25 @@ function App() {
     }
   }
 
+  async function handleAddCredits() {
+    try {
+      if (window.desktopBridge?.openExternalUrl) {
+        await window.desktopBridge.openExternalUrl({ url: ONEINFER_CREDITS_URL });
+        return;
+      }
+
+      window.open(ONEINFER_CREDITS_URL, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to open credits page.' });
+    }
+  }
+
   if (booting) {
     return (
       <div className="shell shell-center">
         <div className="loading-card">
           <LoaderCircle className="spin" />
-          <h1>Booting OneInfer Desktop</h1>
+          <h1>Booting OneInfer Edge</h1>
           <p>Loading local session and API workspace.</p>
         </div>
       </div>
@@ -1935,7 +2018,6 @@ function App() {
         onOtpChange={setOtp}
         onOtpRequest={handleOtpRequest}
         onLogin={handleLogin}
-        onGoogleLogin={handleGoogleLogin}
         onBackToEmail={() => setLoginStep('email')}
       />
     );
@@ -1961,6 +2043,14 @@ function App() {
           <div className="top-credit-pill">
             <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
             <span>Available Credits</span>
+            <button
+              className="top-credit-action"
+              type="button"
+              onClick={handleAddCredits}
+            >
+              <Plus size={13} />
+              Add credits
+            </button>
           </div>
         </div>
       ) : null}
@@ -2023,6 +2113,7 @@ function App() {
               return handleDeploySelfHostedModel();
             }}
             onInstallLibrary={handleInstallLibrary}
+            onStartLocalDeployment={handleStartLocalDeployment}
             onUseInRoute={handleUseEndpointInRoute}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
@@ -2113,24 +2204,27 @@ function buildAttachedInferenceEndpointPayload(
   localDeployments: LocalModelDeployment[],
   models: Record<string, unknown>[],
 ) {
-      const endpoint = inferenceEndpoints.find((item) => {
-        const record = item as Record<string, unknown>;
-        return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
-      });
+  const endpoint = inferenceEndpoints.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
+  });
   const instance = instances.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
   });
   const localDeployment = localDeployments.find((item) => getLocalDeploymentSelectionId(item) === endpointId);
-  const model = models.find((item) => {
-    const record = item as Record<string, unknown>;
-    return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
-  });
   const endpointRecord = (endpoint ?? instance ?? (localDeployment ? {
     name: localDeployment.name,
     model_id: localDeployment.modelId,
     endpoint_url: localDeployment.endpointUrl,
+    model_description: localDeployment.modelDescription,
+    model_context_length: localDeployment.modelContextLength,
+    model_parameters: localDeployment.modelParameters,
+    model_tags: localDeployment.modelTags,
+    model_pipeline_tag: localDeployment.modelPipelineTag,
   } : {})) as Record<string, unknown>;
+  const endpointModelId = String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? modelId ?? '');
+  const model = findModelMetadata(models, endpointModelId || modelId);
   const modelRecord = (model ?? {}) as Record<string, unknown>;
   const outputModalities = Array.isArray(modelRecord.outputModalities)
     ? modelRecord.outputModalities
@@ -2142,10 +2236,174 @@ function buildAttachedInferenceEndpointPayload(
     endpoint_id: endpoint ? endpointId : localDeployment ? getLocalDeploymentSelectionId(localDeployment) : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
     endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
-    model_id: String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? ''),
+    model_id: endpointModelId,
+    model_description: getModelRoutingDescription(endpointRecord, modelRecord),
+    model_context_length: getFirstStringValue(modelRecord.modelContextLength, modelRecord.model_context_length, endpointRecord.model_context_length, endpointRecord.modelContextLength),
+    model_parameters: getFirstStringValue(modelRecord.modelParameters, modelRecord.model_parameters, endpointRecord.model_parameters, endpointRecord.modelParameters),
+    model_tags: getStringArrayValue(modelRecord.displayTags, modelRecord.display_tags, modelRecord.tags, endpointRecord.model_tags, endpointRecord.tags),
+    benchmark_info: typeof modelRecord.benchmarkInfo === 'object' && modelRecord.benchmarkInfo
+      ? modelRecord.benchmarkInfo
+      : typeof modelRecord.benchmark_info === 'object' && modelRecord.benchmark_info
+        ? modelRecord.benchmark_info
+        : undefined,
     input_modality: inputModality,
     output_modality: String(outputModalities[0] ?? 'text'),
   };
+}
+
+function findModelMetadata(models: Record<string, unknown>[], modelId: string): Record<string, unknown> | undefined {
+  const normalizedModelId = normalizeModelLookupValue(modelId);
+  if (!normalizedModelId) {
+    return undefined;
+  }
+
+  return models.find((item) => {
+    const record = item as Record<string, unknown>;
+    return [
+      record.modelId,
+      record.model_id,
+      record.id,
+      record.modelName,
+      record.model_name,
+      record.displayName,
+      record.display_name,
+    ].some((value) => normalizeModelLookupValue(value) === normalizedModelId);
+  }) as Record<string, unknown> | undefined;
+}
+
+function getModelRoutingDescription(endpointRecord: Record<string, unknown>, modelRecord: Record<string, unknown>): string {
+  const description = getFirstStringValue(
+    modelRecord.Description,
+    modelRecord.description,
+    modelRecord.model_description,
+    modelRecord.modelDescription,
+    endpointRecord.model_description,
+    endpointRecord.modelDescription,
+    endpointRecord.description,
+  );
+  const tags = getStringArrayValue(modelRecord.displayTags, modelRecord.display_tags, modelRecord.tags, endpointRecord.model_tags, endpointRecord.tags);
+  const contextLength = getFirstStringValue(modelRecord.modelContextLength, modelRecord.model_context_length, endpointRecord.model_context_length, endpointRecord.modelContextLength);
+  const parameters = getFirstStringValue(modelRecord.modelParameters, modelRecord.model_parameters, endpointRecord.model_parameters, endpointRecord.modelParameters);
+  const modalities = [
+    ...getStringArrayValue(modelRecord.inputModalities, modelRecord.input_modalities),
+    ...getStringArrayValue(modelRecord.outputModalities, modelRecord.output_modalities),
+  ];
+  const hints = [
+    description,
+    tags.length ? `Tags: ${tags.join(', ')}` : '',
+    parameters ? `Parameters: ${parameters}` : '',
+    contextLength ? `Context length: ${contextLength}` : '',
+    modalities.length ? `Modalities: ${Array.from(new Set(modalities)).join(', ')}` : '',
+  ].filter(Boolean);
+
+  return hints.join(' ');
+}
+
+function buildHfRoutingMetadata(model: HfModelInfo | null): {
+  deploymentFields: Partial<LocalModelDeployment>;
+  endpointFields: Partial<CreateInferenceFormState>;
+} {
+  if (!model) {
+    return { deploymentFields: {}, endpointFields: {} };
+  }
+
+  const tags = getStringArrayValue(model.tags);
+  const cardData = typeof model.cardData === 'object' && model.cardData ? model.cardData as Record<string, unknown> : {};
+  const config = typeof model.config === 'object' && model.config ? model.config as Record<string, unknown> : {};
+  const description = [
+    getFirstStringValue(
+      model.description,
+      model.model_description,
+      model.summary,
+      cardData.description,
+      cardData.summary,
+    ),
+    summarizeHfReadme(model.readme),
+    model.pipeline_tag ? `Pipeline: ${model.pipeline_tag}` : '',
+    tags.length ? `Tags: ${tags.slice(0, 16).join(', ')}` : '',
+    typeof model.downloads === 'number' ? `Downloads: ${model.downloads}` : '',
+    typeof model.likes === 'number' ? `Likes: ${model.likes}` : '',
+    model.lastModified ? `Last modified: ${model.lastModified}` : '',
+  ].filter(Boolean).join(' ');
+  const contextLength = getFirstStringValue(
+    model.model_context_length,
+    model.context_length,
+    model.max_position_embeddings,
+    config.max_position_embeddings,
+    config.max_sequence_length,
+    config.seq_length,
+  );
+  const parameters = getFirstStringValue(
+    model.model_parameters,
+    model.parameters,
+    model.parameter_count,
+    cardData.parameters,
+  );
+
+  return {
+    deploymentFields: {
+      modelDescription: description,
+      modelContextLength: contextLength,
+      modelParameters: parameters,
+      modelTags: tags,
+      modelPipelineTag: model.pipeline_tag,
+    },
+    endpointFields: {
+      model_description: description,
+      model_context_length: contextLength,
+      model_parameters: parameters,
+      model_tags: tags,
+      model_pipeline_tag: model.pipeline_tag,
+    },
+  };
+}
+
+function summarizeHfReadme(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/^---[\s\S]*?---/, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .split('\n')
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .filter((line) => line && !line.startsWith('![') && !line.startsWith('|') && !line.includes('license:'))
+    .slice(0, 8)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 1200)
+    .trim();
+}
+
+function getFirstStringValue(...values: unknown[]): string {
+  const value = values.find((item) => typeof item === 'string' || typeof item === 'number');
+  return value === undefined ? '' : String(value).trim();
+}
+
+function getStringArrayValue(...values: unknown[]): string[] {
+  const value = values.find((item) => Array.isArray(item)) as unknown[] | undefined;
+  return value ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+}
+
+function normalizeModelLookupValue(value: unknown): string {
+  const rawValue = String(value ?? '').trim().toLowerCase();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
+    try {
+      const url = new URL(rawValue);
+      const parts = url.pathname.split('/').filter(Boolean);
+      return parts.length >= 2 ? `${parts[0]}/${parts[1]}`.toLowerCase() : rawValue;
+    } catch {
+      return rawValue;
+    }
+  }
+
+  return rawValue;
 }
 
 function getAttachedInferenceEndpointName(endpoint: Record<string, unknown>, fallbackName: string): string {
@@ -2478,6 +2736,16 @@ function uniqueStrings(values: unknown[]): string[] {
 
 function normalizeLocalEndpointUrl(endpointUrl: string): string {
   return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
+}
+
+function getPortFromLocalEndpointUrl(endpointUrl: string): number | undefined {
+  try {
+    const parsedUrl = new URL(normalizeLocalEndpointUrl(endpointUrl));
+    const port = Number(parsedUrl.port);
+    return Number.isInteger(port) && port > 0 ? port : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveCloudModelId(input: string, models: any[]): string {

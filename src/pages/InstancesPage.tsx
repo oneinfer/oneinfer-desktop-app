@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
 
 import { Modal } from '../components/Common';
@@ -19,13 +19,23 @@ export function InstancesPage(props: {
 }) {
   const [detailsGpu, setDetailsGpu] = useState<GpuCardOption | null>(null);
   const [hfAccessCheck, setHfAccessCheck] = useState<HfAccessCheckState>({ status: 'idle' });
-  const providers = getProviderOptions(props.dashboard.providerInfo);
+  const [providerGpuFilter, setProviderGpuFilter] = useState<GpuProviderFilter | null>(null);
+  const allProviders = useMemo(() => getProviderOptions(props.dashboard.providerInfo), [props.dashboard.providerInfo]);
+  const providers = useMemo(
+    () => providerGpuFilter
+      ? allProviders.filter((provider) => providerHasMatchingGpu(props.dashboard.providerInfo, provider.value, providerGpuFilter))
+      : allProviders,
+    [allProviders, props.dashboard.providerInfo, providerGpuFilter],
+  );
   const validProviderName = providers.some((provider) => provider.value === props.instanceForm.provider_name)
     ? props.instanceForm.provider_name
     : (providers[0]?.value ?? '');
   const effectiveProvider = getSelectedProviderData(props.dashboard.providerInfo, validProviderName);
-  const providerImages = effectiveProvider.images;
-  const providerGpus = effectiveProvider.instances;
+  const allProviderImages = effectiveProvider.images;
+  const providerImages = getImagesForServingLibrary(allProviderImages, props.instanceForm.serving_library);
+  const providerGpus = providerGpuFilter
+    ? effectiveProvider.instances.filter((gpu) => isProviderGpuMatch(gpu, providerGpuFilter))
+    : effectiveProvider.instances;
   const selectedGpu = providerGpus.find((gpu) => gpu.gpu_id === props.instanceForm.gpu_id) ?? providerGpus[0];
   const regions = selectedGpu?.regions ?? [];
   const selectedImage = providerImages.find((image) => image.image_url === props.instanceForm.image_url) ?? providerImages[0];
@@ -52,8 +62,12 @@ export function InstancesPage(props: {
 
     const nextProviderName = validProviderName;
     const nextProvider = getSelectedProviderData(props.dashboard.providerInfo, nextProviderName);
-    const nextGpu = nextProvider.instances.find((gpu) => gpu.gpu_id === props.instanceForm.gpu_id) ?? nextProvider.instances[0];
-    const nextImage = nextProvider.images.find((image) => image.image_url === props.instanceForm.image_url) ?? nextProvider.images[0];
+    const nextProviderGpus = providerGpuFilter
+      ? nextProvider.instances.filter((gpu) => isProviderGpuMatch(gpu, providerGpuFilter))
+      : nextProvider.instances;
+    const nextGpu = nextProviderGpus.find((gpu) => gpu.gpu_id === props.instanceForm.gpu_id) ?? nextProviderGpus[0];
+    const nextImages = getImagesForServingLibrary(nextProvider.images, props.instanceForm.serving_library);
+    const nextImage = nextImages.find((image) => image.image_url === props.instanceForm.image_url) ?? nextImages[0];
     const nextRegions = nextGpu?.regions ?? [];
     const nextRegion = nextRegions.includes(props.instanceForm.region) ? props.instanceForm.region : (nextRegions[0] ?? '');
     const nextGpuCount = nextGpu
@@ -84,6 +98,7 @@ export function InstancesPage(props: {
     props.onFormChange,
     props.showCreateInstanceModal,
     providers,
+    providerGpuFilter,
     validProviderName,
   ]);
 
@@ -134,17 +149,25 @@ export function InstancesPage(props: {
   ]);
 
   function openCreateModal() {
+    setProviderGpuFilter(null);
     props.onModalChange(true);
   }
 
   function openCreateModalForGpu(gpu: GpuCardOption) {
     const provider = getSelectedProviderData(props.dashboard.providerInfo, gpu.providerName);
-    const matchingGpu = provider.instances.find((instance) => instance.gpu_id === gpu.gpuId) ?? provider.instances[0];
-    const image = provider.images[0];
+    const nextFilter = createGpuProviderFilter(gpu);
+    const availableProviders = allProviders.filter((providerOption) => providerHasMatchingGpu(props.dashboard.providerInfo, providerOption.value, nextFilter));
+    const nextProviderName = availableProviders.some((providerOption) => providerOption.value === gpu.providerName)
+      ? gpu.providerName
+      : (availableProviders[0]?.value ?? gpu.providerName);
+    const nextProvider = getSelectedProviderData(props.dashboard.providerInfo, nextProviderName);
+    const matchingGpu = findMatchingProviderGpu(nextProvider.instances, nextFilter) ?? provider.instances.find((instance) => instance.gpu_id === gpu.gpuId) ?? provider.instances[0];
+    const image = getImagesForServingLibrary(nextProvider.images, props.instanceForm.serving_library)[0];
 
+    setProviderGpuFilter(nextFilter);
     props.onFormChange({
       ...props.instanceForm,
-      provider_name: gpu.providerName,
+      provider_name: nextProviderName,
       gpu_id: matchingGpu?.gpu_id ?? gpu.gpuId,
       gpu_num: Math.max(Math.min(props.instanceForm.gpu_num || 1, matchingGpu?.gpu_num ?? 1), 1),
       region: matchingGpu?.regions?.[0] ?? '',
@@ -208,7 +231,7 @@ export function InstancesPage(props: {
       </div>
 
       <Modal title={selectedGpu ? `Deploy Model on ${selectedGpu.name}` : 'Deploy Cloud Model'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
-        <form onSubmit={async (event) => { const ok = await props.onCreate(event); if (ok) props.onModalChange(false); }}>
+        <form className="cloud-deploy-form" onSubmit={async (event) => { const ok = await props.onCreate(event); if (ok) props.onModalChange(false); }}>
           <p className="mb-6 text-center text-[0.95rem] text-[var(--muted)]">Choose a model and GPU. OneInfer will provision the instance, start the model server, and register the cloud endpoint.</p>
           <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_260px]">
             <div className="space-y-5">
@@ -221,8 +244,11 @@ export function InstancesPage(props: {
                     onChange={(event) => {
                       const nextProviderName = event.target.value;
                       const nextProvider = getSelectedProviderData(props.dashboard.providerInfo, nextProviderName);
-                      const nextGpu = nextProvider.instances[0];
-                      const nextImage = nextProvider.images[0];
+                      const nextProviderGpus = providerGpuFilter
+                        ? nextProvider.instances.filter((gpu) => isProviderGpuMatch(gpu, providerGpuFilter))
+                        : nextProvider.instances;
+                      const nextGpu = nextProviderGpus[0];
+                      const nextImage = getImagesForServingLibrary(nextProvider.images, props.instanceForm.serving_library)[0];
                       props.onFormChange({
                         ...props.instanceForm,
                         provider_name: nextProviderName,
@@ -234,7 +260,7 @@ export function InstancesPage(props: {
                       });
                     }}
                   >
-                    {providers.length === 0 ? <option value="">Loading providers...</option> : null}
+                    {providers.length === 0 ? <option value="">{providerGpuFilter ? 'No providers for selected GPU' : 'Loading providers...'}</option> : null}
                     {providers.map((provider) => (
                       <option key={provider.value} value={provider.value}>{provider.label}</option>
                     ))}
@@ -305,7 +331,16 @@ export function InstancesPage(props: {
                   <span>Serving Library</span>
                   <select
                     value={props.instanceForm.serving_library}
-                    onChange={(event) => props.onFormChange({ ...props.instanceForm, serving_library: event.target.value as ServingLibrary })}
+                    onChange={(event) => {
+                      const nextServingLibrary = event.target.value as ServingLibrary;
+                      const nextImage = getImagesForServingLibrary(allProviderImages, nextServingLibrary)[0];
+                      props.onFormChange({
+                        ...props.instanceForm,
+                        serving_library: nextServingLibrary,
+                        image_url: nextImage?.image_url ?? '',
+                        startup_script: nextImage?.start_command ?? props.instanceForm.startup_script,
+                      });
+                    }}
                   >
                     <option value="vllm">vLLM</option>
                     <option value="transformers">Transformers</option>
@@ -313,7 +348,6 @@ export function InstancesPage(props: {
                     <option value="sglang">SGLang</option>
                     <option value="tensorrt">TensorRT-LLM</option>
                   </select>
-                  <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Backend uses this serving library to start the model server.</div>
                 </label>
               </div>
 
@@ -329,36 +363,12 @@ export function InstancesPage(props: {
                       <option key={count} value={count}>{count} {count === 1 ? 'GPU' : 'GPUs'}</option>
                     ))}
                   </select>
-                  <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Select number of GPUs to deploy.</div>
                 </label>
                 <label>
                   <span>Disk (GB)</span>
                   <input type="number" min={20} value={props.instanceForm.disk_size} onChange={(event) => props.onFormChange({ ...props.instanceForm, disk_size: Number(event.target.value) })} />
-                  <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Disk space per instance.</div>
                 </label>
               </div>
-
-              <label>
-                <span>GPU</span>
-                <select
-                  value={props.instanceForm.gpu_id}
-                  disabled={providerGpus.length === 0}
-                  onChange={(event) => {
-                    const nextGpu = providerGpus.find((gpu) => gpu.gpu_id === event.target.value);
-                    props.onFormChange({
-                      ...props.instanceForm,
-                      gpu_id: event.target.value,
-                      gpu_num: Math.min(props.instanceForm.gpu_num, Math.max(nextGpu?.gpu_num ?? 1, 1)),
-                      region: nextGpu?.regions?.[0] ?? '',
-                    });
-                  }}
-                >
-                  <option value="" disabled>{providerGpus.length === 0 ? 'No GPUs available' : 'Select a GPU'}</option>
-                  {providerGpus.map((gpu) => (
-                    <option key={gpu.gpu_id} value={gpu.gpu_id}>{gpu.label}</option>
-                  ))}
-                </select>
-              </label>
 
               <label>
                 <span>Image</span>
@@ -374,12 +384,11 @@ export function InstancesPage(props: {
                     });
                   }}
                 >
-                  <option value="" disabled>{providerImages.length === 0 ? 'No images available' : 'Choose a container image...'}</option>
+                  <option value="" disabled>{providerImages.length === 0 ? `No ${formatValue(props.instanceForm.serving_library)} images available` : 'Choose a container image...'}</option>
                   {providerImages.map((image) => (
                     <option key={`${image.name}-${image.image_url}`} value={image.image_url}>{image.name}</option>
                   ))}
                 </select>
-                <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Image to initialize the instance.</div>
               </label>
 
               <label>
@@ -390,7 +399,6 @@ export function InstancesPage(props: {
                     <option key={region} value={region}>{region}</option>
                   ))}
                 </select>
-                <div className="mt-2 text-xs text-[var(--muted)] opacity-80">Select the deployment region.</div>
               </label>
 
               <label>
@@ -515,6 +523,7 @@ type ProviderImageOption = {
   name: string;
   image_url: string;
   start_command: string;
+  servingLibraries: ServingLibrary[];
 };
 
 interface CloudEndpointRow {
@@ -728,6 +737,12 @@ type GpuCardOption = {
   technicalSpecEntries: SpecEntry[];
 };
 
+type GpuProviderFilter = {
+  gpuId: string;
+  chipId: string;
+  name: string;
+};
+
 type SpecEntry = {
   label: string;
   value: string;
@@ -855,6 +870,7 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
         name: getStringValue(image.name ?? image.display_name ?? image.displayName ?? imageUrl) || 'Image',
         image_url: imageUrl,
         start_command: getStringValue(image.start_command ?? image.startCommand),
+        servingLibraries: getImageServingLibraries(image),
       };
     })
     .filter((image): image is ProviderImageOption => Boolean(image));
@@ -899,6 +915,103 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
     .sort(compareProviderGpuValue);
 
   return { images, instances };
+}
+
+function getImagesForServingLibrary(images: ProviderImageOption[], servingLibrary: ServingLibrary): ProviderImageOption[] {
+  return images.filter((image) => imageSupportsServingLibrary(image, servingLibrary));
+}
+
+function imageSupportsServingLibrary(image: ProviderImageOption, servingLibrary: ServingLibrary): boolean {
+  if (image.servingLibraries.length > 0) {
+    return image.servingLibraries.includes(servingLibrary);
+  }
+
+  const searchableText = `${image.name} ${image.image_url} ${image.start_command}`.toLowerCase();
+  const supportKeywords: Record<ServingLibrary, string[]> = {
+    vllm: ['vllm', 'cuda', 'pytorch', 'torch', 'nvidia'],
+    transformers: ['transformers', 'huggingface', 'hf', 'cuda', 'pytorch', 'torch', 'nvidia'],
+    ollama: ['ollama'],
+    sglang: ['sglang', 'cuda', 'pytorch', 'torch', 'nvidia'],
+    tensorrt: ['tensorrt', 'tensorrt-llm', 'trt', 'cuda', 'nvidia'],
+    llama_cpp: ['llama.cpp', 'llamacpp', 'llama-cpp', 'gguf'],
+    pytorch: ['pytorch', 'torch', 'cuda', 'nvidia'],
+    dynamo: ['dynamo'],
+  };
+
+  return supportKeywords[servingLibrary].some((keyword) => searchableText.includes(keyword));
+}
+
+function getImageServingLibraries(image: Record<string, unknown>): ServingLibrary[] {
+  return getStringArrayValue(
+    image.serving_library,
+    image.servingLibrary,
+    image.serving_libraries,
+    image.servingLibraries,
+    image.supported_serving_libraries,
+    image.supportedServingLibraries,
+    image.runtime,
+    image.runtimes,
+    image.backend,
+    image.backends,
+  )
+    .map(normalizeServingLibraryValue)
+    .filter((library): library is ServingLibrary => Boolean(library));
+}
+
+function normalizeServingLibraryValue(value: string): ServingLibrary | null {
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, '');
+  if (normalized === 'vllm') return 'vllm';
+  if (normalized === 'ollama') return 'ollama';
+  if (normalized === 'transformers' || normalized === 'huggingface') return 'transformers';
+  if (normalized === 'sglang') return 'sglang';
+  if (normalized === 'tensorrt' || normalized === 'tensorrtllm' || normalized === 'trt') return 'tensorrt';
+  if (normalized === 'llamacpp' || normalized === 'llamacppserver') return 'llama_cpp';
+  if (normalized === 'pytorch' || normalized === 'torch') return 'pytorch';
+  if (normalized === 'dynamo') return 'dynamo';
+  return null;
+}
+
+function getStringArrayValue(...values: unknown[]): string[] {
+  const value = values.find((item) => typeof item === 'string' || Array.isArray(item));
+  if (typeof value === 'string') {
+    return value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+}
+
+function createGpuProviderFilter(gpu: GpuCardOption): GpuProviderFilter {
+  return {
+    gpuId: gpu.gpuId,
+    chipId: gpu.chipId,
+    name: gpu.name,
+  };
+}
+
+function providerHasMatchingGpu(providerInfo: DashboardState['providerInfo'], providerName: string, filter: GpuProviderFilter): boolean {
+  return getSelectedProviderData(providerInfo, providerName).instances.some((gpu) => isProviderGpuMatch(gpu, filter));
+}
+
+function findMatchingProviderGpu(gpus: ProviderGpuOption[], filter: GpuProviderFilter): ProviderGpuOption | undefined {
+  return gpus.find((gpu) => isProviderGpuMatch(gpu, filter));
+}
+
+function isProviderGpuMatch(gpu: ProviderGpuOption, filter: GpuProviderFilter): boolean {
+  if (filter.chipId && gpu.chipId && filter.chipId === gpu.chipId) {
+    return true;
+  }
+
+  if (filter.gpuId && gpu.gpu_id && filter.gpuId === gpu.gpu_id) {
+    return true;
+  }
+
+  const filterName = normalizeGpuMatchValue(filter.name);
+  const gpuName = normalizeGpuMatchValue(gpu.name);
+  return Boolean(filterName && gpuName && filterName === gpuName);
+}
+
+function normalizeGpuMatchValue(value: string): string {
+  return value.toLowerCase().replace(/nvidia|geforce|tesla|quadro/g, '').replace(/[^a-z0-9]+/g, '');
 }
 
 function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpecs: DashboardState['gpuSpecs']): GpuCardOption[] {

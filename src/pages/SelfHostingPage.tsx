@@ -1,9 +1,9 @@
 import { useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
 import type { ValidationResult } from '../helpers/hardwareValidation';
-import { getServingLibraryCompatibility, isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
+import { getServingLibraryCompatibility } from '../helpers/servingCompatibility';
 import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
 import { getMachineGpuRows, getMachineSummaryEntries } from '../utils/format';
 
@@ -45,6 +45,7 @@ export function SelfHostingPage(props: {
   onFormChange: (next: SelfHostFormState) => void;
   onSubmit: (event?: FormEvent<HTMLFormElement>) => Promise<boolean | void> | boolean | void;
   onInstallLibrary: (library: ServingLibrary) => Promise<void>;
+  onStartLocalDeployment: (deployment: LocalDeploymentRow) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
@@ -56,8 +57,8 @@ export function SelfHostingPage(props: {
   const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
   const hasLocalRuntime = servingLibraryOptions.some((library) => props.libraries[library.value] && isServingLibrarySupported(library, platform, props.hfModelMetadata));
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
-  const selectedLibrarySupported = isServingLibrarySupported(selectedLibrary, platform, props.hfModelMetadata);
-  const selectedLibraryCompatibility = props.hfModelMetadata ? getServingLibraryCompatibility(selectedLibrary.value, props.hfModelMetadata) : null;
+  const selectedLibraryStatus = getServingLibraryStatus(selectedLibrary, platform, props.hfModelMetadata);
+  const selectedLibrarySupported = selectedLibraryStatus.supported;
   const selectedLibraryInstalled = selectedLibrarySupported && props.libraries[selectedLibrary.value];
   const selectedLibraryLaunchable = isOneClickLaunchable(selectedLibrary.value);
   const selectedLibraryBusy = props.busy === `install-${selectedLibrary.value}`;
@@ -186,11 +187,11 @@ export function SelfHostingPage(props: {
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '8px', alignItems: 'center' }}>
                     <select value={props.selfHostForm.serving_library} onChange={(event) => props.onFormChange({ ...props.selfHostForm, serving_library: event.target.value as ServingLibrary })}>
                       {servingLibraryOptions.map((library) => {
-                        const supported = isServingLibrarySupported(library, platform, props.hfModelMetadata);
-                        const installed = supported && props.libraries[library.value];
+                        const status = getServingLibraryStatus(library, platform, props.hfModelMetadata);
+                        const installed = status.supported && props.libraries[library.value];
                         return (
-                          <option key={library.value} value={library.value} disabled={!supported}>
-                            {library.label}{supported ? installed ? ' - installed' : '' : ' - unsupported'}
+                          <option key={library.value} value={library.value} disabled={!status.supported}>
+                            {library.label}{status.supported ? installed ? ' - installed' : '' : ` - ${status.shortLabel}`}
                           </option>
                         );
                       })}
@@ -207,7 +208,7 @@ export function SelfHostingPage(props: {
                       ? selectedLibraryInstalled
                         ? `${selectedLibrary.label} is installed on this machine.`
                         : `${selectedLibrary.label} is supported but is not installed.`
-                      : selectedLibraryCompatibility?.reason || `${selectedLibrary.label} is not supported on this system.`}
+                      : selectedLibraryStatus.detail}
                   </small>
                 </label>
                 <label>
@@ -265,7 +266,11 @@ export function SelfHostingPage(props: {
         </div>
       ) : null}
 
-      <Panel title="Local Deployments" icon={Server}>
+      <Panel
+        title="Local Deployments"
+        icon={Server}
+        description="List of registered local model endpoints from self-hosted deployments. Use these endpoints as routing targets once the model server is ready."
+      >
         <div className="local-deployment-list">
           {localDeploymentRows.length === 0 ? (
             <div className="empty-state">No local deployments registered yet.</div>
@@ -275,6 +280,8 @@ export function SelfHostingPage(props: {
               key={`${deployment.endpointId}-${deployment.endpointUrl}`}
               deployment={deployment}
               metrics={props.localModelMetrics[deployment.endpointUrl]}
+              busy={props.busy}
+              onStart={props.onStartLocalDeployment}
               onUseInRoute={props.onUseInRoute}
               onDelete={props.onDeleteLocalDeployment}
             />
@@ -303,13 +310,51 @@ function getSupportedPlatform(value: unknown): SupportedPlatform {
   return 'unknown';
 }
 
-function isServingLibrarySupported(library: { value: ServingLibrary; platforms: SupportedPlatform[] }, platform: SupportedPlatform, model: HfModelInfo | null): boolean {
-  const osSupported = platform === 'unknown' || library.platforms.includes(platform);
-  return osSupported && (!model || isLibraryCompatibleWithModel(library.value, model));
+function formatPlatformLabel(platform: SupportedPlatform): string {
+  const labels: Record<SupportedPlatform, string> = {
+    windows: 'Windows',
+    macos: 'macOS',
+    linux: 'Linux',
+    unknown: 'Unknown OS',
+  };
+  return labels[platform] ?? platform;
 }
 
-function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInfo): boolean {
-  return isServingLibraryCompatibleWithModel(library, model);
+function isServingLibrarySupported(library: { value: ServingLibrary; label: string; platforms: SupportedPlatform[] }, platform: SupportedPlatform, model: HfModelInfo | null): boolean {
+  return getServingLibraryStatus(library, platform, model).supported;
+}
+
+function getServingLibraryStatus(
+  library: { value: ServingLibrary; label: string; platforms: SupportedPlatform[] },
+  platform: SupportedPlatform,
+  model: HfModelInfo | null,
+): { supported: boolean; shortLabel: string; detail: string } {
+  const osSupported = platform === 'unknown' || library.platforms.includes(platform);
+  if (!osSupported) {
+    const supportedOs = library.platforms.map(formatPlatformLabel).join(', ');
+    return {
+      supported: false,
+      shortLabel: 'OS not supported',
+      detail: `${library.label} is not supported on this OS. Supported OS: ${supportedOs}.`,
+    };
+  }
+
+  if (model) {
+    const compatibility = getServingLibraryCompatibility(library.value, model);
+    if (!compatibility.supported) {
+      return {
+        supported: false,
+        shortLabel: 'Model not supported',
+        detail: compatibility.reason || `${library.label} does not support this model.`,
+      };
+    }
+  }
+
+  return {
+    supported: true,
+    shortLabel: 'Supported',
+    detail: `${library.label} supports this OS${model ? ' and model' : ''}.`,
+  };
 }
 
 interface LocalDeploymentRow {
@@ -326,6 +371,8 @@ interface LocalDeploymentRow {
 function LocalDeploymentCard(props: {
   deployment: LocalDeploymentRow;
   metrics?: LocalModelMetrics;
+  busy: string | null;
+  onStart: (deployment: LocalDeploymentRow) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
   onDelete: (deployment: LocalDeploymentRow) => void;
 }) {
@@ -333,6 +380,8 @@ function LocalDeploymentCard(props: {
     ? props.deployment.registered ? 'registered' : 'local'
     : props.metrics.healthy ? 'online' : 'offline';
   const curlBase = props.deployment.endpointUrl.replace(/\/+$/, '');
+  const startBusy = props.busy === `start-local:${props.deployment.endpointUrl}`;
+  const canStart = props.metrics?.healthy !== true;
 
   return (
     <div className="local-deployment-card">
@@ -350,6 +399,12 @@ function LocalDeploymentCard(props: {
         <span>{props.deployment.deployedAt}</span>
       </div>
       <div className="local-deployment-actions">
+        {canStart ? (
+          <button className="ghost-button" type="button" disabled={startBusy} onClick={() => props.onStart(props.deployment)}>
+            {startBusy ? <LoaderCircle className="spin" size={14} /> : <Power size={14} />}
+            Start
+          </button>
+        ) : null}
         <button className="ghost-button" type="button" disabled={!props.deployment.registered} onClick={() => props.onUseInRoute(props.deployment.endpointId, props.deployment.name)}>
           <Orbit size={14} />
           Use in route

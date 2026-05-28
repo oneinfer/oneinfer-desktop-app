@@ -68,8 +68,8 @@ async function main() {
   const linuxArtifacts = await listFiles('.AppImage');
 
   const copies = await Promise.all([
-    copyLatestArtifact(windowsArtifacts, 'OneInfer Desktop windows.exe'),
-    copyLatestArtifact(linuxArtifacts, 'OneInfer Desktop linux.AppImage'),
+    copyLatestArtifact(windowsArtifacts, 'OneInfer Edge windows.exe'),
+    copyLatestArtifact(linuxArtifacts, 'OneInfer Edge linux.AppImage'),
   ]);
 
   console.log('Prepared upload artifacts:');
