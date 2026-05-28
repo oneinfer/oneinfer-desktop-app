@@ -252,6 +252,50 @@ label span,
   color: var(--muted);
 }
 
+.auth-capability-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 28px;
+  max-width: 760px;
+}
+
+.auth-feature-pill {
+  display: flex;
+  min-height: 68px;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  padding: 12px;
+}
+
+.auth-feature-pill svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.auth-feature-pill span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.auth-feature-pill strong {
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.2;
+}
+
+.auth-feature-pill small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
 .metric-card {
   padding: 18px;
   min-height: 118px;
@@ -409,48 +453,6 @@ label span,
   color: #d6efff;
   background: linear-gradient(135deg, rgba(113, 190, 255, 0.15), rgba(113, 190, 255, 0.06));
   border: 1px solid rgba(113, 190, 255, 0.22);
-}
-
-.auth-divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-}
-
-.auth-divider::before,
-.auth-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.google-login-button {
-  width: 100%;
-  min-height: 46px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.94);
-  color: #1f2937;
-  font-weight: 700;
-}
-
-.google-login-button:hover:not(:disabled) {
-  background: #ffffff;
-  transform: translateY(-1px);
-}
-
-.google-login-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.72;
 }
 
 .sidebar-footer {
@@ -2757,6 +2759,7 @@ th {
   .hero-panel,
   .section-grid.two-col,
   .hero-grid,
+  .auth-capability-panel,
   .overview-routing-card {
     grid-template-columns: 1fr;
   }
@@ -2875,7 +2878,8 @@ th {
     padding: 16px;
   }
 
-  .hero-grid {
+  .hero-grid,
+  .auth-capability-panel {
     grid-template-columns: 1fr;
   }
 

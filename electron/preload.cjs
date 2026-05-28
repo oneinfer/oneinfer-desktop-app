@@ -4,7 +4,6 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   getState: () => ipcRenderer.invoke('app:get-state'),
   saveState: (payload) => ipcRenderer.invoke('app:save-state', payload),
   getVersion: () => ipcRenderer.invoke('app:get-version'),
-  startGoogleLogin: () => ipcRenderer.invoke('app:start-google-login'),
   getUpdateStatus: () => ipcRenderer.invoke('app:get-update-status'),
   checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
   installUpdate: () => ipcRenderer.invoke('app:install-update'),

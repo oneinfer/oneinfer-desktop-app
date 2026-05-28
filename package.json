@@ -1,8 +1,8 @@
 {
-  "name": "oneinfer-desktop",
+  "name": "oneinfer-edge",
   "version": "0.1.0",
   "private": true,
-  "description": "Cross-platform desktop client for OneInfer developer APIs.",
+  "description": "Cross-platform edge client for OneInfer developer APIs.",
   "main": "electron/main.cjs",
   "author": "OneInfer",
   "scripts": {
@@ -19,8 +19,8 @@
     "lint": "tsc --noEmit"
   },
   "build": {
-    "appId": "com.oneinfer.desktop",
-    "productName": "OneInfer Desktop",
+    "appId": "com.oneinfer.edge",
+    "productName": "OneInfer Edge",
     "icon": "build/icon.png",
     "files": [
       "dist/**/*",
@@ -35,11 +35,11 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://openbandwidth.ai/download/desktop"
+        "url": "https://openbandwidth.ai/download/edge"
       }
     ],
     "win": {
-      "artifactName": "OneInfer Desktop windows.${ext}",
+      "artifactName": "OneInfer Edge windows.${ext}",
       "icon": "build/icon.ico",
       "signAndEditExecutable": false,
       "target": [
@@ -47,7 +47,7 @@
       ]
     },
     "linux": {
-      "artifactName": "OneInfer Desktop linux.${ext}",
+      "artifactName": "OneInfer Edge linux.${ext}",
       "icon": "build/icon.png",
       "maintainer": "OneInfer <developer@oneinfer.ai>",
       "target": [

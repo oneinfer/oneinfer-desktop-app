@@ -22,7 +22,6 @@ import {
   listInferenceEndpoints,
   listIntelligentEndpoints,
   listModels,
-  loginWithGoogle,
   loginWithOtp,
   requestOtp,
   runInstanceAction,
@@ -65,6 +64,7 @@ import { getBalance } from './utils/format';
 
 const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
 const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console/credits';
+const DEV_UPDATE_DISABLED_MESSAGE = 'Auto-update is disabled in development mode.';
 
 const initialLibraryStatus: Record<ServingLibrary, boolean> = {
   vllm: false,
@@ -611,7 +611,7 @@ function App() {
       setAppVersion(version ?? '');
       if (initialUpdateStatus) {
         setUpdateStatus(initialUpdateStatus);
-        if (initialUpdateStatus.message) {
+        if (initialUpdateStatus.message && initialUpdateStatus.message !== DEV_UPDATE_DISABLED_MESSAGE) {
           setMessage({ tone: 'info', text: initialUpdateStatus.message });
         }
       }
@@ -640,7 +640,7 @@ function App() {
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onUpdateStatus?.((status) => {
       setUpdateStatus(status);
-      if (status.message) {
+      if (status.message && status.message !== DEV_UPDATE_DISABLED_MESSAGE) {
         setMessage({ tone: 'info', text: status.message });
       }
     });
@@ -717,39 +717,6 @@ function App() {
       setBusy(null);
     }
   }
-
-  const handleGoogleLogin = useCallback(async () => {
-    setBusy('google');
-    setMessage(null);
-
-    try {
-      if (!window.desktopBridge?.startGoogleLogin) {
-        throw new Error('Google desktop login is not available in this build.');
-      }
-
-      const googleAuth = await window.desktopBridge.startGoogleLogin();
-      const nextSession = await loginWithGoogle(settingsDraft.apiBaseUrl, {
-        clientId: googleAuth.clientId,
-        credential: googleAuth.credential,
-        selectBy: googleAuth.selectBy ?? '',
-        email: typeof googleAuth.credential.email === 'string' ? googleAuth.credential.email : email,
-      });
-
-      setEmail(nextSession.email);
-      setOtp('');
-      setLoginStep('email');
-      setSession(nextSession);
-      setLoadedSections(createLoadedSections());
-      setDashboard(defaultDashboardState);
-      await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
-      await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
-      setMessage({ tone: 'success', text: 'Logged in with Google.' });
-    } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Google login failed.' });
-    } finally {
-      setBusy(null);
-    }
-  }, [claudeCodeProvider, email, settingsDraft.apiBaseUrl]);
 
   async function handleEnableClaudeCode() {
     if (!session || !window.desktopBridge?.enableClaudeCode) {
@@ -1149,7 +1116,7 @@ function App() {
     } catch (error) {
       const rawErrorMessage = error instanceof Error ? error.message : 'Failed to deploy Hugging Face model locally.';
       const errorMessage = rawErrorMessage.includes('Unsupported local deployment runtime: ollama')
-        ? 'Ollama deploy support is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then deploy again.'
+        ? 'Ollama deploy support is not loaded in the Electron main process yet. Fully quit OneInfer Edge, restart with npm run dev, then deploy again.'
         : rawErrorMessage;
       const errorProgress: DesktopDeploymentProgress = {
         id: `${repoId}-${Date.now()}`,
@@ -1605,7 +1572,7 @@ function App() {
     }));
 
     if (!pytorchInstalled || !transformersInstalled) {
-      throw new Error('PyTorch and Transformers installation finished, but the app could not import both packages. Restart OneInfer Desktop or check your Python environment.');
+      throw new Error('PyTorch and Transformers installation finished, but the app could not import both packages. Restart OneInfer Edge or check your Python environment.');
     }
   }
 
@@ -1984,7 +1951,7 @@ function App() {
     } catch (error) {
       const rawErrorMessage = error instanceof Error ? error.message : 'Failed to delete local model.';
       const errorMessage = rawErrorMessage.includes("No handler registered for 'app:delete-local-model'")
-        ? 'Local model deletion is not loaded in the Electron main process yet. Fully quit OneInfer Desktop, restart with npm run dev, then delete again.'
+        ? 'Local model deletion is not loaded in the Electron main process yet. Fully quit OneInfer Edge, restart with npm run dev, then delete again.'
         : rawErrorMessage;
       setMessage({ tone: 'error', text: errorMessage });
     } finally {
@@ -2032,7 +1999,7 @@ function App() {
       <div className="shell shell-center">
         <div className="loading-card">
           <LoaderCircle className="spin" />
-          <h1>Booting OneInfer Desktop</h1>
+          <h1>Booting OneInfer Edge</h1>
           <p>Loading local session and API workspace.</p>
         </div>
       </div>
@@ -2051,7 +2018,6 @@ function App() {
         onOtpChange={setOtp}
         onOtpRequest={handleOtpRequest}
         onLogin={handleLogin}
-        onGoogleLogin={handleGoogleLogin}
         onBackToEmail={() => setLoginStep('email')}
       />
     );
