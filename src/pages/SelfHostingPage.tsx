@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
@@ -50,6 +50,7 @@ export function SelfHostingPage(props: {
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [hfAccessCheck, setHfAccessCheck] = useState<HfAccessCheckState>({ status: 'idle' });
   const analysisRef = useRef<HTMLDivElement | null>(null);
   const canShowAnalysis = Boolean(props.hfModelMetadata);
   const selectedModelValue = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
@@ -67,7 +68,53 @@ export function SelfHostingPage(props: {
   const localDeploymentRows = getLocalDeploymentRows(props.dashboard.inferenceEndpoints, props.localDeployments, props.localModelMetrics);
   const showHfAccessTokenInput = props.selfHostForm.useHfUrl
     && hasModelInput
-    && (Boolean(props.selfHostForm.hfAccessToken) || isHfAuthMetadataError(props.hfModelMetadataError));
+    && (
+      Boolean(props.selfHostForm.hfAccessToken)
+      || hfAccessCheck.status === 'requires-token'
+      || isHfAuthMetadataError(props.hfModelMetadataError)
+    );
+
+  useEffect(() => {
+    if (!props.selfHostForm.useHfUrl) {
+      setHfAccessCheck({ status: 'idle' });
+      return;
+    }
+
+    const rawValue = props.selfHostForm.hfUrl.trim();
+    if (!rawValue) {
+      setHfAccessCheck({ status: 'idle' });
+      return;
+    }
+
+    const repoId = normalizeHfRepoId(rawValue);
+    if (!repoId) {
+      setHfAccessCheck({ status: 'invalid', message: 'Enter a valid Hugging Face URL or owner/model id.' });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setHfAccessCheck({ status: 'checking', repoId });
+      try {
+        const result = await checkHfModelAccess(repoId, controller.signal);
+        setHfAccessCheck(result);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        setHfAccessCheck({
+          status: 'error',
+          repoId,
+          message: 'Unable to check Hugging Face model access.',
+        });
+      }
+    }, 500);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [props.selfHostForm.hfUrl, props.selfHostForm.useHfUrl]);
   const ctaLabel = props.busy === 'register-self-hosted'
     ? 'Deploying...'
     : props.hfModelMetadata
@@ -140,9 +187,9 @@ export function SelfHostingPage(props: {
                 <span>Model</span>
                 <select value={props.selfHostForm.model_id} onChange={(event) => updateModel({ model_id: event.target.value })}>
                   <option value="">Select a model...</option>
-                  {props.dashboard.models.map((model: any) => (
-                    <option key={model.model_id || model.id} value={model.model_id || model.id}>
-                      {model.model_name || model.displayName || model.model_id}
+                  {getCatalogModelOptions(props.dashboard.models).map((model) => (
+                    <option key={model.value} value={model.value}>
+                      {model.label}
                     </option>
                   ))}
                 </select>
@@ -163,7 +210,7 @@ export function SelfHostingPage(props: {
                       placeholder="hf_..."
                       autoComplete="off"
                     />
-                    <small className="field-help">Required for private or gated Hugging Face repositories.</small>
+                    <small className="field-help">{hfAccessCheck.message || 'Required for private or gated Hugging Face repositories.'}</small>
                   </label>
                 ) : null}
               </>
@@ -294,6 +341,103 @@ export function SelfHostingPage(props: {
 
 function isHfAuthMetadataError(value: string | null) {
   return /401|403|private|gated|restricted|auth|token|permission/i.test(value || '');
+}
+
+function getCatalogModelOptions(models: any[]): Array<{ value: string; label: string }> {
+  const seen = new Set<string>();
+  return models
+    .map((model) => {
+      const value = String(model.model_id ?? model.modelId ?? model.id ?? '').trim();
+      const label = String(model.model_name ?? model.modelName ?? model.displayName ?? value).trim();
+      return value ? { value, label: label || value } : null;
+    })
+    .filter((model): model is { value: string; label: string } => {
+      if (!model || seen.has(model.value)) {
+        return false;
+      }
+
+      seen.add(model.value);
+      return true;
+    });
+}
+
+type HfAccessCheckState = {
+  status: 'idle' | 'checking' | 'open' | 'requires-token' | 'invalid' | 'error';
+  repoId?: string;
+  message?: string;
+};
+
+function normalizeHfRepoId(value: string): string {
+  const rawValue = value.trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  const normalizeOwnerModel = (candidate: string) => {
+    const parts = candidate.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return '';
+    }
+
+    const owner = parts[0];
+    let model = parts[1];
+    const repeatedOwnerIndex = model.indexOf(owner);
+    if (repeatedOwnerIndex > 0) {
+      model = model.slice(0, repeatedOwnerIndex);
+    }
+
+    const repoId = `${owner}/${model}`;
+    return repoId.length % 2 === 0 && repoId.slice(0, repoId.length / 2) === repoId.slice(repoId.length / 2)
+      ? repoId.slice(0, repoId.length / 2)
+      : repoId;
+  };
+
+  if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
+    try {
+      const url = new URL(rawValue);
+      const parts = url.pathname.split('/').filter(Boolean);
+      return normalizeOwnerModel(parts.join('/'));
+    } catch {
+      return '';
+    }
+  }
+
+  return normalizeOwnerModel(rawValue);
+}
+
+async function checkHfModelAccess(repoId: string, signal: AbortSignal): Promise<HfAccessCheckState> {
+  const encodedRepoId = repoId.split('/').map(encodeURIComponent).join('/');
+  const response = await fetch(`https://huggingface.co/api/models/${encodedRepoId}`, { signal });
+
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    return {
+      status: 'requires-token',
+      repoId,
+      message: 'This model requires a Hugging Face token.',
+    };
+  }
+
+  if (!response.ok) {
+    return {
+      status: 'error',
+      repoId,
+      message: `Hugging Face returned HTTP ${response.status}.`,
+    };
+  }
+
+  const metadata = await response.json() as { gated?: unknown; private?: unknown };
+  const isGated = metadata.gated !== undefined && metadata.gated !== false && metadata.gated !== 'false';
+  const isPrivate = metadata.private === true || metadata.private === 'true';
+
+  if (isGated || isPrivate) {
+    return {
+      status: 'requires-token',
+      repoId,
+      message: 'This model requires a Hugging Face token.',
+    };
+  }
+
+  return { status: 'open', repoId };
 }
 
 function getSupportedPlatform(value: unknown): SupportedPlatform {

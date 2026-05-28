@@ -3,12 +3,14 @@ import type {
   ApiKeyItem,
   CreateInferenceFormState,
   CreateInstanceFormState,
+  DeveloperDesignation,
   DeveloperPlanItem,
   DesktopSession,
   EndpointItem,
   GpuSpecItem,
   InstanceItem,
   MachineDetailsItem,
+  OrganizationType,
   ProviderInfoMap,
   ServingLibrary,
 } from './types';
@@ -346,8 +348,101 @@ export async function loginWithOtp(baseUrl: string, email: string, otp: string):
 
   return {
     accessToken,
+    refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
     developerId,
     email: String(data.email ?? email),
+  };
+}
+
+export async function verifyEmail(baseUrl: string, email: string, otp: string): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: '/developer/verify-email',
+    method: 'POST',
+    body: {
+      email,
+      otp,
+    },
+  });
+}
+
+export async function verifyRegistration(baseUrl: string, email: string): Promise<{ isRegistered: boolean; session: DesktopSession | null }> {
+  const data = await request<AnyRecord>({
+    baseUrl,
+    path: '/developer/verify-registration',
+    method: 'POST',
+    query: { email },
+  });
+
+  const isRegistered = Boolean(data.is_registered ?? data.isRegistered);
+  if (!isRegistered) {
+    return { isRegistered: false, session: null };
+  }
+
+  const accessToken = String(data.access_token ?? '');
+  const developerId = String(data.developer_id ?? '');
+  if (!accessToken || !developerId) {
+    throw new Error('Registration check did not include access_token or developer_id.');
+  }
+
+  return {
+    isRegistered: true,
+    session: {
+      accessToken,
+      refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
+      developerId,
+      email: String(data.email ?? email),
+    },
+  };
+}
+
+export async function submitDeveloperConsent(baseUrl: string, email: string, isConsentGiven: boolean): Promise<AnyRecord> {
+  return request<AnyRecord>({
+    baseUrl,
+    path: '/developer/consent',
+    method: 'POST',
+    query: {
+      email,
+      is_consent_given: isConsentGiven,
+    },
+  });
+}
+
+export async function registerDeveloper(baseUrl: string, payload: {
+  email: string;
+  firstName: string;
+  lastName: string;
+  organizationType: OrganizationType;
+  organization: string | null;
+  designation: DeveloperDesignation;
+  dob: string;
+}): Promise<DesktopSession> {
+  const data = await request<AnyRecord>({
+    baseUrl,
+    path: '/developer/register',
+    method: 'POST',
+    body: {
+      email: payload.email,
+      first_name: payload.firstName,
+      last_name: payload.lastName,
+      designation: payload.designation,
+      organization_type: payload.organizationType,
+      organization: payload.organization,
+      dob: payload.dob,
+    },
+  });
+
+  const accessToken = String(data.access_token ?? '');
+  const developerId = String(data.developer_id ?? '');
+  if (!accessToken || !developerId) {
+    throw new Error('Registration response did not include access_token or developer_id.');
+  }
+
+  return {
+    accessToken,
+    refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
+    developerId,
+    email: String(data.email ?? payload.email),
   };
 }
 

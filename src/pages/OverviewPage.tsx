@@ -1,4 +1,3 @@
-import { useState, type ChangeEvent } from 'react';
 import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
@@ -159,7 +158,16 @@ export function OverviewPage(props: {
                   <strong>OpenCode</strong>
                   <span>Install OpenCode if needed and write a OneInfer-backed user config.</span>
                 </button>
-                <EnableIntegrationSwitch busy={isOpenCodeBusy} label="OpenCode" onEnable={props.onEnableOpenCode} />
+                <OneInferIntegrationAction
+                  busy={isOpenCodeBusy}
+                  label="OpenCode"
+                  toolLabel="OpenCode"
+                  onClick={() => {
+                    props.onOverviewTabChange('opencode');
+                    props.onEnableOpenCode();
+                  }}
+                  onToolClick={() => props.onOverviewTabChange('opencode')}
+                />
               </div>
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'kilocode' ? 'active' : ''}`}>
@@ -168,7 +176,16 @@ export function OverviewPage(props: {
                   <strong>Kilo Code</strong>
                   <span>Install Kilo Code if needed and write a OneInfer-backed user config.</span>
                 </button>
-                <EnableIntegrationSwitch busy={isKiloCodeBusy} label="Kilo Code" onEnable={props.onEnableKiloCode} />
+                <OneInferIntegrationAction
+                  busy={isKiloCodeBusy}
+                  label="Kilo Code"
+                  toolLabel="Kilo Code"
+                  onClick={() => {
+                    props.onOverviewTabChange('kilocode');
+                    props.onEnableKiloCode();
+                  }}
+                  onToolClick={() => props.onOverviewTabChange('kilocode')}
+                />
               </div>
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'openclaw' ? 'active' : ''}`}>
@@ -177,7 +194,16 @@ export function OverviewPage(props: {
                   <strong>OpenClaw</strong>
                   <span>Install OpenClaw if needed and write a OneInfer-backed user config.</span>
                 </button>
-                <EnableIntegrationSwitch busy={isOpenClawBusy} label="OpenClaw" onEnable={props.onEnableOpenClaw} />
+                <OneInferIntegrationAction
+                  busy={isOpenClawBusy}
+                  label="OpenClaw"
+                  toolLabel="OpenClaw"
+                  onClick={() => {
+                    props.onOverviewTabChange('openclaw');
+                    props.onEnableOpenClaw();
+                  }}
+                  onToolClick={() => props.onOverviewTabChange('openclaw')}
+                />
               </div>
             </div>
           </div>
@@ -208,39 +234,36 @@ export function OverviewPage(props: {
   );
 }
 
-function EnableIntegrationSwitch(props: {
+function OneInferIntegrationAction(props: {
   busy: boolean;
   label: string;
-  onEnable: () => void | Promise<void>;
+  toolLabel: string;
+  onClick: () => void | Promise<void>;
+  onToolClick: () => void;
 }) {
-  const [enabled, setEnabled] = useState(false);
-  const checked = enabled || props.busy;
-
-  async function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    const nextChecked = event.currentTarget.checked;
-
-    setEnabled(nextChecked);
-
-    if (nextChecked) {
-      await props.onEnable();
-    }
-  }
-
   return (
-    <label className={`settings-enable-switch${props.busy ? ' is-busy' : ''}`}>
-      <input
-        aria-label={`Enable ${props.label}`}
-        checked={checked}
+    <div className="settings-list-actions">
+      <button
+        aria-label={`Enable ${props.label} with OneInfer`}
+        className="settings-mini-action active"
         disabled={props.busy}
-        onChange={handleChange}
-        type="checkbox"
-      />
-      <span className="settings-enable-switch-track" aria-hidden="true">
-        <span className="settings-enable-switch-thumb">
-          {props.busy ? <LoaderCircle className="spin" size={12} /> : null}
-        </span>
-      </span>
-    </label>
+        onClick={props.onClick}
+        type="button"
+      >
+        {props.busy ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
+        OneInfer
+      </button>
+      <button
+        aria-label={`Select ${props.toolLabel}`}
+        className="settings-mini-action tool"
+        disabled={props.busy}
+        onClick={props.onToolClick}
+        type="button"
+      >
+        <Blocks size={14} />
+        {props.toolLabel}
+      </button>
+    </div>
   );
 }
 

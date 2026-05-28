@@ -22,9 +22,12 @@ import {
   listInferenceEndpoints,
   listIntelligentEndpoints,
   listModels,
-  loginWithOtp,
+  registerDeveloper,
   requestOtp,
   runInstanceAction,
+  submitDeveloperConsent,
+  verifyEmail,
+  verifyRegistration,
 } from './api';
 import { AppLayout } from './components/AppLayout';
 import { HfModelDetailPanel } from './components/HfModelDetailPanel';
@@ -50,6 +53,7 @@ import { SettingsPage, type SettingsTab } from './pages/SettingsPage';
 import type {
   CreateInferenceFormState,
   CreateInstanceFormState,
+  AuthStep,
   DashboardState,
   DesktopSession,
   EndpointItem,
@@ -57,6 +61,7 @@ import type {
   InstanceItem,
   LocalModelDeployment,
   LocalModelMetrics,
+  RegistrationFormState,
   SectionKey,
   ServingLibrary,
 } from './types';
@@ -65,6 +70,16 @@ import { getBalance } from './utils/format';
 const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
 const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console/credits';
 const DEV_UPDATE_DISABLED_MESSAGE = 'Auto-update is disabled in development mode.';
+
+const defaultRegistrationForm: RegistrationFormState = {
+  firstName: '',
+  lastName: '',
+  organizationType: '',
+  organization: '',
+  designation: '',
+  dob: '',
+  acceptedTerms: false,
+};
 
 const initialLibraryStatus: Record<ServingLibrary, boolean> = {
   vllm: false,
@@ -83,13 +98,32 @@ function normalizeHfRepoId(value: string): string {
     return '';
   }
 
+  const normalizeOwnerModel = (candidate: string) => {
+    const parts = candidate.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return '';
+    }
+
+    const owner = parts[0];
+    let model = parts[1];
+    const repeatedOwnerIndex = model.indexOf(owner);
+    if (repeatedOwnerIndex > 0) {
+      model = model.slice(0, repeatedOwnerIndex);
+    }
+
+    const repoId = `${owner}/${model}`;
+    return repoId.length % 2 === 0 && repoId.slice(0, repoId.length / 2) === repoId.slice(repoId.length / 2)
+      ? repoId.slice(0, repoId.length / 2)
+      : repoId;
+  };
+
   if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
     const url = new URL(rawValue);
     const parts = url.pathname.split('/').filter(Boolean);
-    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+    return normalizeOwnerModel(parts.join('/'));
   }
 
-  return rawValue.includes('/') ? rawValue : '';
+  return rawValue.includes('/') ? normalizeOwnerModel(rawValue) : '';
 }
 
 function normalizeLocalModelId(value: string): string {
@@ -103,6 +137,64 @@ function normalizeLocalModelId(value: string): string {
   }
 
   return normalizeHfRepoId(rawValue) || rawValue;
+}
+
+function calculateAge(birthDate: string): number {
+  const today = new Date();
+  const birth = new Date(birthDate);
+  let age = today.getFullYear() - birth.getFullYear();
+  const monthDiff = today.getMonth() - birth.getMonth();
+
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+    age -= 1;
+  }
+
+  return age;
+}
+
+function formatDateForApi(dateString: string): string {
+  if (!dateString) {
+    return '';
+  }
+
+  const [year, month, day] = dateString.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function validateRegistrationForm(form: RegistrationFormState): string | null {
+  if (form.firstName.trim().length < 2) {
+    return 'First name must be at least 2 characters.';
+  }
+
+  if (form.lastName.trim().length < 2) {
+    return 'Last name must be at least 2 characters.';
+  }
+
+  if (!form.dob) {
+    return 'Date of birth is required.';
+  }
+
+  if (calculateAge(form.dob) < 18) {
+    return 'You must be at least 18 years old to register.';
+  }
+
+  if (form.organizationType !== 'individual' && form.organizationType !== 'business') {
+    return 'Please select an organization type.';
+  }
+
+  if (form.organizationType === 'business' && form.organization.trim().length < 2) {
+    return 'Organization name must be at least 2 characters.';
+  }
+
+  if (!form.designation) {
+    return 'Please select your designation.';
+  }
+
+  if (!form.acceptedTerms) {
+    return 'You must accept the Terms and Privacy Policy.';
+  }
+
+  return null;
 }
 
 function App() {
@@ -122,8 +214,9 @@ function App() {
   });
   const [loadedSections, setLoadedSections] = useState<Record<SectionKey, boolean>>(createLoadedSections);
   const [email, setEmail] = useState('');
-  const [loginStep, setLoginStep] = useState<'email' | 'otp'>('email');
+  const [loginStep, setLoginStep] = useState<AuthStep>('email');
   const [otp, setOtp] = useState('');
+  const [registrationForm, setRegistrationForm] = useState<RegistrationFormState>(defaultRegistrationForm);
   const [selfHostForm, setSelfHostForm] = useState<SelfHostFormState>({
     name: '',
     model_id: '',
@@ -688,14 +781,26 @@ function App() {
     setMessage(null);
 
     try {
-      await requestOtp(settingsDraft.apiBaseUrl, email);
+      const trimmedEmail = email.trim();
+      await requestOtp(settingsDraft.apiBaseUrl, trimmedEmail);
+      setEmail(trimmedEmail);
       setLoginStep('otp');
-      setMessage({ tone: 'success', text: `OTP sent to ${email}.` });
+      setOtp('');
+      setMessage({ tone: 'success', text: `OTP sent to ${trimmedEmail}.` });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to request OTP.' });
     } finally {
       setBusy(null);
     }
+  }
+
+  async function completeAuth(nextSession: DesktopSession, successMessage: string) {
+    setSession(nextSession);
+    setLoadedSections(createLoadedSections());
+    setDashboard(defaultDashboardState);
+    await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
+    await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
+    setMessage({ tone: 'success', text: successMessage });
   }
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
@@ -704,15 +809,61 @@ function App() {
     setMessage(null);
 
     try {
-      const nextSession = await loginWithOtp(settingsDraft.apiBaseUrl, email, otp);
-      setSession(nextSession);
-      setLoadedSections(createLoadedSections());
-      setDashboard(defaultDashboardState);
-      await persistState(nextSession, settingsDraft.apiBaseUrl, claudeCodeProvider);
-      await loadSectionData('overview', nextSession, settingsDraft.apiBaseUrl, { force: true });
-      setMessage({ tone: 'success', text: 'Logged in successfully.' });
+      const trimmedEmail = email.trim();
+      const trimmedOtp = otp.trim();
+      if (trimmedOtp.length !== 6) {
+        throw new Error('Please enter the 6-digit OTP.');
+      }
+
+      await verifyEmail(settingsDraft.apiBaseUrl, trimmedEmail, trimmedOtp);
+      const registration = await verifyRegistration(settingsDraft.apiBaseUrl, trimmedEmail);
+
+      if (!registration.isRegistered) {
+        setLoginStep('registration');
+        setRegistrationForm((current) => ({ ...current }));
+        setMessage({ tone: 'info', text: 'Email verified. Complete your profile to finish registration.' });
+        return;
+      }
+
+      if (!registration.session) {
+        throw new Error('Registration check did not return a session.');
+      }
+
+      await completeAuth(registration.session, 'Logged in successfully.');
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Login failed.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy('registration');
+    setMessage(null);
+
+    try {
+      const validationError = validateRegistrationForm(registrationForm);
+      if (validationError) {
+        throw new Error(validationError);
+      }
+
+      const trimmedEmail = email.trim();
+      await submitDeveloperConsent(settingsDraft.apiBaseUrl, trimmedEmail, true);
+      const nextSession = await registerDeveloper(settingsDraft.apiBaseUrl, {
+        email: trimmedEmail,
+        firstName: registrationForm.firstName.trim(),
+        lastName: registrationForm.lastName.trim(),
+        organizationType: registrationForm.organizationType || 'individual',
+        organization: registrationForm.organizationType === 'business' ? registrationForm.organization.trim() : null,
+        designation: registrationForm.designation || 'developer',
+        dob: formatDateForApi(registrationForm.dob),
+      });
+
+      setRegistrationForm(defaultRegistrationForm);
+      await completeAuth(nextSession, 'Registration completed successfully.');
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Registration failed.' });
     } finally {
       setBusy(null);
     }
@@ -2014,11 +2165,17 @@ function App() {
         loginStep={loginStep}
         busy={busy}
         message={message}
+        registrationForm={registrationForm}
         onEmailChange={setEmail}
         onOtpChange={setOtp}
+        onRegistrationChange={setRegistrationForm}
         onOtpRequest={handleOtpRequest}
         onLogin={handleLogin}
-        onBackToEmail={() => setLoginStep('email')}
+        onRegistration={handleRegistration}
+        onBackToEmail={() => {
+          setLoginStep('email');
+          setOtp('');
+        }}
       />
     );
   }
