@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   getUpdateStatus: () => ipcRenderer.invoke('app:get-update-status'),
   checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
   installUpdate: () => ipcRenderer.invoke('app:install-update'),
+  openExternalUrl: (payload) => ipcRenderer.invoke('app:open-external-url', payload),
   onUpdateStatus: (listener) => {
     const handler = (_event, status) => listener(status);
     ipcRenderer.on('app:update-status', handler);

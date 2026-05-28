@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { LoaderCircle } from 'lucide-react';
+import { LoaderCircle, Plus } from 'lucide-react';
 
 import {
   createApiKey,
@@ -64,6 +64,7 @@ import type {
 import { getBalance } from './utils/format';
 
 const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
+const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console/credits';
 
 const initialLibraryStatus: Record<ServingLibrary, boolean> = {
   vllm: false,
@@ -194,7 +195,9 @@ function App() {
               setHfModelMetadata(info);
             }
 
-            const memoryBreakdown = getModelMemoryBreakdown(info);
+            const memoryBreakdown = getModelMemoryBreakdown(info, {
+              servingLibrary: selfHostForm.serving_library,
+            });
             const sizeGb = memoryBreakdown.modelWeightGb;
 
             if (sizeGb > 0) {
@@ -241,6 +244,7 @@ function App() {
           const catalogMemoryBreakdown = getModelMemoryBreakdown(virtualMetadata, {
             modelWeightGb: catalogModelWeightGb,
             contextLength: catalogContextLength || undefined,
+            servingLibrary: selfHostForm.serving_library,
           });
           const catalogMinVramGb = Number(catalogModel.modelMinVram || catalogModel.model_min_vram || 0);
 
@@ -274,7 +278,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.hfAccessToken, selfHostForm.useHfUrl, dashboard.machineDetails, dashboard.models, session]);
+  }, [selfHostForm.model_id, selfHostForm.hfUrl, selfHostForm.hfAccessToken, selfHostForm.useHfUrl, selfHostForm.serving_library, dashboard.machineDetails, dashboard.models, session]);
 
   useEffect(() => {
     async function checkLibs() {
@@ -1829,6 +1833,91 @@ function App() {
     }
   }
 
+  async function handleStartLocalDeployment(deployment: {
+    endpointId: string;
+    endpointUrl: string;
+    modelId: string;
+    name: string;
+    runtime: string;
+  }) {
+    if (!window.desktopBridge?.deployHfModel) {
+      setMessage({ tone: 'error', text: 'Local model start is not available in this app build.' });
+      return;
+    }
+
+    const runtime = deployment.runtime as ServingLibrary;
+    if (!isLaunchableLocalRuntime(runtime)) {
+      setMessage({ tone: 'error', text: `${formatLocalRuntime(runtime)} endpoints must be started manually, then registered with their OpenAI-compatible URL.` });
+      return;
+    }
+
+    if (!libraries[runtime]) {
+      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(runtime)} before starting this local endpoint.` });
+      return;
+    }
+
+    const port = getPortFromLocalEndpointUrl(deployment.endpointUrl);
+    if (runtime !== 'ollama' && !port) {
+      setMessage({ tone: 'error', text: `Could not read a local port from ${deployment.endpointUrl}. Update the endpoint URL, then try again.` });
+      return;
+    }
+
+    const progressId = `${deployment.modelId}-${Date.now()}`;
+    setBusy(`start-local:${deployment.endpointUrl}`);
+    setDeploymentProgress([{
+      id: progressId,
+      stage: 'starting',
+      message: `Starting ${deployment.name}.`,
+      detail: deployment.endpointUrl,
+      level: 'info',
+      timestamp: Date.now(),
+    }]);
+
+    try {
+      const started = await window.desktopBridge.deployHfModel({
+        repoId: deployment.modelId,
+        runtime,
+        port: runtime === 'ollama' ? undefined : port,
+        exactPort: runtime !== 'ollama',
+        progressId,
+      });
+      const nextDeployment: LocalModelDeployment = {
+        endpointId: deployment.endpointId,
+        endpointUrl: deployment.endpointUrl,
+        modelId: started.modelId || deployment.modelId,
+        name: deployment.name,
+        pid: started.pid,
+        runtime: started.runtime,
+        deployedAt: new Date().toISOString(),
+      };
+      let nextLocalDeployments: LocalModelDeployment[] = [];
+      setLocalDeployments((current) => {
+        nextLocalDeployments = [
+          nextDeployment,
+          ...current.filter((item) => !isSameLocalDeploymentByKey(item, nextDeployment)),
+        ];
+        return nextLocalDeployments;
+      });
+
+      if (window.desktopBridge.getLocalModelMetrics) {
+        const metrics = await window.desktopBridge.getLocalModelMetrics({ endpointUrl: deployment.endpointUrl });
+        setLocalModelMetrics((current) => ({
+          ...current,
+          [deployment.endpointUrl]: metrics,
+          [normalizeLocalEndpointUrl(deployment.endpointUrl)]: metrics,
+        }));
+      }
+
+      await persistState(session, settingsDraft.apiBaseUrl, claudeCodeProvider, nextLocalDeployments);
+      setMessage({ tone: 'success', text: `${deployment.name} is online.` });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to start local model.';
+      setMessage({ tone: 'error', text: errorMessage });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleDeleteLocalDeployment(deployment: {
     endpointId: string;
     endpointUrl: string;
@@ -1925,6 +2014,19 @@ function App() {
     }
   }
 
+  async function handleAddCredits() {
+    try {
+      if (window.desktopBridge?.openExternalUrl) {
+        await window.desktopBridge.openExternalUrl({ url: ONEINFER_CREDITS_URL });
+        return;
+      }
+
+      window.open(ONEINFER_CREDITS_URL, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to open credits page.' });
+    }
+  }
+
   if (booting) {
     return (
       <div className="shell shell-center">
@@ -1975,6 +2077,14 @@ function App() {
           <div className="top-credit-pill">
             <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
             <span>Available Credits</span>
+            <button
+              className="top-credit-action"
+              type="button"
+              onClick={handleAddCredits}
+            >
+              <Plus size={13} />
+              Add credits
+            </button>
           </div>
         </div>
       ) : null}
@@ -2037,6 +2147,7 @@ function App() {
               return handleDeploySelfHostedModel();
             }}
             onInstallLibrary={handleInstallLibrary}
+            onStartLocalDeployment={handleStartLocalDeployment}
             onUseInRoute={handleUseEndpointInRoute}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
@@ -2659,6 +2770,16 @@ function uniqueStrings(values: unknown[]): string[] {
 
 function normalizeLocalEndpointUrl(endpointUrl: string): string {
   return endpointUrl.trim().replace('://localhost', '://127.0.0.1').replace('://0.0.0.0', '://127.0.0.1').replace(/\/+$/, '');
+}
+
+function getPortFromLocalEndpointUrl(endpointUrl: string): number | undefined {
+  try {
+    const parsedUrl = new URL(normalizeLocalEndpointUrl(endpointUrl));
+    const port = Number(parsedUrl.port);
+    return Number.isInteger(port) && port > 0 ? port : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveCloudModelId(input: string, models: any[]): string {

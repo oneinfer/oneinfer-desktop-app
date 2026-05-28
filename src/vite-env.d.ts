@@ -144,6 +144,7 @@ interface Window {
     getUpdateStatus: () => Promise<DesktopUpdateStatus>;
     checkForUpdates: () => Promise<DesktopUpdateStatus>;
     installUpdate: () => Promise<DesktopUpdateStatus>;
+    openExternalUrl: (payload: { url: string }) => Promise<{ opened: boolean; url: string }>;
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
     onDeploymentProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
@@ -173,6 +174,7 @@ interface Window {
     deployHfModel: (payload: {
       repoId: string;
       port?: number;
+      exactPort?: boolean;
       runtime?: DesktopLaunchableServingLibrary;
       role?: 'model' | 'router';
       healthTimeoutMs?: number;

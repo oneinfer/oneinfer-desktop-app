@@ -3,14 +3,17 @@ import { Rocket, Sparkles, X } from 'lucide-react';
 
 import { formatValue } from '../utils/format';
 
-export function Panel(props: { title: string; icon: typeof Sparkles; children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
+export function Panel(props: { title: string; icon: typeof Sparkles; children: React.ReactNode; className?: string; description?: string; style?: React.CSSProperties }) {
   const Icon = props.icon;
   return (
     <section className={`content-panel glass-panel ${props.className || ''}`} style={props.style}>
       <div className="panel-header">
         <div className="panel-title">
           <Icon size={18} />
-          <h3>{props.title}</h3>
+          <div>
+            <h3>{props.title}</h3>
+            {props.description ? <p className="panel-description">{props.description}</p> : null}
+          </div>
         </div>
       </div>
       {props.children}

@@ -398,6 +398,15 @@ function readState() {
       state = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch {}
   }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    state = { settings: {}, session: null };
+  }
+  if (!state.settings || typeof state.settings !== 'object' || Array.isArray(state.settings)) {
+    state.settings = {};
+  }
+  if (state.settings.claudeCodeProvider !== 'oneinfer' && state.settings.claudeCodeProvider !== 'anthropic') {
+    state.settings.claudeCodeProvider = 'anthropic';
+  }
 
   try {
     const devSessionPath = path.join(os.homedir(), '.oneinfer', 'developer_session.json');
@@ -422,16 +431,26 @@ function readState() {
 
 function writeState(nextState) {
   const filePath = getStateFilePath();
+  const normalizedState = nextState && typeof nextState === 'object' && !Array.isArray(nextState)
+    ? { ...nextState }
+    : { settings: {}, session: null };
+  normalizedState.settings = normalizedState.settings && typeof normalizedState.settings === 'object' && !Array.isArray(normalizedState.settings)
+    ? { ...normalizedState.settings }
+    : {};
+  if (normalizedState.settings.claudeCodeProvider !== 'oneinfer' && normalizedState.settings.claudeCodeProvider !== 'anthropic') {
+    normalizedState.settings.claudeCodeProvider = 'anthropic';
+  }
+
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(nextState, null, 2), 'utf8');
+  fs.writeFileSync(filePath, JSON.stringify(normalizedState, null, 2), 'utf8');
 
   try {
     const devSessionPath = path.join(os.homedir(), '.oneinfer', 'developer_session.json');
-    if (nextState && nextState.session) {
+    if (normalizedState && normalizedState.session) {
       const sessionData = {
-        access_token: nextState.session.accessToken,
-        developer_id: nextState.session.developerId,
-        email: nextState.session.email
+        access_token: normalizedState.session.accessToken,
+        developer_id: normalizedState.session.developerId,
+        email: normalizedState.session.email
       };
       fs.mkdirSync(path.dirname(devSessionPath), { recursive: true });
       fs.writeFileSync(devSessionPath, JSON.stringify(sessionData, null, 2), 'utf8');
@@ -441,6 +460,8 @@ function writeState(nextState) {
   } catch (err) {
     console.error('[state] failed to sync developer_session.json', err);
   }
+
+  return normalizedState;
 }
 
 function readJsonFile(filePath, fallbackValue = null) {
@@ -2288,7 +2309,17 @@ async function deployHfModel(payload = {}) {
     }
   }
 
-  const port = await findAvailablePort(payload.port || 8000);
+  const requestedPort = payload.port || 8000;
+  const port = payload.exactPort ? Number(requestedPort) : await findAvailablePort(requestedPort);
+  if (payload.exactPort) {
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error(`Invalid local port: ${requestedPort}.`);
+    }
+
+    if (!await isPortAvailable(port)) {
+      throw new Error(`Local port ${port} is already in use. Stop the existing process or update the saved endpoint URL.`);
+    }
+  }
   assertDeploymentNotCancelled(repoId);
   const endpointUrl = `http://127.0.0.1:${port}/v1`;
   const inFlight = localModelDeploymentsInFlight.get(repoId);
@@ -3036,6 +3067,7 @@ function configureClaudeCodeSettings(payload) {
   const anthropicBaseUrl = deriveClaudeBaseUrl(apiBaseUrl);
   const anthropicModel =
     toTrimmedString(payload?.anthropicModel)
+    || getClaudeModel(existingSettings, DEFAULT_ONEINFER_MODEL)
     || DEFAULT_ONEINFER_MODEL;
   const configuredGitBashPath = toTrimmedString(existingEnv.CLAUDE_CODE_GIT_BASH_PATH);
   const gitBashPath = configuredGitBashPath && fs.existsSync(configuredGitBashPath)
@@ -3095,17 +3127,30 @@ function resetClaudeCodeSettings(payload) {
   const { settingsFilePath, existingSettings } = readClaudeSettings();
   const anthropicModel =
     toTrimmedString(payload?.anthropicModel)
-    || toTrimmedString(existingSettings.model)
+    || getClaudeModel(existingSettings)
     || DEFAULT_CLAUDE_MODEL;
+  const existingEnv = getClaudeSettingsEnv(existingSettings);
+  const nextEnv = { ...existingEnv };
+  delete nextEnv.ANTHROPIC_BASE_URL;
+  delete nextEnv.ANTHROPIC_AUTH_TOKEN;
+  delete nextEnv.ANTHROPIC_MODEL;
+
   const nextSettings = {
+    ...existingSettings,
     model: anthropicModel,
   };
+  delete nextSettings.env;
+  if (Object.keys(nextEnv).length > 0) {
+    nextSettings.env = nextEnv;
+  }
 
   fs.mkdirSync(path.dirname(settingsFilePath), { recursive: true });
   fs.writeFileSync(settingsFilePath, `${JSON.stringify(nextSettings, null, 2)}\n`, 'utf8');
 
   return {
-    alreadyConfigured: Object.keys(existingSettings).length === 1 && toTrimmedString(existingSettings.model) === anthropicModel,
+    alreadyConfigured: !toTrimmedString(existingEnv.ANTHROPIC_BASE_URL)
+      && !toTrimmedString(existingEnv.ANTHROPIC_AUTH_TOKEN)
+      && toTrimmedString(existingSettings.model) === anthropicModel,
     anthropicBaseUrl: null,
     anthropicModel,
     apiKeyName: null,
@@ -3907,6 +3952,16 @@ function getFastNetworkInterfaces() {
   });
 }
 
+async function openExternalUrl(payload = {}) {
+  const url = String(payload.url || '').trim();
+  if (!/^https:\/\/oneinfer\.ai\//i.test(url)) {
+    throw new Error('Only OneInfer links can be opened from this action.');
+  }
+
+  await shell.openExternal(url);
+  return { opened: true, url };
+}
+
 async function collectMachineDetails() {
   const fastOsInfo = getFastOsInfo();
   const fastCpu = getFastCpuInfo();
@@ -4279,9 +4334,9 @@ app.whenReady().then(() => {
     return state;
   });
   ipcMain.handle('app:save-state', (_event, payload) => {
-    writeState(payload);
-    triggerMachineSyncFromState(payload);
-    return payload;
+    const state = writeState(payload);
+    triggerMachineSyncFromState(state);
+    return state;
   });
   ipcMain.handle('app:get-version', () => app.getVersion());
   ipcMain.handle('app:start-google-login', async () => startGoogleDesktopLogin());
@@ -4312,6 +4367,7 @@ app.whenReady().then(() => {
 
     return { ...updateState };
   });
+  ipcMain.handle('app:open-external-url', async (_event, payload) => openExternalUrl(payload));
   ipcMain.handle('app:get-machine-details', async () => collectMachineDetails());
   ipcMain.handle('app:sync-machine-details', async (_event, payload) => syncMachineDetails(payload, { force: true }));
   ipcMain.handle('app:enable-claude-code', async (_event, payload) => enableClaudeCode(payload));
