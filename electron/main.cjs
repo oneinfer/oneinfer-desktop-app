@@ -2449,9 +2449,10 @@ async function chooseLocalRouteCandidate(route, requestPayload) {
   const routerPrompt = [
     'Select the best endpoint for this request.',
     'Return only the endpoint id, name, or index.',
-    `Endpoints: ${candidates.map((candidate, index) => `${index}: ${candidate.name || candidate.id} (${candidate.modelId || 'unknown model'})`).join('; ')}`,
+    route.description ? `Route goal: ${route.description}` : '',
+    `Endpoints:\n${candidates.map((candidate, index) => formatRouteCandidateForPrompt(candidate, index)).join('\n')}`,
     `Request: ${JSON.stringify(requestPayload.messages || requestPayload.prompt || requestPayload).slice(0, 4000)}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   try {
     const routerResponse = await postOpenAiChatCompletion(route.routerEndpointUrl, {
@@ -2495,6 +2496,14 @@ async function startLocalRoute(payload = {}) {
           id: String(candidate.endpoint_id || candidate.id || candidate.endpointUrl || ''),
           name: String(candidate.endpoint_name || candidate.name || candidate.model_id || candidate.modelId || candidate.endpointUrl || 'endpoint'),
           modelId: String(candidate.model_id || candidate.modelId || candidate.name || ''),
+          description: String(candidate.model_description || candidate.modelDescription || candidate.description || ''),
+          contextLength: String(candidate.model_context_length || candidate.modelContextLength || ''),
+          parameters: String(candidate.model_parameters || candidate.modelParameters || ''),
+          tags: Array.isArray(candidate.model_tags)
+            ? candidate.model_tags.map((tag) => String(tag)).filter(Boolean)
+            : Array.isArray(candidate.tags)
+              ? candidate.tags.map((tag) => String(tag)).filter(Boolean)
+              : [],
           endpointUrl: normalizeOpenAiBaseUrl(candidate.endpoint_url || candidate.endpointUrl || ''),
           authorization: candidate.authorization || candidate.api_key ? `Bearer ${candidate.api_key}` : undefined,
         }))
@@ -2510,6 +2519,7 @@ async function startLocalRoute(payload = {}) {
   const route = {
     routeId,
     name: String(payload.name || routeId),
+    description: String(payload.description || ''),
     routerEndpointUrl,
     routerModelId: String(payload.routerModelId || ''),
     candidates,
@@ -2571,6 +2581,19 @@ async function startLocalRoute(payload = {}) {
     port,
     routeId,
   };
+}
+
+function formatRouteCandidateForPrompt(candidate, index) {
+  const parts = [
+    `${index}: ${candidate.name || candidate.id}`,
+    `model=${candidate.modelId || 'unknown'}`,
+    candidate.description ? `description=${candidate.description.slice(0, 800)}` : '',
+    candidate.tags?.length ? `tags=${candidate.tags.join(', ')}` : '',
+    candidate.parameters ? `parameters=${candidate.parameters}` : '',
+    candidate.contextLength ? `context_length=${candidate.contextLength}` : '',
+  ].filter(Boolean);
+
+  return `- ${parts.join('; ')}`;
 }
 
 async function stopLocalRoute(payload = {}) {

@@ -182,6 +182,7 @@ interface Window {
     startLocalRoute: (payload: {
       routeId?: string;
       name?: string;
+      description?: string;
       routerEndpointUrl?: string;
       routerModelId?: string;
       candidates: Array<Record<string, unknown>>;

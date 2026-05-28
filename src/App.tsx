@@ -49,6 +49,7 @@ import { RoutingPage, type CreateRoutePayload } from './pages/RoutingPage';
 import { SelfHostingPage, type SelfHostFormState } from './pages/SelfHostingPage';
 import { SettingsPage, type SettingsTab } from './pages/SettingsPage';
 import type {
+  CreateInferenceFormState,
   CreateInstanceFormState,
   DashboardState,
   DesktopSession,
@@ -921,6 +922,7 @@ function App() {
     setBusy('register-self-hosted');
     try {
       const manualRuntime = selfHostForm.serving_library || getLocalRuntimeFromEndpointUrl(selfHostForm.endpoint_url);
+      const routingMetadata = buildHfRoutingMetadata(hfModelMetadata);
       await validateSelfHostedEndpointRegistration(selfHostForm.endpoint_url.trim(), modelId, selfHostForm.name.trim() || modelId);
       const registeredEndpoint = await createInferenceEndpoint(settingsDraft.apiBaseUrl, session, {
         name: selfHostForm.name,
@@ -930,6 +932,7 @@ function App() {
         endpoint_url: selfHostForm.endpoint_url.trim(),
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
+        ...routingMetadata.endpointFields,
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
@@ -940,6 +943,7 @@ function App() {
           endpointId: getEndpointIdFromPayload(registeredEndpoint),
           endpointUrl: selfHostForm.endpoint_url.trim(),
           modelId,
+          ...routingMetadata.deploymentFields,
           name: selfHostForm.name.trim() || modelId,
           pid: null,
           runtime: manualRuntime,
@@ -1062,9 +1066,11 @@ function App() {
         endpoint_url: deployment.endpointUrl,
       }));
       const deployedAt = new Date().toISOString();
+      const routingMetadata = buildHfRoutingMetadata(hfModelMetadata);
       const localDeploymentRecord: LocalModelDeployment = {
         endpointUrl: deployment.endpointUrl,
         modelId: deployment.modelId,
+        ...routingMetadata.deploymentFields,
         name: selfHostForm.name.trim() || repoId,
         pid: deployment.pid,
         runtime: deployment.runtime,
@@ -1096,6 +1102,7 @@ function App() {
         endpoint_url: deployment.endpointUrl,
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
+        ...routingMetadata.endpointFields,
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
@@ -1504,6 +1511,7 @@ function App() {
           const localRoute = await window.desktopBridge.startLocalRoute({
             routeId: createdRouteId,
             name: routeName,
+            description: payload.description,
             routerEndpointUrl: routerDeployment.endpointUrl,
             routerModelId: routerDeployment.modelId,
             candidates: localRouteCandidates,
@@ -1663,6 +1671,11 @@ function App() {
         endpoint_url: deployment.endpointUrl,
         machine_id: detectedMachineId,
         machine_name: detectedMachineName,
+        model_description: deployment.modelDescription,
+        model_context_length: deployment.modelContextLength,
+        model_parameters: deployment.modelParameters,
+        model_tags: deployment.modelTags,
+        model_pipeline_tag: deployment.modelPipelineTag,
         top_p: 0.9,
         temperature: 0.7,
         max_tokens: 4096,
@@ -1753,6 +1766,7 @@ function App() {
     return window.desktopBridge.startLocalRoute({
       routeId,
       name: String(record.name ?? routeId),
+      description: String(routingConfig.description ?? record.description ?? ''),
       routerEndpointUrl,
       routerModelId: String(routingConfig.routing_algorithm ?? ''),
       candidates,
@@ -2113,24 +2127,27 @@ function buildAttachedInferenceEndpointPayload(
   localDeployments: LocalModelDeployment[],
   models: Record<string, unknown>[],
 ) {
-      const endpoint = inferenceEndpoints.find((item) => {
-        const record = item as Record<string, unknown>;
-        return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
-      });
+  const endpoint = inferenceEndpoints.find((item) => {
+    const record = item as Record<string, unknown>;
+    return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.id ?? '') === endpointId;
+  });
   const instance = instances.find((item) => {
     const record = item as Record<string, unknown>;
     return String(record.inference_endpoint_id ?? record.endpoint_id ?? record.instance_id ?? record.unique_instance_id ?? record.id ?? '') === endpointId;
   });
   const localDeployment = localDeployments.find((item) => getLocalDeploymentSelectionId(item) === endpointId);
-  const model = models.find((item) => {
-    const record = item as Record<string, unknown>;
-    return String(record.modelId ?? record.model_id ?? record.id ?? '') === modelId;
-  });
   const endpointRecord = (endpoint ?? instance ?? (localDeployment ? {
     name: localDeployment.name,
     model_id: localDeployment.modelId,
     endpoint_url: localDeployment.endpointUrl,
+    model_description: localDeployment.modelDescription,
+    model_context_length: localDeployment.modelContextLength,
+    model_parameters: localDeployment.modelParameters,
+    model_tags: localDeployment.modelTags,
+    model_pipeline_tag: localDeployment.modelPipelineTag,
   } : {})) as Record<string, unknown>;
+  const endpointModelId = String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? modelId ?? '');
+  const model = findModelMetadata(models, endpointModelId || modelId);
   const modelRecord = (model ?? {}) as Record<string, unknown>;
   const outputModalities = Array.isArray(modelRecord.outputModalities)
     ? modelRecord.outputModalities
@@ -2142,10 +2159,174 @@ function buildAttachedInferenceEndpointPayload(
     endpoint_id: endpoint ? endpointId : localDeployment ? getLocalDeploymentSelectionId(localDeployment) : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
     endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
-    model_id: String(endpointRecord.model_id ?? endpointRecord.modelId ?? localDeployment?.modelId ?? ''),
+    model_id: endpointModelId,
+    model_description: getModelRoutingDescription(endpointRecord, modelRecord),
+    model_context_length: getFirstStringValue(modelRecord.modelContextLength, modelRecord.model_context_length, endpointRecord.model_context_length, endpointRecord.modelContextLength),
+    model_parameters: getFirstStringValue(modelRecord.modelParameters, modelRecord.model_parameters, endpointRecord.model_parameters, endpointRecord.modelParameters),
+    model_tags: getStringArrayValue(modelRecord.displayTags, modelRecord.display_tags, modelRecord.tags, endpointRecord.model_tags, endpointRecord.tags),
+    benchmark_info: typeof modelRecord.benchmarkInfo === 'object' && modelRecord.benchmarkInfo
+      ? modelRecord.benchmarkInfo
+      : typeof modelRecord.benchmark_info === 'object' && modelRecord.benchmark_info
+        ? modelRecord.benchmark_info
+        : undefined,
     input_modality: inputModality,
     output_modality: String(outputModalities[0] ?? 'text'),
   };
+}
+
+function findModelMetadata(models: Record<string, unknown>[], modelId: string): Record<string, unknown> | undefined {
+  const normalizedModelId = normalizeModelLookupValue(modelId);
+  if (!normalizedModelId) {
+    return undefined;
+  }
+
+  return models.find((item) => {
+    const record = item as Record<string, unknown>;
+    return [
+      record.modelId,
+      record.model_id,
+      record.id,
+      record.modelName,
+      record.model_name,
+      record.displayName,
+      record.display_name,
+    ].some((value) => normalizeModelLookupValue(value) === normalizedModelId);
+  }) as Record<string, unknown> | undefined;
+}
+
+function getModelRoutingDescription(endpointRecord: Record<string, unknown>, modelRecord: Record<string, unknown>): string {
+  const description = getFirstStringValue(
+    modelRecord.Description,
+    modelRecord.description,
+    modelRecord.model_description,
+    modelRecord.modelDescription,
+    endpointRecord.model_description,
+    endpointRecord.modelDescription,
+    endpointRecord.description,
+  );
+  const tags = getStringArrayValue(modelRecord.displayTags, modelRecord.display_tags, modelRecord.tags, endpointRecord.model_tags, endpointRecord.tags);
+  const contextLength = getFirstStringValue(modelRecord.modelContextLength, modelRecord.model_context_length, endpointRecord.model_context_length, endpointRecord.modelContextLength);
+  const parameters = getFirstStringValue(modelRecord.modelParameters, modelRecord.model_parameters, endpointRecord.model_parameters, endpointRecord.modelParameters);
+  const modalities = [
+    ...getStringArrayValue(modelRecord.inputModalities, modelRecord.input_modalities),
+    ...getStringArrayValue(modelRecord.outputModalities, modelRecord.output_modalities),
+  ];
+  const hints = [
+    description,
+    tags.length ? `Tags: ${tags.join(', ')}` : '',
+    parameters ? `Parameters: ${parameters}` : '',
+    contextLength ? `Context length: ${contextLength}` : '',
+    modalities.length ? `Modalities: ${Array.from(new Set(modalities)).join(', ')}` : '',
+  ].filter(Boolean);
+
+  return hints.join(' ');
+}
+
+function buildHfRoutingMetadata(model: HfModelInfo | null): {
+  deploymentFields: Partial<LocalModelDeployment>;
+  endpointFields: Partial<CreateInferenceFormState>;
+} {
+  if (!model) {
+    return { deploymentFields: {}, endpointFields: {} };
+  }
+
+  const tags = getStringArrayValue(model.tags);
+  const cardData = typeof model.cardData === 'object' && model.cardData ? model.cardData as Record<string, unknown> : {};
+  const config = typeof model.config === 'object' && model.config ? model.config as Record<string, unknown> : {};
+  const description = [
+    getFirstStringValue(
+      model.description,
+      model.model_description,
+      model.summary,
+      cardData.description,
+      cardData.summary,
+    ),
+    summarizeHfReadme(model.readme),
+    model.pipeline_tag ? `Pipeline: ${model.pipeline_tag}` : '',
+    tags.length ? `Tags: ${tags.slice(0, 16).join(', ')}` : '',
+    typeof model.downloads === 'number' ? `Downloads: ${model.downloads}` : '',
+    typeof model.likes === 'number' ? `Likes: ${model.likes}` : '',
+    model.lastModified ? `Last modified: ${model.lastModified}` : '',
+  ].filter(Boolean).join(' ');
+  const contextLength = getFirstStringValue(
+    model.model_context_length,
+    model.context_length,
+    model.max_position_embeddings,
+    config.max_position_embeddings,
+    config.max_sequence_length,
+    config.seq_length,
+  );
+  const parameters = getFirstStringValue(
+    model.model_parameters,
+    model.parameters,
+    model.parameter_count,
+    cardData.parameters,
+  );
+
+  return {
+    deploymentFields: {
+      modelDescription: description,
+      modelContextLength: contextLength,
+      modelParameters: parameters,
+      modelTags: tags,
+      modelPipelineTag: model.pipeline_tag,
+    },
+    endpointFields: {
+      model_description: description,
+      model_context_length: contextLength,
+      model_parameters: parameters,
+      model_tags: tags,
+      model_pipeline_tag: model.pipeline_tag,
+    },
+  };
+}
+
+function summarizeHfReadme(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/^---[\s\S]*?---/, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .split('\n')
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .filter((line) => line && !line.startsWith('![') && !line.startsWith('|') && !line.includes('license:'))
+    .slice(0, 8)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 1200)
+    .trim();
+}
+
+function getFirstStringValue(...values: unknown[]): string {
+  const value = values.find((item) => typeof item === 'string' || typeof item === 'number');
+  return value === undefined ? '' : String(value).trim();
+}
+
+function getStringArrayValue(...values: unknown[]): string[] {
+  const value = values.find((item) => Array.isArray(item)) as unknown[] | undefined;
+  return value ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+}
+
+function normalizeModelLookupValue(value: unknown): string {
+  const rawValue = String(value ?? '').trim().toLowerCase();
+  if (!rawValue) {
+    return '';
+  }
+
+  if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
+    try {
+      const url = new URL(rawValue);
+      const parts = url.pathname.split('/').filter(Boolean);
+      return parts.length >= 2 ? `${parts[0]}/${parts[1]}`.toLowerCase() : rawValue;
+    } catch {
+      return rawValue;
+    }
+  }
+
+  return rawValue;
 }
 
 function getAttachedInferenceEndpointName(endpoint: Record<string, unknown>, fallbackName: string): string {

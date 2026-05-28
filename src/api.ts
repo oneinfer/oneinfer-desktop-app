@@ -18,8 +18,11 @@ type AnyRecord = Record<string, unknown>;
 export interface AttachedInferenceEndpointPayload {
   endpoint_id: string;
   endpoint_name: string;
+  endpoint_url?: string;
   input_modality: string;
+  model_description?: string;
   output_modality: string;
+  model_id?: string;
 }
 
 export interface CreateIntelligentEndpointPayload {
@@ -770,8 +773,9 @@ function normalizeModelItem(item: AnyRecord): AnyRecord {
 export async function getHfModelInfo(repoId: string, accessToken?: string): Promise<AnyRecord> {
   const url = `https://huggingface.co/api/models/${repoId}?blobs=true`;
   const token = accessToken?.trim();
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   const response = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    headers,
   });
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
@@ -780,5 +784,14 @@ export async function getHfModelInfo(repoId: string, accessToken?: string): Prom
 
     throw new Error(`Failed to fetch Hugging Face model info for ${repoId} (HTTP ${response.status}).`);
   }
-  return await response.json() as AnyRecord;
+  const info = await response.json() as AnyRecord;
+  try {
+    const readmeResponse = await fetch(`https://huggingface.co/${repoId}/raw/main/README.md`, { headers });
+    if (readmeResponse.ok) {
+      info.readme = await readmeResponse.text();
+    }
+  } catch {
+    // The structured model API is enough for deployability; README improves routing hints when available.
+  }
+  return info;
 }
