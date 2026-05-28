@@ -351,39 +351,6 @@ export async function loginWithOtp(baseUrl: string, email: string, otp: string):
   };
 }
 
-export async function loginWithGoogle(
-  baseUrl: string,
-  payload: {
-    clientId: string;
-    credential: AnyRecord;
-    selectBy?: string | null;
-    email?: string;
-  },
-): Promise<DesktopSession> {
-  const data = await request<AnyRecord>({
-    baseUrl,
-    path: '/developer/google-login',
-    method: 'POST',
-    body: {
-      client_id: payload.clientId,
-      credential: payload.credential,
-      select_by: payload.selectBy ?? '',
-    },
-  });
-
-  const accessToken = String(data.access_token ?? '');
-  const developerId = String(data.developer_id ?? '');
-  if (!accessToken || !developerId) {
-    throw new Error('Google login response did not include access_token or developer_id.');
-  }
-
-  return {
-    accessToken,
-    developerId,
-    email: String(data.email ?? payload.email ?? payload.credential.email ?? ''),
-  };
-}
-
 export async function getProfile(baseUrl: string, session: DesktopSession): Promise<AnyRecord> {
   return request<AnyRecord>({
     baseUrl,

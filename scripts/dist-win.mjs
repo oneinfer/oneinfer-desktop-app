@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '..');
 const releaseDir = path.join(rootDir, 'release');
-const windowsArtifactName = 'OneInfer Desktop windows.exe';
+const windowsArtifactName = 'OneInfer Edge windows.exe';
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {

@@ -1,4 +1,4 @@
-name: Desktop Release
+name: Edge Release
 
 on:
   workflow_dispatch:
@@ -45,7 +45,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: oneinfer-desktop-${{ matrix.os }}
+          name: oneinfer-edge-${{ matrix.os }}
           path: |
             release/*.exe
             release/*.blockmap

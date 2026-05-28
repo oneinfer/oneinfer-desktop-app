@@ -128,19 +128,11 @@ interface DesktopUpdateStatus {
   progressPercent: number | null;
 }
 
-interface DesktopGoogleOAuthResult {
-  clientId: string;
-  credential: Record<string, unknown>;
-  idToken: string;
-  selectBy?: string;
-}
-
 interface Window {
   desktopBridge: {
     getState: () => Promise<DesktopState>;
     saveState: (payload: DesktopState) => Promise<DesktopState>;
     getVersion: () => Promise<string>;
-    startGoogleLogin: () => Promise<DesktopGoogleOAuthResult>;
     getUpdateStatus: () => Promise<DesktopUpdateStatus>;
     checkForUpdates: () => Promise<DesktopUpdateStatus>;
     installUpdate: () => Promise<DesktopUpdateStatus>;
