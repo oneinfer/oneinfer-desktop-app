@@ -19,7 +19,7 @@ import {
 
 import type { ValidationResult } from '../helpers/hardwareValidation';
 import { getModelMemoryBreakdown } from '../helpers/modelSizing';
-import { isServingLibraryCompatibleWithModel } from '../helpers/servingCompatibility';
+import { getServingLibraryCompatibility } from '../helpers/servingCompatibility';
 import type { HfModelInfo, MachineDetailsItem, ServingLibrary } from '../types';
 import { formatNumber } from '../utils/format';
 
@@ -42,7 +42,9 @@ export function HfModelDetailPanel(props: {
 
   if (!model) return null;
 
-  const memoryBreakdown = getModelMemoryBreakdown(model);
+  const memoryBreakdown = getModelMemoryBreakdown(model, {
+    servingLibrary: selectedLibrary,
+  });
   const sizeGb = validation?.modelWeightGb ?? memoryBreakdown.modelWeightGb;
   const kvCacheGb = validation?.kvCacheGb ?? memoryBreakdown.kvCacheGb;
   const servingOverheadGb = validation?.servingOverheadGb ?? memoryBreakdown.servingOverheadGb;
@@ -53,7 +55,8 @@ export function HfModelDetailPanel(props: {
   const isRegisterBusy = busy === 'register-self-hosted';
   const platform = getSupportedPlatform(machine?.platform);
   const selectedOption = servingLibraryOptions.find((option) => option.value === selectedLibrary) ?? servingLibraryOptions[0];
-  const selectedSupported = isLibrarySupported(selectedOption.value, platform, model);
+  const selectedStatus = getServingLibraryStatus(selectedOption, platform, model);
+  const selectedSupported = selectedStatus.supported;
   const selectedInstalled = selectedSupported && libraries[selectedOption.value];
   const preferredRuntime = selectedSupported && selectedInstalled ? selectedOption.label : null;
   const selectedLaunchable = isOneClickLaunchable(selectedOption.value);
@@ -191,7 +194,7 @@ export function HfModelDetailPanel(props: {
           {isRegisterBusy ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}
           {selectedInstalled
             ? selectedLaunchable ? `Deploy with ${preferredRuntime}` : `Register ${selectedOption.label} endpoint`
-            : selectedSupported ? `Install ${selectedOption.label}` : `${selectedOption.label} not supported`}
+            : selectedSupported ? `Install ${selectedOption.label}` : `${selectedOption.label}: ${selectedStatus.shortLabel}`}
         </button>
       </div>
     </section>
@@ -252,7 +255,8 @@ function ServingLibraryDropdown(props: {
   selectedLibrary: ServingLibrary;
 }) {
   const selectedOption = servingLibraryOptions.find((option) => option.value === props.selectedLibrary) ?? servingLibraryOptions[0];
-  const selectedSupported = isLibrarySupported(selectedOption.value, props.platform, props.model);
+  const selectedStatus = getServingLibraryStatus(selectedOption, props.platform, props.model);
+  const selectedSupported = selectedStatus.supported;
   const selectedInstalled = selectedSupported && props.libraries[selectedOption.value];
 
   return (
@@ -268,37 +272,41 @@ function ServingLibraryDropdown(props: {
           <strong>{selectedOption.label}</strong>
         </span>
         <span className="serving-library-trigger-meta">
-          {selectedInstalled ? 'Installed' : selectedSupported ? 'Install available' : 'Unsupported'}
+          {selectedInstalled ? 'Installed' : selectedStatus.supported ? 'Install available' : selectedStatus.shortLabel}
           <ChevronDown size={16} />
         </span>
       </button>
       {props.open ? (
         <div className="serving-library-menu">
           {servingLibraryOptions.map((option) => {
-            const supported = isLibrarySupported(option.value, props.platform, props.model);
-            const installed = supported && props.libraries[option.value];
+            const status = getServingLibraryStatus(option, props.platform, props.model);
+            const installed = status.supported && props.libraries[option.value];
             const optionBusy = props.busy === `install-${option.value}`;
             const selected = option.value === props.selectedLibrary;
             return (
-              <div className={`serving-library-option ${selected ? 'selected' : ''} ${installed ? 'installed' : supported ? 'missing' : 'unsupported'}`} key={option.value}>
+              <div
+                className={`serving-library-option ${selected ? 'selected' : ''} ${installed ? 'installed' : status.supported ? 'missing' : 'unsupported'}`}
+                key={option.value}
+                title={status.detail}
+              >
                 <button
                   className="serving-library-option-select"
-                  disabled={!supported}
+                  disabled={!status.supported}
                   onClick={() => props.onSelect(option.value)}
                   type="button"
                 >
                   <span />
                   <strong>{option.label}</strong>
-                  <small>{installed ? 'Installed' : supported ? 'Not installed' : 'Unsupported'}</small>
+                  <small>{installed ? 'Installed' : status.supported ? 'Not installed' : status.shortLabel}</small>
                 </button>
                 {!installed ? (
                   <button
                     className="serving-library-option-install"
-                    disabled={!supported || optionBusy}
+                    disabled={!status.supported || optionBusy}
                     onClick={() => props.onInstall(option.value)}
                     type="button"
                   >
-                    {optionBusy ? <LoaderCircle className="spin" size={12} /> : supported ? 'Install' : 'Unsupported'}
+                    {optionBusy ? <LoaderCircle className="spin" size={12} /> : status.supported ? 'Install' : status.shortLabel}
                   </button>
                 ) : (
                   <span className="serving-library-option-installed"><CheckCircle2 size={14} /> Installed</span>
@@ -312,14 +320,35 @@ function ServingLibraryDropdown(props: {
   );
 }
 
-function isLibrarySupported(library: ServingLibrary, platform: SupportedPlatform, model: HfModelInfo): boolean {
-  const option = servingLibraryOptions.find((item) => item.value === library);
+function getServingLibraryStatus(
+  option: { value: ServingLibrary; label: string; platforms: SupportedPlatform[] },
+  platform: SupportedPlatform,
+  model: HfModelInfo,
+): { supported: boolean; shortLabel: string; detail: string } {
   const osSupported = platform === 'unknown' || Boolean(option?.platforms.includes(platform));
-  return osSupported && isLibraryCompatibleWithModel(library, model);
-}
+  if (!osSupported) {
+    const supportedOs = option.platforms.map(formatPlatformLabel).join(', ');
+    return {
+      supported: false,
+      shortLabel: 'OS not supported',
+      detail: `${option.label} is not supported on this OS. Supported OS: ${supportedOs}.`,
+    };
+  }
 
-function isLibraryCompatibleWithModel(library: ServingLibrary, model: HfModelInfo): boolean {
-  return isServingLibraryCompatibleWithModel(library, model);
+  const compatibility = getServingLibraryCompatibility(option.value, model);
+  if (!compatibility.supported) {
+    return {
+      supported: false,
+      shortLabel: 'Model not supported',
+      detail: compatibility.reason || `${option.label} does not support this model.`,
+    };
+  }
+
+  return {
+    supported: true,
+    shortLabel: 'Install available',
+    detail: `${option.label} supports this OS and model.`,
+  };
 }
 
 function isOneClickLaunchable(library: ServingLibrary): boolean {
@@ -340,16 +369,12 @@ function getSupportedPlatform(value: unknown): SupportedPlatform {
   return 'unknown';
 }
 
-function formatServingLibraryName(value: ServingLibrary): string {
-  const labels: Record<ServingLibrary, string> = {
-    vllm: 'vLLM',
-    sglang: 'SGLang',
-    tensorrt: 'TensorRT-LLM',
-    ollama: 'Ollama',
-    llama_cpp: 'llama.cpp',
-    pytorch: 'PyTorch',
-    transformers: 'Transformers',
-    dynamo: 'Dynamo',
+function formatPlatformLabel(platform: SupportedPlatform): string {
+  const labels: Record<SupportedPlatform, string> = {
+    windows: 'Windows',
+    macos: 'macOS',
+    linux: 'Linux',
+    unknown: 'Unknown OS',
   };
-  return labels[value] ?? value;
+  return labels[platform] ?? platform;
 }

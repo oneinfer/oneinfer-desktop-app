@@ -128,22 +128,15 @@ interface DesktopUpdateStatus {
   progressPercent: number | null;
 }
 
-interface DesktopGoogleOAuthResult {
-  clientId: string;
-  credential: Record<string, unknown>;
-  idToken: string;
-  selectBy?: string;
-}
-
 interface Window {
   desktopBridge: {
     getState: () => Promise<DesktopState>;
     saveState: (payload: DesktopState) => Promise<DesktopState>;
     getVersion: () => Promise<string>;
-    startGoogleLogin: () => Promise<DesktopGoogleOAuthResult>;
     getUpdateStatus: () => Promise<DesktopUpdateStatus>;
     checkForUpdates: () => Promise<DesktopUpdateStatus>;
     installUpdate: () => Promise<DesktopUpdateStatus>;
+    openExternalUrl: (payload: { url: string }) => Promise<{ opened: boolean; url: string }>;
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
     onDeploymentProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
@@ -173,6 +166,7 @@ interface Window {
     deployHfModel: (payload: {
       repoId: string;
       port?: number;
+      exactPort?: boolean;
       runtime?: DesktopLaunchableServingLibrary;
       role?: 'model' | 'router';
       healthTimeoutMs?: number;
@@ -182,6 +176,7 @@ interface Window {
     startLocalRoute: (payload: {
       routeId?: string;
       name?: string;
+      description?: string;
       routerEndpointUrl?: string;
       routerModelId?: string;
       candidates: Array<Record<string, unknown>>;

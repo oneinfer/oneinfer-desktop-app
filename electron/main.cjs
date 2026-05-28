@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -74,16 +74,6 @@ function readEnvFileValue(name) {
   return '';
 }
 
-const GOOGLE_DESKTOP_CLIENT_ID = process.env.ONEINFER_GOOGLE_DESKTOP_CLIENT_ID
-  || process.env.GOOGLE_DESKTOP_CLIENT_ID
-  || readEnvFileValue('ONEINFER_GOOGLE_DESKTOP_CLIENT_ID')
-  || readEnvFileValue('GOOGLE_DESKTOP_CLIENT_ID')
-  || '';
-const GOOGLE_DESKTOP_CLIENT_SECRET = process.env.ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET
-  || process.env.GOOGLE_DESKTOP_CLIENT_SECRET
-  || readEnvFileValue('ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET')
-  || readEnvFileValue('GOOGLE_DESKTOP_CLIENT_SECRET')
-  || '';
 const CLAUDE_CODE_SETUP_DOCS_URL = 'https://docs.anthropic.com/en/docs/claude-code/setup';
 const OPENCODE_SETUP_DOCS_URL = 'https://opencode.ai/docs/';
 const WINDOWS_VLLM_VERSION = '0.21.0';
@@ -141,174 +131,6 @@ function sendDeploymentProgress(progress) {
     timestamp: Date.now(),
     ...progress,
   });
-}
-
-function decodeJwtPayload(token) {
-  const payload = String(token || '').split('.')[1];
-  if (!payload) {
-    throw new Error('Google did not return a valid identity token.');
-  }
-
-  const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
-  return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
-}
-
-function createGoogleAuthHtml(title, body) {
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>${title}</title>
-    <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f8fafc; color: #111827; }
-      main { max-width: 420px; padding: 32px; text-align: center; }
-      h1 { font-size: 22px; margin: 0 0 12px; }
-      p { color: #4b5563; line-height: 1.5; margin: 0; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>${title}</h1>
-      <p>${body}</p>
-    </main>
-    <script>window.setTimeout(() => window.close(), 1200);</script>
-  </body>
-</html>`;
-}
-
-function writeGoogleAuthResponse(res, statusCode, title, body) {
-  res.writeHead(statusCode, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-store',
-  });
-  res.end(createGoogleAuthHtml(title, body));
-}
-
-async function startGoogleDesktopLogin() {
-  if (!GOOGLE_DESKTOP_CLIENT_ID || GOOGLE_DESKTOP_CLIENT_ID.includes('YOUR_')) {
-    throw new Error('Google Desktop OAuth client ID is not configured.');
-  }
-
-  const state = crypto.randomBytes(24).toString('base64url');
-  const codeVerifier = crypto.randomBytes(48).toString('base64url');
-  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
-
-  let server;
-
-  try {
-    const authResult = await new Promise((resolve, reject) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        reject(new Error('Google sign-in timed out.'));
-      }, 5 * 60 * 1000);
-
-      const settle = (fn, value) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        fn(value);
-      };
-
-      server = http.createServer((req, res) => {
-        try {
-          const requestUrl = new URL(req.url || '/', `http://${req.headers.host}`);
-          if (requestUrl.pathname !== '/oauth/google/callback') {
-            writeGoogleAuthResponse(res, 404, 'Not found', 'This local callback is only used for OneInfer Google sign-in.');
-            return;
-          }
-
-          const returnedState = requestUrl.searchParams.get('state');
-          const code = requestUrl.searchParams.get('code');
-          const error = requestUrl.searchParams.get('error');
-
-          if (error) {
-            writeGoogleAuthResponse(res, 400, 'Google sign-in failed', 'You can close this browser tab and return to OneInfer Desktop.');
-            settle(reject, new Error(`Google sign-in failed: ${error}`));
-            return;
-          }
-
-          if (!code || returnedState !== state) {
-            writeGoogleAuthResponse(res, 400, 'Google sign-in failed', 'The sign-in response was invalid. Please try again from OneInfer Desktop.');
-            settle(reject, new Error('Google sign-in response was invalid.'));
-            return;
-          }
-
-          writeGoogleAuthResponse(res, 200, 'Signed in to Google', 'You can close this browser tab and return to OneInfer Desktop.');
-          settle(resolve, { code, redirectUri: `http://127.0.0.1:${server.address().port}/oauth/google/callback` });
-        } catch (error) {
-          writeGoogleAuthResponse(res, 500, 'Google sign-in failed', 'Please return to OneInfer Desktop and try again.');
-          settle(reject, error);
-        }
-      });
-
-      server.on('error', (error) => settle(reject, error));
-      server.listen(0, '127.0.0.1', async () => {
-        try {
-          const { port } = server.address();
-          const redirectUri = `http://127.0.0.1:${port}/oauth/google/callback`;
-          const params = new URLSearchParams({
-            client_id: GOOGLE_DESKTOP_CLIENT_ID,
-            redirect_uri: redirectUri,
-            response_type: 'code',
-            scope: 'openid email profile',
-            state,
-            code_challenge: codeChallenge,
-            code_challenge_method: 'S256',
-            access_type: 'offline',
-            prompt: 'select_account',
-          });
-
-          await shell.openExternal(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
-        } catch (error) {
-          settle(reject, error);
-        }
-      });
-    });
-
-    const tokenBody = new URLSearchParams({
-      client_id: GOOGLE_DESKTOP_CLIENT_ID,
-      code: authResult.code,
-      code_verifier: codeVerifier,
-      grant_type: 'authorization_code',
-      redirect_uri: authResult.redirectUri,
-    });
-
-    if (GOOGLE_DESKTOP_CLIENT_SECRET) {
-      tokenBody.set('client_secret', GOOGLE_DESKTOP_CLIENT_SECRET);
-    }
-
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: tokenBody.toString(),
-    });
-
-    const tokenPayload = await tokenResponse.json().catch(() => ({}));
-    if (!tokenResponse.ok) {
-      const message = tokenPayload.error_description || tokenPayload.error || tokenResponse.statusText;
-      throw new Error(`Google token exchange failed: ${message}`);
-    }
-
-    if (!tokenPayload.id_token) {
-      throw new Error('Google token response did not include an identity token.');
-    }
-
-    return {
-      clientId: GOOGLE_DESKTOP_CLIENT_ID,
-      credential: decodeJwtPayload(tokenPayload.id_token),
-      idToken: tokenPayload.id_token,
-      selectBy: 'browser',
-    };
-  } finally {
-    if (server) {
-      server.close();
-    }
-  }
 }
 
 function configureAutoUpdater() {
@@ -398,6 +220,15 @@ function readState() {
       state = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch {}
   }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    state = { settings: {}, session: null };
+  }
+  if (!state.settings || typeof state.settings !== 'object' || Array.isArray(state.settings)) {
+    state.settings = {};
+  }
+  if (state.settings.claudeCodeProvider !== 'oneinfer' && state.settings.claudeCodeProvider !== 'anthropic') {
+    state.settings.claudeCodeProvider = 'anthropic';
+  }
 
   try {
     const devSessionPath = path.join(os.homedir(), '.oneinfer', 'developer_session.json');
@@ -422,16 +253,26 @@ function readState() {
 
 function writeState(nextState) {
   const filePath = getStateFilePath();
+  const normalizedState = nextState && typeof nextState === 'object' && !Array.isArray(nextState)
+    ? { ...nextState }
+    : { settings: {}, session: null };
+  normalizedState.settings = normalizedState.settings && typeof normalizedState.settings === 'object' && !Array.isArray(normalizedState.settings)
+    ? { ...normalizedState.settings }
+    : {};
+  if (normalizedState.settings.claudeCodeProvider !== 'oneinfer' && normalizedState.settings.claudeCodeProvider !== 'anthropic') {
+    normalizedState.settings.claudeCodeProvider = 'anthropic';
+  }
+
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(nextState, null, 2), 'utf8');
+  fs.writeFileSync(filePath, JSON.stringify(normalizedState, null, 2), 'utf8');
 
   try {
     const devSessionPath = path.join(os.homedir(), '.oneinfer', 'developer_session.json');
-    if (nextState && nextState.session) {
+    if (normalizedState && normalizedState.session) {
       const sessionData = {
-        access_token: nextState.session.accessToken,
-        developer_id: nextState.session.developerId,
-        email: nextState.session.email
+        access_token: normalizedState.session.accessToken,
+        developer_id: normalizedState.session.developerId,
+        email: normalizedState.session.email
       };
       fs.mkdirSync(path.dirname(devSessionPath), { recursive: true });
       fs.writeFileSync(devSessionPath, JSON.stringify(sessionData, null, 2), 'utf8');
@@ -441,6 +282,8 @@ function writeState(nextState) {
   } catch (err) {
     console.error('[state] failed to sync developer_session.json', err);
   }
+
+  return normalizedState;
 }
 
 function readJsonFile(filePath, fallbackValue = null) {
@@ -1260,10 +1103,10 @@ async function installLibrary(name) {
           return 'installed';
         }
 
-        throw new Error('Ollama installer completed, but the ollama command was not found yet. Restart OneInfer Desktop or sign out and back in so Windows refreshes PATH.');
+        throw new Error('Ollama installer completed, but the ollama command was not found yet. Restart OneInfer Edge or sign out and back in so Windows refreshes PATH.');
       }
 
-      throw new Error('WinGet is not available on this Windows machine. Install Ollama from https://ollama.com/download/windows, then restart OneInfer Desktop.');
+      throw new Error('WinGet is not available on this Windows machine. Install Ollama from https://ollama.com/download/windows, then restart OneInfer Edge.');
     }
 
     if (isMacOS()) {
@@ -1276,7 +1119,7 @@ async function installLibrary(name) {
         return 'installed';
       }
 
-      throw new Error('Automatic Ollama installation on macOS requires Homebrew. Install Ollama from https://ollama.com/download/mac or run "brew install ollama", then restart OneInfer Desktop.');
+      throw new Error('Automatic Ollama installation on macOS requires Homebrew. Install Ollama from https://ollama.com/download/mac or run "brew install ollama", then restart OneInfer Edge.');
     }
 
     await runCommand('sh', ['-lc', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeoutMs: 15 * 60 * 1000 });
@@ -1294,11 +1137,11 @@ async function installLibrary(name) {
 
   if (Object.prototype.hasOwnProperty.call(pipInstallPackages, name)) {
     if (process.platform === 'win32' && ['sglang', 'tensorrt', 'dynamo'].includes(name)) {
-      throw new Error(`${name} is not supported for native Windows installs in OneInfer Desktop yet.`);
+      throw new Error(`${name} is not supported for native Windows installs in OneInfer Edge yet.`);
     }
 
     if (isMacOS() && ['tensorrt', 'dynamo'].includes(name)) {
-      throw new Error(`${name} requires a Linux NVIDIA runtime in OneInfer Desktop.`);
+      throw new Error(`${name} requires a Linux NVIDIA runtime in OneInfer Edge.`);
     }
 
     const pipCommand = await getPythonPipCommand();
@@ -1591,6 +1434,19 @@ function readLogTail(logPath, maxLines = 40) {
   } catch {
     return '';
   }
+}
+
+function compactDeploymentLogTail(logTail, maxLines = 18) {
+  const lines = String(logTail || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.includes('<oneinfer-transformers-server>'))
+    .filter((line) => !/^# (HELP|TYPE) oneinfer_/i.test(line))
+    .filter((line) => !/^oneinfer_[a-z0-9_]+\s+/i.test(line))
+    .filter((line) => !/^(import |from |def |class |try:|except |return |if |else:|with |print\(|ThreadingHTTPServer|self\.|raw =|body =|length =|payload =|content =|outputs =|scores =|generation_args|input_ids|tokenizer|model\b)/.test(line));
+
+  return lines.slice(-maxLines).join('\n');
 }
 
 async function getPythonCommandForModule(moduleName) {
@@ -2074,7 +1930,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
     logStream.write(`[${ts}] ${line}\n`);
   }
 
-  writeLog(`Starting Transformers server: ${python.command} ${args.slice(0, 4).join(' ')} ...`);
+  writeLog(`Starting Transformers server: ${python.command} ${python.prefixArgs.join(' ')} -u -c <oneinfer-transformers-server> ${repoId} ${port} ${serveRole}`.replace(/\s+/g, ' ').trim());
   onProgress({
     stage: 'starting',
     message: `Starting Transformers ${serveRole === 'router' ? 'router' : 'model'} server for ${repoId}...`,
@@ -2193,6 +2049,22 @@ function getTransformersFailureDetail(errorMessage, logTail) {
     };
   }
 
+  const missingTokenizerMatch = output.match(/Tokenizer class\s+([A-Za-z0-9_]+)\s+does not exist/i);
+  if (missingTokenizerMatch) {
+    const tokenizerClass = missingTokenizerMatch[1];
+    return {
+      message: `Transformers cannot load tokenizer class "${tokenizerClass}".`,
+      detail: 'This Hugging Face repo uses a tokenizer implementation that is not available in the installed Transformers runtime. Choose a standard text-generation model, ask the model publisher for a compatible tokenizer, or deploy a GGUF/Ollama-compatible version if available.',
+    };
+  }
+
+  if (/Tokenizer class[\s\S]{0,160}does not exist|AutoTokenizer\.from_pretrained/i.test(output) && /ValueError|Traceback/i.test(output)) {
+    return {
+      message: 'Transformers could not load this model tokenizer.',
+      detail: 'The model repository tokenizer configuration is not compatible with the installed local Transformers runtime. Use a different model/runtime or update the model repo tokenizer files.',
+    };
+  }
+
   return { message: null, detail: null };
 }
 
@@ -2288,7 +2160,17 @@ async function deployHfModel(payload = {}) {
     }
   }
 
-  const port = await findAvailablePort(payload.port || 8000);
+  const requestedPort = payload.port || 8000;
+  const port = payload.exactPort ? Number(requestedPort) : await findAvailablePort(requestedPort);
+  if (payload.exactPort) {
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error(`Invalid local port: ${requestedPort}.`);
+    }
+
+    if (!await isPortAvailable(port)) {
+      throw new Error(`Local port ${port} is already in use. Stop the existing process or update the saved endpoint URL.`);
+    }
+  }
   assertDeploymentNotCancelled(repoId);
   const endpointUrl = `http://127.0.0.1:${port}/v1`;
   const inFlight = localModelDeploymentsInFlight.get(repoId);
@@ -2337,12 +2219,13 @@ async function deployHfModel(payload = {}) {
     const runtimeDetail = runtime === 'transformers'
       ? getTransformersFailureDetail(error instanceof Error ? error.message : String(error), logTail)
       : { message: null, detail: null };
+    const userLogTail = compactDeploymentLogTail(logTail);
     const errorDetail = [
       runtimeDetail.message,
       runtimeDetail.detail,
       error instanceof Error ? error.message : String(error),
       child.oneinferLogPath ? `Logs: ${child.oneinferLogPath}` : '',
-      logTail ? `Last log lines:\n${logTail}` : '',
+      userLogTail ? `Last log lines:\n${userLogTail}` : '',
     ].filter(Boolean).join('\n');
 
     progress({
@@ -2449,9 +2332,10 @@ async function chooseLocalRouteCandidate(route, requestPayload) {
   const routerPrompt = [
     'Select the best endpoint for this request.',
     'Return only the endpoint id, name, or index.',
-    `Endpoints: ${candidates.map((candidate, index) => `${index}: ${candidate.name || candidate.id} (${candidate.modelId || 'unknown model'})`).join('; ')}`,
+    route.description ? `Route goal: ${route.description}` : '',
+    `Endpoints:\n${candidates.map((candidate, index) => formatRouteCandidateForPrompt(candidate, index)).join('\n')}`,
     `Request: ${JSON.stringify(requestPayload.messages || requestPayload.prompt || requestPayload).slice(0, 4000)}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   try {
     const routerResponse = await postOpenAiChatCompletion(route.routerEndpointUrl, {
@@ -2495,6 +2379,14 @@ async function startLocalRoute(payload = {}) {
           id: String(candidate.endpoint_id || candidate.id || candidate.endpointUrl || ''),
           name: String(candidate.endpoint_name || candidate.name || candidate.model_id || candidate.modelId || candidate.endpointUrl || 'endpoint'),
           modelId: String(candidate.model_id || candidate.modelId || candidate.name || ''),
+          description: String(candidate.model_description || candidate.modelDescription || candidate.description || ''),
+          contextLength: String(candidate.model_context_length || candidate.modelContextLength || ''),
+          parameters: String(candidate.model_parameters || candidate.modelParameters || ''),
+          tags: Array.isArray(candidate.model_tags)
+            ? candidate.model_tags.map((tag) => String(tag)).filter(Boolean)
+            : Array.isArray(candidate.tags)
+              ? candidate.tags.map((tag) => String(tag)).filter(Boolean)
+              : [],
           endpointUrl: normalizeOpenAiBaseUrl(candidate.endpoint_url || candidate.endpointUrl || ''),
           authorization: candidate.authorization || candidate.api_key ? `Bearer ${candidate.api_key}` : undefined,
         }))
@@ -2510,6 +2402,7 @@ async function startLocalRoute(payload = {}) {
   const route = {
     routeId,
     name: String(payload.name || routeId),
+    description: String(payload.description || ''),
     routerEndpointUrl,
     routerModelId: String(payload.routerModelId || ''),
     candidates,
@@ -2571,6 +2464,19 @@ async function startLocalRoute(payload = {}) {
     port,
     routeId,
   };
+}
+
+function formatRouteCandidateForPrompt(candidate, index) {
+  const parts = [
+    `${index}: ${candidate.name || candidate.id}`,
+    `model=${candidate.modelId || 'unknown'}`,
+    candidate.description ? `description=${candidate.description.slice(0, 800)}` : '',
+    candidate.tags?.length ? `tags=${candidate.tags.join(', ')}` : '',
+    candidate.parameters ? `parameters=${candidate.parameters}` : '',
+    candidate.contextLength ? `context_length=${candidate.contextLength}` : '',
+  ].filter(Boolean);
+
+  return `- ${parts.join('; ')}`;
 }
 
 async function stopLocalRoute(payload = {}) {
@@ -3013,6 +2919,7 @@ function configureClaudeCodeSettings(payload) {
   const anthropicBaseUrl = deriveClaudeBaseUrl(apiBaseUrl);
   const anthropicModel =
     toTrimmedString(payload?.anthropicModel)
+    || getClaudeModel(existingSettings, DEFAULT_ONEINFER_MODEL)
     || DEFAULT_ONEINFER_MODEL;
   const configuredGitBashPath = toTrimmedString(existingEnv.CLAUDE_CODE_GIT_BASH_PATH);
   const gitBashPath = configuredGitBashPath && fs.existsSync(configuredGitBashPath)
@@ -3072,17 +2979,30 @@ function resetClaudeCodeSettings(payload) {
   const { settingsFilePath, existingSettings } = readClaudeSettings();
   const anthropicModel =
     toTrimmedString(payload?.anthropicModel)
-    || toTrimmedString(existingSettings.model)
+    || getClaudeModel(existingSettings)
     || DEFAULT_CLAUDE_MODEL;
+  const existingEnv = getClaudeSettingsEnv(existingSettings);
+  const nextEnv = { ...existingEnv };
+  delete nextEnv.ANTHROPIC_BASE_URL;
+  delete nextEnv.ANTHROPIC_AUTH_TOKEN;
+  delete nextEnv.ANTHROPIC_MODEL;
+
   const nextSettings = {
+    ...existingSettings,
     model: anthropicModel,
   };
+  delete nextSettings.env;
+  if (Object.keys(nextEnv).length > 0) {
+    nextSettings.env = nextEnv;
+  }
 
   fs.mkdirSync(path.dirname(settingsFilePath), { recursive: true });
   fs.writeFileSync(settingsFilePath, `${JSON.stringify(nextSettings, null, 2)}\n`, 'utf8');
 
   return {
-    alreadyConfigured: Object.keys(existingSettings).length === 1 && toTrimmedString(existingSettings.model) === anthropicModel,
+    alreadyConfigured: !toTrimmedString(existingEnv.ANTHROPIC_BASE_URL)
+      && !toTrimmedString(existingEnv.ANTHROPIC_AUTH_TOKEN)
+      && toTrimmedString(existingSettings.model) === anthropicModel,
     anthropicBaseUrl: null,
     anthropicModel,
     apiKeyName: null,
@@ -3884,6 +3804,16 @@ function getFastNetworkInterfaces() {
   });
 }
 
+async function openExternalUrl(payload = {}) {
+  const url = String(payload.url || '').trim();
+  if (!/^https:\/\/oneinfer\.ai\//i.test(url)) {
+    throw new Error('Only OneInfer links can be opened from this action.');
+  }
+
+  await shell.openExternal(url);
+  return { opened: true, url };
+}
+
 async function collectMachineDetails() {
   const fastOsInfo = getFastOsInfo();
   const fastCpu = getFastCpuInfo();
@@ -4256,12 +4186,11 @@ app.whenReady().then(() => {
     return state;
   });
   ipcMain.handle('app:save-state', (_event, payload) => {
-    writeState(payload);
-    triggerMachineSyncFromState(payload);
-    return payload;
+    const state = writeState(payload);
+    triggerMachineSyncFromState(state);
+    return state;
   });
   ipcMain.handle('app:get-version', () => app.getVersion());
-  ipcMain.handle('app:start-google-login', async () => startGoogleDesktopLogin());
   ipcMain.handle('app:get-update-status', () => ({ ...updateState }));
   ipcMain.handle('app:check-for-updates', async () => {
     if (isDev) {
@@ -4289,6 +4218,7 @@ app.whenReady().then(() => {
 
     return { ...updateState };
   });
+  ipcMain.handle('app:open-external-url', async (_event, payload) => openExternalUrl(payload));
   ipcMain.handle('app:get-machine-details', async () => collectMachineDetails());
   ipcMain.handle('app:sync-machine-details', async (_event, payload) => syncMachineDetails(payload, { force: true }));
   ipcMain.handle('app:enable-claude-code', async (_event, payload) => enableClaudeCode(payload));
