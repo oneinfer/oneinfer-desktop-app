@@ -1224,6 +1224,21 @@ function App() {
       return false;
     }
 
+    const providerInstances = dashboard.providerInfo[instanceForm.provider_name]?.instances;
+    const selectedProviderInstance = Array.isArray(providerInstances)
+      ? providerInstances.find((item) => {
+          const record = item as Record<string, unknown>;
+          return String(record.gpu_id ?? record.gpuId ?? '') === instanceForm.gpu_id;
+        }) as Record<string, unknown> | undefined
+      : undefined;
+    const selectedGpu = selectedProviderInstance && typeof selectedProviderInstance.gpu === 'object' && selectedProviderInstance.gpu
+      ? selectedProviderInstance.gpu as Record<string, unknown>
+      : {};
+    if (selectedProviderInstance && Number(selectedGpu.number_of_gpus ?? 0) <= 0) {
+      setMessage({ tone: 'error', text: 'Select a GPU instance before deploying a cloud model.' });
+      return false;
+    }
+
     setBusy('deploy-cloud-model');
     try {
       await deployCloudModel(settingsDraft.apiBaseUrl, session, {
@@ -1231,8 +1246,10 @@ function App() {
         model_id: normalizedModelId,
       });
       setMessage({ tone: 'success', text: 'Cloud model deployment request submitted.' });
-      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
-      await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
+      loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true }).catch((error) => {
+        setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Cloud deployment submitted, but refresh failed.' });
+      });
+      loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
       return true;
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy cloud model.' });

@@ -472,8 +472,13 @@ export function RoutingPage(props: {
 
   return (
     <div className="routing-page">
-      <header className="mb-5 flex h-8 shrink-0 items-center justify-between">
-        <h2 className="m-0 text-lg font-semibold leading-none">Routing</h2>
+      <header className="mb-5 flex shrink-0 items-start justify-between gap-5">
+        <div>
+          <h2 className="m-0 text-lg font-semibold leading-none">Routing</h2>
+          <p className="routing-page-description">
+            Create routers that direct inference requests across your registered model endpoints.
+          </p>
+        </div>
         <button
           className="primary-button !h-7 !rounded-[0.625rem] !px-3 !py-0 !text-[0.8rem] !leading-none"
           onClick={openCreateRouteModal}
