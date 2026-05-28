@@ -1,4 +1,4 @@
-# OneInfer Desktop App
+# OneInfer Edge
 
 Cross-platform Electron and Vite desktop client for the OneInfer developer APIs.
 
