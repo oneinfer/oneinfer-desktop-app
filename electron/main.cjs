@@ -1614,6 +1614,19 @@ function readLogTail(logPath, maxLines = 40) {
   }
 }
 
+function compactDeploymentLogTail(logTail, maxLines = 18) {
+  const lines = String(logTail || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.includes('<oneinfer-transformers-server>'))
+    .filter((line) => !/^# (HELP|TYPE) oneinfer_/i.test(line))
+    .filter((line) => !/^oneinfer_[a-z0-9_]+\s+/i.test(line))
+    .filter((line) => !/^(import |from |def |class |try:|except |return |if |else:|with |print\(|ThreadingHTTPServer|self\.|raw =|body =|length =|payload =|content =|outputs =|scores =|generation_args|input_ids|tokenizer|model\b)/.test(line));
+
+  return lines.slice(-maxLines).join('\n');
+}
+
 async function getPythonCommandForModule(moduleName) {
   const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
   for (const command of candidates) {
@@ -2095,7 +2108,7 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
     logStream.write(`[${ts}] ${line}\n`);
   }
 
-  writeLog(`Starting Transformers server: ${python.command} ${args.slice(0, 4).join(' ')} ...`);
+  writeLog(`Starting Transformers server: ${python.command} ${python.prefixArgs.join(' ')} -u -c <oneinfer-transformers-server> ${repoId} ${port} ${serveRole}`.replace(/\s+/g, ' ').trim());
   onProgress({
     stage: 'starting',
     message: `Starting Transformers ${serveRole === 'router' ? 'router' : 'model'} server for ${repoId}...`,
@@ -2211,6 +2224,22 @@ function getTransformersFailureDetail(errorMessage, logTail) {
     return {
       message: 'Transformers ran out of memory while loading the model.',
       detail: 'Select a smaller model, use a quantized model, or deploy on a machine with enough VRAM/RAM.',
+    };
+  }
+
+  const missingTokenizerMatch = output.match(/Tokenizer class\s+([A-Za-z0-9_]+)\s+does not exist/i);
+  if (missingTokenizerMatch) {
+    const tokenizerClass = missingTokenizerMatch[1];
+    return {
+      message: `Transformers cannot load tokenizer class "${tokenizerClass}".`,
+      detail: 'This Hugging Face repo uses a tokenizer implementation that is not available in the installed Transformers runtime. Choose a standard text-generation model, ask the model publisher for a compatible tokenizer, or deploy a GGUF/Ollama-compatible version if available.',
+    };
+  }
+
+  if (/Tokenizer class[\s\S]{0,160}does not exist|AutoTokenizer\.from_pretrained/i.test(output) && /ValueError|Traceback/i.test(output)) {
+    return {
+      message: 'Transformers could not load this model tokenizer.',
+      detail: 'The model repository tokenizer configuration is not compatible with the installed local Transformers runtime. Use a different model/runtime or update the model repo tokenizer files.',
     };
   }
 
@@ -2368,12 +2397,13 @@ async function deployHfModel(payload = {}) {
     const runtimeDetail = runtime === 'transformers'
       ? getTransformersFailureDetail(error instanceof Error ? error.message : String(error), logTail)
       : { message: null, detail: null };
+    const userLogTail = compactDeploymentLogTail(logTail);
     const errorDetail = [
       runtimeDetail.message,
       runtimeDetail.detail,
       error instanceof Error ? error.message : String(error),
       child.oneinferLogPath ? `Logs: ${child.oneinferLogPath}` : '',
-      logTail ? `Last log lines:\n${logTail}` : '',
+      userLogTail ? `Last log lines:\n${userLogTail}` : '',
     ].filter(Boolean).join('\n');
 
     progress({
