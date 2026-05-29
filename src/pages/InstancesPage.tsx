@@ -729,6 +729,10 @@ function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem
 
   const endpointRows = endpoints
     .filter((endpoint) => getEndpointSource(endpoint) === 'cloud')
+    .filter((endpoint) => {
+      const endpointId = getEndpointId(endpoint, 0);
+      return activeInstancesMap.has(endpointId.toLowerCase());
+    })
     .map((endpoint, index) => {
       const endpointId = getEndpointId(endpoint, index);
       const modelId = String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `model-${index + 1}`);
