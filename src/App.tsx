@@ -675,7 +675,10 @@ function App() {
 
         setDashboard((current) => ({
           ...current,
-          instances: results[0].status === 'fulfilled' ? results[0].value : current.instances,
+          instances: (results[0].status === 'fulfilled' ? results[0].value : current.instances).filter(i => {
+            const status = String(i.instance_status ?? i.status).toLowerCase();
+            return status !== 'deleted' && status !== 'terminated';
+          }),
           providerInfo: results[1].status === 'fulfilled' ? results[1].value : current.providerInfo,
           gpuSpecs: results[2].status === 'fulfilled' ? results[2].value : current.gpuSpecs,
           gpuPricing: results[3].status === 'fulfilled' ? results[3].value : current.gpuPricing,
@@ -2088,6 +2091,12 @@ function isSameLocalModelId(left: string, right: string): boolean {
       const endpointUrl = String(candidate.endpoint_url ?? candidate.endpointUrl ?? '').trim();
       const modelId = String(candidate.model_id ?? candidate.modelId ?? '').trim();
       const name = String(candidate.endpoint_name ?? candidate.name ?? modelId ?? 'candidate');
+
+      // Only validate local endpoints! External/cloud endpoints do not run locally and do not need to be verified against local Ollama/model-server metrics.
+      if (!isLocalEndpointUrl(endpointUrl)) {
+        continue;
+      }
+
       if (!endpointUrl) {
         throw new Error(`${name} does not have a local endpoint URL. Deploy/register the model before attaching it to a local route.`);
       }
