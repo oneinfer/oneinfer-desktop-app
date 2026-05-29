@@ -200,40 +200,28 @@ function validateRegistrationForm(form: RegistrationFormState): string | null {
   return null;
 }
 
-const initialNotifications: Notification[] = [
-  {
-    id: 'notif-1',
-    type: 'info',
-    title: 'Welcome to OneInfer!',
-    message: 'Deploy catalog models on cloud GPUs or configure local runtimes in the Self Hosting page.',
-    timestamp: 'Just now',
-    read: false,
-  },
-  {
-    id: 'notif-2',
-    type: 'warning',
-    title: 'Low Credits Alert',
-    message: 'Your credit balance is low ($2.50). Please add credits to prevent active instances from being terminated.',
-    timestamp: '1 hour ago',
-    read: false,
-  },
-  {
-    id: 'notif-3',
-    type: 'success',
-    title: 'System Ready',
-    message: 'Edge host node synced. System is optimized and ready for inference routing.',
-    timestamp: '2 hours ago',
-    read: true,
-  },
-];
-
 function App() {
   const [booting, setBooting] = useState(true);
   const [appVersion, setAppVersion] = useState('');
   const [settingsDraft, setSettingsDraft] = useState(defaultSettings);
   const [session, setSession] = useState<DesktopSession | null>(null);
   const [activeSection, setActiveSection] = useState<SectionKey>('overview');
-  const [notifications, setNotifications] = useState<Notification[]>(initialNotifications);
+  const [notifications, setNotifications] = useState<Notification[]>(() => {
+    try {
+      const saved = localStorage.getItem('oneinfer_notifications');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('oneinfer_notifications', JSON.stringify(notifications));
+    } catch (err) {
+      console.warn('Failed to save notifications:', err);
+    }
+  }, [notifications]);
 
   const addNotification = useCallback((type: Notification['type'], title: string, message: string) => {
     setNotifications((prev) => [
