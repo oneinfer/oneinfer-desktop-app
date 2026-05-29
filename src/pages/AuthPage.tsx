@@ -1,16 +1,20 @@
 import type { FormEvent } from 'react';
-import { AlertCircle, BarChart3, CheckCircle2, Cpu, Gauge, Info, LoaderCircle, Network, Rocket, Send, Server, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { AlertCircle, BarChart3, CheckCircle2, Cpu, Gauge, Info, LoaderCircle, Network, Rocket, Send, Server, ShieldCheck, SlidersHorizontal, UserPlus } from 'lucide-react';
+import type { AuthStep, RegistrationFormState } from '../types';
 
 export function AuthPage(props: {
   email: string;
   otp: string;
-  loginStep: 'email' | 'otp';
+  loginStep: AuthStep;
   busy: string | null;
   message: { tone: 'info' | 'success' | 'error'; text: string } | null;
+  registrationForm: RegistrationFormState;
   onEmailChange: (value: string) => void;
   onOtpChange: (value: string) => void;
+  onRegistrationChange: (value: RegistrationFormState) => void;
   onOtpRequest: (event: FormEvent<HTMLFormElement>) => void;
   onLogin: (event: FormEvent<HTMLFormElement>) => void;
+  onRegistration: (event: FormEvent<HTMLFormElement>) => void;
   onBackToEmail: () => void;
 }) {
   const MessageIcon = props.message?.tone === 'success'
@@ -67,7 +71,7 @@ export function AuthPage(props: {
                 Request OTP
               </button>
             </form>
-          ) : (
+          ) : props.loginStep === 'otp' ? (
             <form className="stack-form" onSubmit={props.onLogin}>
               <label>
                 <span>One-Time Password</span>
@@ -76,6 +80,94 @@ export function AuthPage(props: {
               <button className="secondary-button auth-enter-button" type="submit" disabled={props.busy === 'login'}>
                 {props.busy === 'login' ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
                 Enter Workspace
+              </button>
+              <button className="ghost-button auth-change-email-button" type="button" onClick={props.onBackToEmail}>
+                Change Email
+              </button>
+            </form>
+          ) : (
+            <form className="stack-form auth-registration-form" onSubmit={props.onRegistration}>
+              <div className="auth-form-grid">
+                <label>
+                  <span>First Name</span>
+                  <input
+                    value={props.registrationForm.firstName}
+                    onChange={(event) => props.onRegistrationChange({ ...props.registrationForm, firstName: event.target.value })}
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  <span>Last Name</span>
+                  <input
+                    value={props.registrationForm.lastName}
+                    onChange={(event) => props.onRegistrationChange({ ...props.registrationForm, lastName: event.target.value })}
+                  />
+                </label>
+              </div>
+              <label>
+                <span>Email</span>
+                <input value={props.email} readOnly />
+              </label>
+              <label>
+                <span>Date of Birth</span>
+                <input
+                  type="date"
+                  value={props.registrationForm.dob}
+                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split('T')[0]}
+                  onChange={(event) => props.onRegistrationChange({ ...props.registrationForm, dob: event.target.value })}
+                />
+              </label>
+              <label>
+                <span>Organization Type</span>
+                <select
+                  value={props.registrationForm.organizationType}
+                  onChange={(event) => props.onRegistrationChange({
+                    ...props.registrationForm,
+                    organizationType: event.target.value as RegistrationFormState['organizationType'],
+                    organization: event.target.value === 'business' ? props.registrationForm.organization : '',
+                  })}
+                >
+                  <option value="">Select organization type</option>
+                  <option value="individual">Individual</option>
+                  <option value="business">Business</option>
+                </select>
+              </label>
+              {props.registrationForm.organizationType === 'business' ? (
+                <label>
+                  <span>Organization Name</span>
+                  <input
+                    value={props.registrationForm.organization}
+                    onChange={(event) => props.onRegistrationChange({ ...props.registrationForm, organization: event.target.value })}
+                  />
+                </label>
+              ) : null}
+              <label>
+                <span>Designation</span>
+                <select
+                  value={props.registrationForm.designation}
+                  onChange={(event) => props.onRegistrationChange({ ...props.registrationForm, designation: event.target.value as RegistrationFormState['designation'] })}
+                >
+                  <option value="">Select your designation</option>
+                  <option value="developer">Developer</option>
+                  <option value="founder_ceo_cto">Founder/CEO/CTO</option>
+                  <option value="manager">Manager</option>
+                  <option value="student">Student</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label className="auth-consent-row">
+                <input
+                  type="checkbox"
+                  checked={props.registrationForm.acceptedTerms}
+                  onChange={(event) => props.onRegistrationChange({ ...props.registrationForm, acceptedTerms: event.target.checked })}
+                />
+                <span>
+                  I agree to the <a href="https://oneinfer.ai/terms-and-conditions" target="_blank" rel="noopener noreferrer">Terms</a> and <a href="https://oneinfer.ai/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+                </span>
+              </label>
+              <button className="secondary-button auth-enter-button" type="submit" disabled={props.busy === 'registration'}>
+                {props.busy === 'registration' ? <LoaderCircle className="spin" size={16} /> : <UserPlus size={16} />}
+                Complete Registration
               </button>
               <button className="ghost-button auth-change-email-button" type="button" onClick={props.onBackToEmail}>
                 Change Email

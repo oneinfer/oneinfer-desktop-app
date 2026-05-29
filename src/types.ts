@@ -2,8 +2,25 @@ export type SectionKey = 'overview' | 'selfHosting' | 'instances' | 'apiKeys' | 
 
 export interface DesktopSession {
   accessToken: string;
+  refreshToken?: string;
   developerId: string;
   email: string;
+}
+
+export type AuthStep = 'email' | 'otp' | 'registration';
+
+export type OrganizationType = 'individual' | 'business';
+
+export type DeveloperDesignation = 'developer' | 'founder_ceo_cto' | 'manager' | 'student' | 'other';
+
+export interface RegistrationFormState {
+  firstName: string;
+  lastName: string;
+  organizationType: '' | OrganizationType;
+  organization: string;
+  designation: '' | DeveloperDesignation;
+  dob: string;
+  acceptedTerms: boolean;
 }
 
 export interface DesktopSettings {

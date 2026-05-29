@@ -455,6 +455,41 @@ label span,
   border: 1px solid rgba(113, 190, 255, 0.22);
 }
 
+.auth-registration-form {
+  max-height: min(64vh, 680px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.auth-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.auth-consent-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.auth-consent-row input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.auth-consent-row a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
 .sidebar-footer {
   margin-top: auto;
 }
@@ -2525,6 +2560,16 @@ th {
   background: rgba(255, 182, 94, 0.16);
 }
 
+.settings-mini-action.tool {
+  color: #cfe2f2;
+  background: rgba(113, 190, 255, 0.1);
+}
+
+.settings-mini-action.tool:hover:not(:disabled) {
+  color: #eaf6ff;
+  background: rgba(113, 190, 255, 0.16);
+}
+
 .settings-list-item.active .settings-list-status {
   color: var(--accent);
 }
@@ -2879,7 +2924,8 @@ th {
   }
 
   .hero-grid,
-  .auth-capability-panel {
+  .auth-capability-panel,
+  .auth-form-grid {
     grid-template-columns: 1fr;
   }
 

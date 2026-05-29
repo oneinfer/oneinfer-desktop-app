@@ -230,7 +230,7 @@ export function InstancesPage(props: {
         </div>
       </div>
 
-      <Modal title={selectedGpu ? `Deploy Model on ${selectedGpu.name}` : 'Deploy Cloud Model'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
+      <Modal title={selectedGpu ? `Deploy Model on ${formatGpuDisplayName(selectedGpu.name)}` : 'Deploy Cloud Model'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
         <form className="cloud-deploy-form" onSubmit={async (event) => { const ok = await props.onCreate(event); if (ok) props.onModalChange(false); }}>
           <p className="mb-6 text-center text-[0.95rem] text-[var(--muted)]">Choose a model and GPU. OneInfer will provision the instance, start the model server, and register the cloud endpoint.</p>
           <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_260px]">
@@ -423,7 +423,7 @@ export function InstancesPage(props: {
                   </div>
                   <div>
                     <div className="text-[0.75rem] text-[var(--muted)]">GPU</div>
-                    <div>{selectedGpu?.name ?? 'Not selected'}</div>
+                    <div>{selectedGpu ? formatGpuDisplayName(selectedGpu.name) : 'Not selected'}</div>
                   </div>
                   <div>
                     <div className="text-[0.75rem] text-[var(--muted)]"># of GPUs</div>
@@ -484,7 +484,7 @@ export function InstancesPage(props: {
                   ) : null}
                   <div>
                     <div className="gpu-spec-brand">{detailsGpu.brand}</div>
-                    <h3>{detailsGpu.name}</h3>
+                    <h3>{formatGpuDisplayName(detailsGpu.name)}</h3>
                     {detailsGpu.productCategory ? <p>{detailsGpu.productCategory}</p> : null}
                   </div>
                 </div>
@@ -575,13 +575,21 @@ function CloudEndpointCard(props: {
 }
 
 function getModelOptions(models: any[]): ModelOption[] {
+  const seen = new Set<string>();
   return models
     .map((model) => {
       const value = String(model.model_id ?? model.modelId ?? model.id ?? '').trim();
       const name = String(model.model_name ?? model.modelName ?? model.displayName ?? value).trim();
       return value ? { value, label: name || value } : null;
     })
-    .filter((model): model is ModelOption => Boolean(model));
+    .filter((model): model is ModelOption => {
+      if (!model || seen.has(model.value)) {
+        return false;
+      }
+
+      seen.add(model.value);
+      return true;
+    });
 }
 
 function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem[]): CloudEndpointRow[] {
@@ -776,7 +784,7 @@ function GpuMarketplaceCard(props: {
             className="nvidia-mark"
             src="https://i.ibb.co/fGV3cccB/nvidia-small-logo-1.png"
           />
-          <h3>{props.gpu.name.replace(/nvidia/gi, '').trim()}</h3>
+          <h3>{formatGpuDisplayName(props.gpu.name)}</h3>
         </div>
         <button
           className="gpu-details-button"
@@ -1012,6 +1020,14 @@ function isProviderGpuMatch(gpu: ProviderGpuOption, filter: GpuProviderFilter): 
 
 function normalizeGpuMatchValue(value: string): string {
   return value.toLowerCase().replace(/nvidia|geforce|tesla|quadro/g, '').replace(/[^a-z0-9]+/g, '');
+}
+
+function formatGpuDisplayName(value: string): string {
+  return value
+    .replace(/\bnvidia\b/gi, '')
+    .replace(/\bgeforce\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpecs: DashboardState['gpuSpecs']): GpuCardOption[] {
@@ -1333,18 +1349,36 @@ function normalizeHfRepoId(value: string): string {
     return '';
   }
 
+  const normalizeOwnerModel = (candidate: string) => {
+    const parts = candidate.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return '';
+    }
+
+    const owner = parts[0];
+    let model = parts[1];
+    const repeatedOwnerIndex = model.indexOf(owner);
+    if (repeatedOwnerIndex > 0) {
+      model = model.slice(0, repeatedOwnerIndex);
+    }
+
+    const repoId = `${owner}/${model}`;
+    return repoId.length % 2 === 0 && repoId.slice(0, repoId.length / 2) === repoId.slice(repoId.length / 2)
+      ? repoId.slice(0, repoId.length / 2)
+      : repoId;
+  };
+
   if (rawValue.startsWith('http://') || rawValue.startsWith('https://')) {
     try {
       const url = new URL(rawValue);
       const parts = url.pathname.split('/').filter(Boolean);
-      return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+      return normalizeOwnerModel(parts.join('/'));
     } catch {
       return '';
     }
   }
 
-  const parts = rawValue.split('/').filter(Boolean);
-  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+  return normalizeOwnerModel(rawValue);
 }
 
 async function checkHfModelAccess(repoId: string, signal: AbortSignal): Promise<HfAccessCheckState> {
