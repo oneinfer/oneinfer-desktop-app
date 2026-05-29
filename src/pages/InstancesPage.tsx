@@ -1020,7 +1020,12 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
 }
 
 function getImagesForServingLibrary(images: ProviderImageOption[], servingLibrary: ServingLibrary): ProviderImageOption[] {
-  return images.filter((image) => imageSupportsServingLibrary(image, servingLibrary));
+  const filtered = images.filter((image) => imageSupportsServingLibrary(image, servingLibrary));
+  if (filtered.length > 0) {
+    return filtered;
+  }
+  // Fall back to all available provider images if no images matched the serving library's strict keyword criteria
+  return images;
 }
 
 function imageSupportsServingLibrary(image: ProviderImageOption, servingLibrary: ServingLibrary): boolean {
@@ -1037,7 +1042,7 @@ function imageSupportsServingLibrary(image: ProviderImageOption, servingLibrary:
     tensorrt: ['tensorrt', 'tensorrt-llm', 'trt', 'cuda', 'nvidia'],
     llama_cpp: ['llama.cpp', 'llamacpp', 'llama-cpp', 'gguf'],
     pytorch: ['pytorch', 'torch', 'cuda', 'nvidia'],
-    dynamo: ['dynamo'],
+    dynamo: ['dynamo', 'pytorch', 'torch', 'cuda', 'nvidia'],
   };
 
   return supportKeywords[servingLibrary].some((keyword) => searchableText.includes(keyword));
