@@ -143,11 +143,22 @@ export function SelfHostingPage(props: {
   }
 
   function updateModel(next: Partial<SelfHostFormState>) {
-    const candidate = next.hfUrl ?? next.model_id ?? '';
+    const oldCandidate = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
+    const oldRepoName = getRepoName(oldCandidate);
+
+    const nextHfUrl = next.hfUrl !== undefined ? next.hfUrl : props.selfHostForm.hfUrl;
+    const nextModelId = next.model_id !== undefined ? next.model_id : props.selfHostForm.model_id;
+    const nextUseHfUrl = next.useHfUrl !== undefined ? next.useHfUrl : props.selfHostForm.useHfUrl;
+    const nextCandidate = nextUseHfUrl ? nextHfUrl : nextModelId;
+    const nextRepoName = getRepoName(nextCandidate);
+
+    const currentName = props.selfHostForm.name.trim();
+    const shouldUpdateName = !currentName || currentName === oldRepoName;
+
     props.onFormChange({
       ...props.selfHostForm,
       ...next,
-      name: props.selfHostForm.name || getRepoName(candidate),
+      name: shouldUpdateName ? nextRepoName : props.selfHostForm.name,
     });
   }
 
@@ -176,10 +187,10 @@ export function SelfHostingPage(props: {
             </div>
 
             <div className="cc-toggle" style={{ marginBottom: '8px' }}>
-              <button className={`cc-toggle-btn ${props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => props.onFormChange({ ...props.selfHostForm, useHfUrl: true })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
+              <button className={`cc-toggle-btn ${props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => updateModel({ useHfUrl: true })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
                 Hugging Face
               </button>
-              <button className={`cc-toggle-btn ${!props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => props.onFormChange({ ...props.selfHostForm, useHfUrl: false })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
+              <button className={`cc-toggle-btn ${!props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => updateModel({ useHfUrl: false })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
                 OneInfer Catalog
               </button>
             </div>
