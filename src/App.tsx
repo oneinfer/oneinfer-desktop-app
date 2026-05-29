@@ -1255,10 +1255,10 @@ function App() {
     const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
     const localRuntime = requestedRuntime;
     if (!libraries[localRuntime]) {
-      const dependencyNote = selectedRuntime === 'pytorch' && localRuntime === 'transformers'
-        ? ' PyTorch is the model backend, but OneInfer needs the Transformers serving runtime to expose an OpenAI-compatible local server.'
-        : '';
-      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.${dependencyNote}` });
+      const errorText = selectedRuntime === 'pytorch'
+        ? 'Install both PyTorch and Transformers before deploying this model locally. OneInfer uses PyTorch as the hardware-accelerated backend framework and the Transformers serving library to expose an OpenAI-compatible local server.'
+        : `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.`;
+      setMessage({ tone: 'error', text: errorText });
       return false;
     }
 
@@ -2972,7 +2972,7 @@ function formatLocalRuntime(runtime: ServingLibrary): string {
     tensorrt: 'TensorRT-LLM',
     ollama: 'Ollama',
     llama_cpp: 'llama.cpp',
-    pytorch: 'PyTorch',
+    pytorch: 'PyTorch (via Transformers)',
     transformers: 'Transformers',
     dynamo: 'Dynamo',
   };

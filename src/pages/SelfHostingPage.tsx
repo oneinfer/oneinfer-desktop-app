@@ -26,7 +26,7 @@ const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platf
   { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'], installable: true },
   { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'], installable: true },
   { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'], installable: true },
-  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'], installable: true },
+  { value: 'pytorch', label: 'PyTorch (via Transformers)', platforms: ['windows', 'macos', 'linux'], installable: true },
   { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'], installable: true },
   { value: 'dynamo', label: 'Dynamo', platforms: ['linux'], installable: true },
 ];
