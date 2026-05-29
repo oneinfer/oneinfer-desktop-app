@@ -1645,10 +1645,13 @@ function App() {
 
     const existingRouterEndpoint = dashboard.inferenceEndpoints.find((endpoint, index) => {
       const record = endpoint as Record<string, unknown>;
+      const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
+      if (deploymentTarget === 'cloud' || deploymentTarget === 'closed_source_api') {
+        return false;
+      }
       const endpointModelId = String(record.model_id ?? record.modelId ?? '');
       const endpointRole = String(record.endpoint_role ?? record.role ?? '').toLowerCase();
       const endpointUrl = String(record.endpoint_url ?? '').toLowerCase();
-      const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
       return endpointModelId === routerModelId
         && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'))
         && (!endpointRole || endpointRole === 'router' || endpointRole === 'model' || String(record.name ?? '').toLowerCase().includes('router'))
@@ -2093,7 +2096,7 @@ function isSameLocalModelId(left: string, right: string): boolean {
       const name = String(candidate.endpoint_name ?? candidate.name ?? modelId ?? 'candidate');
 
       // Only validate local endpoints! External/cloud endpoints do not run locally and do not need to be verified against local Ollama/model-server metrics.
-      if (!isLocalEndpointUrl(endpointUrl)) {
+      if (!isLocalEndpoint(candidate as any)) {
         continue;
       }
 
@@ -2648,6 +2651,7 @@ function buildAttachedInferenceEndpointPayload(
     endpoint_id: endpoint ? endpointId : localDeployment ? getLocalDeploymentSelectionId(localDeployment) : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
     endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
+    deployment_target: endpointRecord.deployment_target ?? endpointRecord.deploymentTarget ?? (localDeployment ? 'local' : undefined),
     model_id: endpointModelId,
     model_description: getModelRoutingDescription(endpointRecord, modelRecord),
     model_context_length: getFirstStringValue(modelRecord.modelContextLength, modelRecord.model_context_length, endpointRecord.model_context_length, endpointRecord.modelContextLength),
@@ -2914,6 +2918,18 @@ function toOpenAiChatCompletionsUrl(endpointUrl: string): string {
   return `${normalized}/v1/chat/completions`;
 }
 
+function isLocalEndpoint(endpoint: Record<string, unknown> | EndpointItem): boolean {
+  const target = String(endpoint.deployment_target ?? endpoint.deploymentTarget ?? '').toLowerCase();
+  if (target === 'cloud' || target === 'closed_source_api') {
+    return false;
+  }
+  const endpointUrl = String(endpoint.endpoint_url ?? endpoint.endpointUrl ?? '').toLowerCase();
+  return target === 'local'
+    || endpointUrl.includes('localhost')
+    || endpointUrl.includes('127.0.0.1')
+    || endpointUrl.includes('0.0.0.0');
+}
+
 function isLocalEndpointUrl(value: unknown): boolean {
   if (!value) {
     return false;
@@ -3122,8 +3138,12 @@ function isDeletedLocalInferenceEndpoint(endpoint: EndpointItem, deletedKeys: Se
 }
 
 function isLocalInferenceEndpoint(endpoint: EndpointItem): boolean {
+  const target = String(endpoint.deployment_target ?? '').toLowerCase();
+  if (target === 'cloud' || target === 'closed_source_api') {
+    return false;
+  }
   const endpointUrl = String(endpoint.endpoint_url ?? '').toLowerCase();
-  return String(endpoint.deployment_target ?? '').toLowerCase() === 'local'
+  return target === 'local'
     || endpointUrl.includes('localhost')
     || endpointUrl.includes('127.0.0.1')
     || endpointUrl.includes('0.0.0.0');

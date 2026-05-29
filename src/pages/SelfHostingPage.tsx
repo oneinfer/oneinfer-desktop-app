@@ -710,8 +710,12 @@ function getEndpointId(endpoint: EndpointItem, index: number): string {
 }
 
 function isLocalEndpoint(endpoint: EndpointItem): boolean {
+  const target = String(endpoint.deployment_target ?? '').toLowerCase();
+  if (target === 'cloud' || target === 'closed_source_api') {
+    return false;
+  }
   const endpointUrl = String(endpoint.endpoint_url ?? '').toLowerCase();
-  return String(endpoint.deployment_target ?? '').toLowerCase() === 'local'
+  return target === 'local'
     || endpointUrl.includes('localhost')
     || endpointUrl.includes('127.0.0.1')
     || endpointUrl.includes('0.0.0.0');

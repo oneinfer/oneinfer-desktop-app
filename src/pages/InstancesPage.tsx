@@ -761,7 +761,15 @@ function getEndpointSource(endpoint: EndpointItem): EndpointSource {
     return 'openbandwidth';
   }
 
-  if (String(record.deployment_target ?? '').toLowerCase() === 'local' || isLocalEndpointUrl(record.endpoint_url)) {
+  const target = String(record.deployment_target ?? '').toLowerCase();
+  if (target === 'cloud') {
+    return 'cloud';
+  }
+  if (target === 'closed_source_api') {
+    return 'closed_source_api';
+  }
+
+  if (target === 'local' || isLocalEndpointUrl(record.endpoint_url)) {
     return 'local';
   }
 
