@@ -50,6 +50,34 @@ export function OverviewPage(props: {
       deployedAt: String(endpoint.created_at ?? endpoint.updated_at ?? new Date().toISOString()),
     })).filter((deployment) => deployment.endpointUrl && !localDeploymentKeys.has(getLocalDeploymentKey(deployment.endpointUrl, deployment.modelId)) && isVisibleLocalDeployment(deployment, props.localModelMetrics)),
   ];
+  const registeredCloudEndpointKeys = new Set(
+    cloudEndpoints.map((endpoint, index) =>
+      String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`).toLowerCase()
+    )
+  );
+  const visibleCloudDeployments = [
+    ...cloudEndpoints.map((endpoint, index) => {
+      const endpointId = String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `endpoint-${index + 1}`);
+      const modelId = String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `model-${index + 1}`);
+      return {
+        id: endpointId,
+        name: String(endpoint.name ?? endpoint.endpoint_name ?? modelId),
+        subtext: String(endpoint.provider ?? endpoint.endpoint_source ?? 'cloud'),
+        status: String(endpoint.status ?? endpoint.creation_status ?? 'ready'),
+      };
+    }),
+    ...props.dashboard.instances
+      .map((instance, index) => {
+        const instanceId = String(instance.inference_endpoint_id ?? instance.endpoint_id ?? instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
+        return {
+          id: instanceId,
+          name: String(instance.instance_name ?? instance.name ?? instanceId),
+          subtext: `${String(instance.provider_name ?? 'cloud')} - ${String(instance.region ?? 'cloud')}`,
+          status: String(instance.instance_status ?? instance.status ?? 'running'),
+        };
+      })
+      .filter((instance) => !registeredCloudEndpointKeys.has(instance.id.toLowerCase())),
+  ];
   const activePlan = props.dashboard.activeDeveloperPlan
     ? props.dashboard.developerPlans.find((plan) => plan.planId === props.dashboard.activeDeveloperPlan?.planId) ?? {
         ...props.dashboard.activeDeveloperPlan,
@@ -96,18 +124,17 @@ export function OverviewPage(props: {
                     <h3 className="panel-title">Cloud Instances</h3>
                   </div>
                   <div className="instance-list">
-                    {props.dashboard.instances.length === 0 ? <EmptyState text="No active cloud instances." /> : null}
-                    {props.dashboard.instances.map((instance, index) => {
-                      const instanceId = String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? `instance-${index}`);
+                    {visibleCloudDeployments.length === 0 ? <EmptyState text="No active cloud instances." /> : null}
+                    {visibleCloudDeployments.map((deployment) => {
                       return (
-                        <div className="sub-card" key={instanceId} style={{ padding: '12px' }}>
+                        <div className="sub-card" key={deployment.id} style={{ padding: '12px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                             <div>
-                              <h4 style={{ fontSize: '0.9rem' }}>{String(instance.instance_name ?? instanceId)}</h4>
-                              <p style={{ fontSize: '0.75rem', margin: 0 }}>{String(instance.provider_name)} - {String(instance.region)}</p>
+                              <h4 style={{ fontSize: '0.9rem' }}>{deployment.name}</h4>
+                              <p style={{ fontSize: '0.75rem', margin: 0 }}>{deployment.subtext}</p>
                             </div>
                             <span className="status-pill" style={{ fontSize: '0.7rem', padding: '4px 8px' }}>
-                              {formatValue(instance.instance_status ?? instance.status)}
+                              {formatValue(deployment.status)}
                             </span>
                           </div>
                         </div>
