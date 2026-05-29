@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, PlayCircle, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
+import type { EndpointUsageTarget } from '../components/EndpointUsageModal';
 import type { ValidationResult } from '../helpers/hardwareValidation';
 import { getServingLibraryCompatibility } from '../helpers/servingCompatibility';
 import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
@@ -47,6 +48,7 @@ export function SelfHostingPage(props: {
   onInstallLibrary: (library: ServingLibrary) => Promise<void>;
   onStartLocalDeployment: (deployment: LocalDeploymentRow) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -330,6 +332,7 @@ export function SelfHostingPage(props: {
               busy={props.busy}
               onStart={props.onStartLocalDeployment}
               onUseInRoute={props.onUseInRoute}
+              onShowUsage={props.onShowUsage}
               onDelete={props.onDeleteLocalDeployment}
             />
           ))}
@@ -518,6 +521,7 @@ function LocalDeploymentCard(props: {
   busy: string | null;
   onStart: (deployment: LocalDeploymentRow) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
   onDelete: (deployment: LocalDeploymentRow) => void;
 }) {
   const healthLabel = props.metrics?.healthy === undefined
@@ -552,6 +556,21 @@ function LocalDeploymentCard(props: {
         <button className="ghost-button" type="button" disabled={!props.deployment.registered} onClick={() => props.onUseInRoute(props.deployment.endpointId, props.deployment.name)}>
           <Orbit size={14} />
           Use in route
+        </button>
+        <button
+          className="ghost-button"
+          type="button"
+          disabled={!props.deployment.endpointUrl}
+          onClick={() => props.onShowUsage({
+            endpointId: props.deployment.endpointId,
+            endpointUrl: props.deployment.endpointUrl,
+            modelId: props.deployment.modelId,
+            name: props.deployment.name,
+            source: 'local',
+          })}
+        >
+          <PlayCircle size={14} />
+          Usage
         </button>
         <button className="ghost-button" type="button" onClick={() => navigator.clipboard?.writeText(curlBase)}>
           <Copy size={14} />

@@ -13,6 +13,7 @@ import {
   getActiveDeveloperPlan,
   getCredits,
   getDeveloperPlans,
+  getGpuPricing,
   getGpuSpecs,
   getHfModelInfo,
   getInstances,
@@ -30,6 +31,7 @@ import {
   verifyRegistration,
 } from './api';
 import { AppLayout } from './components/AppLayout';
+import { EndpointUsageModal, type EndpointUsageTarget } from './components/EndpointUsageModal';
 import { HfModelDetailPanel } from './components/HfModelDetailPanel';
 import {
   createLoadedSections,
@@ -205,6 +207,7 @@ function App() {
   const [activeSection, setActiveSection] = useState<SectionKey>('overview');
   const [dashboard, setDashboard] = useState<DashboardState>(defaultDashboardState);
   const [message, setMessage] = useState<{ tone: 'info' | 'success' | 'error'; text: string } | null>(null);
+  const [usageTarget, setUsageTarget] = useState<EndpointUsageTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [, setUpdateStatus] = useState<DesktopUpdateStatus>({
     phase: 'idle',
@@ -573,6 +576,7 @@ function App() {
           getInstances(currentBaseUrl, currentSession),
           getProviderInfo(currentBaseUrl),
           getGpuSpecs(currentBaseUrl),
+          getGpuPricing(currentBaseUrl, currentSession),
           listModels(currentBaseUrl),
           listInferenceEndpoints(currentBaseUrl, currentSession),
         ]);
@@ -582,11 +586,12 @@ function App() {
           instances: results[0].status === 'fulfilled' ? results[0].value : current.instances,
           providerInfo: results[1].status === 'fulfilled' ? results[1].value : current.providerInfo,
           gpuSpecs: results[2].status === 'fulfilled' ? results[2].value : current.gpuSpecs,
-          models: results[3].status === 'fulfilled' ? results[3].value : current.models,
-          inferenceEndpoints: results[4].status === 'fulfilled' ? results[4].value : current.inferenceEndpoints,
+          gpuPricing: results[3].status === 'fulfilled' ? results[3].value : current.gpuPricing,
+          models: results[4].status === 'fulfilled' ? results[4].value : current.models,
+          inferenceEndpoints: results[5].status === 'fulfilled' ? results[5].value : current.inferenceEndpoints,
         }));
 
-        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs', 'models', 'inference endpoints']);
+        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs', 'GPU pricing', 'models', 'inference endpoints']);
       }
 
       if (section === 'apiKeys') {
@@ -2188,6 +2193,7 @@ function App() {
       sidebarOpen={sidebarOpen}
       onSidebarOpen={setSidebarOpen}
       onSectionChange={setActiveSection}
+      onAddCredits={handleAddCredits}
       onRefresh={handleRefreshCurrentSection}
       onLogout={handleLogout}
     >
@@ -2198,13 +2204,11 @@ function App() {
             <span>{getGreeting()}, {getWelcomeName(session, visibleDashboard.profile)}</span>
           </div>
           <div className="top-credit-pill">
-            <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
-            <span>Available Credits</span>
-            <button
-              className="top-credit-action"
-              type="button"
-              onClick={handleAddCredits}
-            >
+            <div className="top-credit-copy">
+              <span>Available Credits</span>
+              <strong>{getBalance(visibleDashboard.credits)}</strong>
+            </div>
+            <button className="top-credit-action" type="button" onClick={handleAddCredits}>
               <Plus size={13} />
               Add credits
             </button>
@@ -2272,6 +2276,7 @@ function App() {
             onInstallLibrary={handleInstallLibrary}
             onStartLocalDeployment={handleStartLocalDeployment}
             onUseInRoute={handleUseEndpointInRoute}
+            onShowUsage={setUsageTarget}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
         ) : null}
@@ -2288,6 +2293,7 @@ function App() {
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}
             onUseEndpointInRoute={handleUseEndpointInRoute}
+            onShowUsage={setUsageTarget}
           />
         ) : null}
 
@@ -2338,6 +2344,13 @@ function App() {
         ) : null}
 
       </main>
+
+      <EndpointUsageModal
+        target={usageTarget}
+        session={session}
+        onClose={() => setUsageTarget(null)}
+        onError={(text) => setMessage({ tone: 'error', text })}
+      />
 
       {busy?.startsWith('load-') ? (
         <div className="sync-status-overlay" role="status" aria-live="polite">

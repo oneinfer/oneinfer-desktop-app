@@ -169,6 +169,17 @@ export interface GpuSpecItem {
   [key: string]: unknown;
 }
 
+export interface GpuPricingItem {
+  gpuId: string;
+  providerName: string;
+  gpuName: string;
+  regions: string[];
+  pricePerHour: number;
+  gpuAvailability: string | null;
+  vram?: string;
+  logoUrl?: string;
+}
+
 export type ProviderInfoMap = Record<string, Record<string, unknown>>;
 
 export interface DeveloperPlanItem {
@@ -208,6 +219,7 @@ export interface DashboardState {
   inferenceEndpoints: EndpointItem[];
   providerInfo: ProviderInfoMap;
   gpuSpecs: GpuSpecItem[];
+  gpuPricing: GpuPricingItem[];
   models: any[];
   developerPlans: DeveloperPlanItem[];
   activeDeveloperPlan: ActiveDeveloperPlanItem | null;

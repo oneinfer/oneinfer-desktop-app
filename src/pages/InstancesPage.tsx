@@ -1,9 +1,23 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ChevronRight, Copy, LoaderCircle, Orbit, Rocket, Server } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Copy, LoaderCircle, Orbit, PlayCircle, Rocket, Server, SlidersHorizontal, XCircle } from 'lucide-react';
 
+import { getHfModelInfo } from '../api';
 import { Modal } from '../components/Common';
-import type { CreateInstanceFormState, DashboardState, EndpointItem, InstanceItem, ServingLibrary } from '../types';
+import type { EndpointUsageTarget } from '../components/EndpointUsageModal';
+import { getServingLibraryCompatibility } from '../helpers/servingCompatibility';
+import type { CreateInstanceFormState, DashboardState, EndpointItem, HfModelInfo, InstanceItem, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
+
+const cloudServingLibraryOptions: Array<{ value: ServingLibrary; label: string }> = [
+  { value: 'vllm', label: 'vLLM' },
+  { value: 'sglang', label: 'SGLang' },
+  { value: 'tensorrt', label: 'TensorRT-LLM' },
+  { value: 'ollama', label: 'Ollama' },
+  { value: 'llama_cpp', label: 'llama.cpp' },
+  { value: 'pytorch', label: 'PyTorch' },
+  { value: 'transformers', label: 'Transformers' },
+  { value: 'dynamo', label: 'Dynamo' },
+];
 
 export function InstancesPage(props: {
   dashboard: DashboardState;
@@ -16,10 +30,15 @@ export function InstancesPage(props: {
   onAction: (action: 'start-instance' | 'stop-instance' | 'restart-instance', instanceId: string, provider: string) => void;
   onDelete: (instanceId: string, provider: string) => void;
   onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
 }) {
   const [detailsGpu, setDetailsGpu] = useState<GpuCardOption | null>(null);
   const [hfAccessCheck, setHfAccessCheck] = useState<HfAccessCheckState>({ status: 'idle' });
+  const [hfModelMetadata, setHfModelMetadata] = useState<HfModelInfo | null>(null);
+  const [hfModelMetadataLoading, setHfModelMetadataLoading] = useState(false);
+  const [hfModelMetadataError, setHfModelMetadataError] = useState<string | null>(null);
   const [providerGpuFilter, setProviderGpuFilter] = useState<GpuProviderFilter | null>(null);
+  const [gpuSort, setGpuSort] = useState<GpuSortOption>('most-wanted');
   const allProviders = useMemo(() => getProviderOptions(props.dashboard.providerInfo), [props.dashboard.providerInfo]);
   const providers = useMemo(
     () => providerGpuFilter
@@ -46,7 +65,10 @@ export function InstancesPage(props: {
   const diskPricePerHour = calculateDiskPricePerHour(props.instanceForm.disk_size);
   const totalPricePerHour = gpuPricePerHour + diskPricePerHour;
   const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints, props.dashboard.instances);
-  const gpuCards = getGpuCardOptions(props.dashboard.providerInfo, props.dashboard.gpuSpecs);
+  const gpuCards = useMemo(
+    () => sortGpuCards(getGpuCardOptions(props.dashboard.providerInfo, props.dashboard.gpuSpecs), gpuSort),
+    [props.dashboard.providerInfo, props.dashboard.gpuSpecs, gpuSort],
+  );
   const modelOptions = getModelOptions(props.dashboard.models);
   const selectedModel = modelOptions.find((model) => model.value === props.instanceForm.model_id);
   const selectedModelLabel = props.instanceForm.model_source === 'huggingface'
@@ -54,6 +76,12 @@ export function InstancesPage(props: {
     : (selectedModel?.label ?? 'Not selected');
   const shouldShowHfTokenInput = props.instanceForm.model_source === 'huggingface'
     && hfAccessCheck.status === 'requires-token';
+  const selectedServingLibraryStatus = props.instanceForm.model_source === 'huggingface'
+    ? getCloudServingLibraryStatus(props.instanceForm.serving_library, hfModelMetadata)
+    : { supported: true, detail: '' };
+  const selectedServingLibrarySupported = props.instanceForm.model_source !== 'huggingface'
+    || !hfModelMetadata
+    || selectedServingLibraryStatus.supported;
 
   useEffect(() => {
     if (!props.showCreateInstanceModal || providers.length === 0) {
@@ -105,36 +133,63 @@ export function InstancesPage(props: {
   useEffect(() => {
     if (!props.showCreateInstanceModal || props.instanceForm.model_source !== 'huggingface') {
       setHfAccessCheck({ status: 'idle' });
+      setHfModelMetadata(null);
+      setHfModelMetadataLoading(false);
+      setHfModelMetadataError(null);
       return;
     }
 
     const rawValue = props.instanceForm.hf_model_url.trim();
     if (!rawValue) {
       setHfAccessCheck({ status: 'idle' });
+      setHfModelMetadata(null);
+      setHfModelMetadataLoading(false);
+      setHfModelMetadataError(null);
       return;
     }
 
     const repoId = normalizeHfRepoId(rawValue);
     if (!repoId) {
       setHfAccessCheck({ status: 'invalid', message: 'Enter a valid Hugging Face URL or owner/model id.' });
+      setHfModelMetadata(null);
+      setHfModelMetadataLoading(false);
+      setHfModelMetadataError(null);
       return;
     }
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
       setHfAccessCheck({ status: 'checking', repoId });
+      setHfModelMetadataLoading(true);
+      setHfModelMetadataError(null);
       try {
         const result = await checkHfModelAccess(repoId, controller.signal);
         setHfAccessCheck(result);
+        if (result.status === 'requires-token' && !props.instanceForm.hf_access_token.trim()) {
+          setHfModelMetadata(null);
+          setHfModelMetadataError(result.message ?? 'This model requires a Hugging Face token.');
+          return;
+        }
+
+        const metadata = await getHfModelInfo(repoId, props.instanceForm.hf_access_token) as HfModelInfo;
+        if (!controller.signal.aborted) {
+          setHfModelMetadata(metadata);
+        }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
           return;
         }
+        setHfModelMetadata(null);
+        setHfModelMetadataError(error instanceof Error ? error.message : 'Unable to fetch Hugging Face model metadata.');
         setHfAccessCheck({
           status: 'error',
           repoId,
           message: 'Unable to check Hugging Face model access.',
         });
+      } finally {
+        if (!controller.signal.aborted) {
+          setHfModelMetadataLoading(false);
+        }
       }
     }, 500);
 
@@ -143,6 +198,7 @@ export function InstancesPage(props: {
       window.clearTimeout(timeoutId);
     };
   }, [
+    props.instanceForm.hf_access_token,
     props.instanceForm.hf_model_url,
     props.instanceForm.model_source,
     props.showCreateInstanceModal,
@@ -191,6 +247,22 @@ export function InstancesPage(props: {
         </button>
       </header>
 
+      <div className="gpu-market-toolbar">
+        <div className="gpu-market-count">{gpuCards.length} GPU{gpuCards.length === 1 ? '' : 's'} available</div>
+        <label className="gpu-sort-control">
+          <SlidersHorizontal size={15} />
+          <span>Sort</span>
+          <select value={gpuSort} onChange={(event) => setGpuSort(event.target.value as GpuSortOption)}>
+            <option value="most-wanted">Most wanted</option>
+            <option value="price-low">Price: low to high</option>
+            <option value="price-high">Price: high to low</option>
+            <option value="vram-high">VRAM: high to low</option>
+            <option value="availability">Most regions</option>
+            <option value="newest">Newest GPUs</option>
+          </select>
+        </label>
+      </div>
+
       <div className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {gpuCards.length === 0 ? (
           <div className="glass-panel col-span-full p-6 text-[0.95rem] text-[var(--muted)]">No GPUs found.</div>
@@ -225,6 +297,7 @@ export function InstancesPage(props: {
               endpoint={endpoint}
               key={endpoint.endpointId}
               onUseEndpointInRoute={props.onUseEndpointInRoute}
+              onShowUsage={props.onShowUsage}
             />
           ))}
         </div>
@@ -342,13 +415,34 @@ export function InstancesPage(props: {
                       });
                     }}
                   >
-                    <option value="vllm">vLLM</option>
-                    <option value="transformers">Transformers</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="sglang">SGLang</option>
-                    <option value="tensorrt">TensorRT-LLM</option>
+                    {cloudServingLibraryOptions.map((library) => {
+                      const status = props.instanceForm.model_source === 'huggingface'
+                        ? getCloudServingLibraryStatus(library.value, hfModelMetadata)
+                        : { supported: true, shortLabel: 'Supported' };
+                      return (
+                        <option key={library.value} value={library.value}>
+                          {library.label}{props.instanceForm.model_source === 'huggingface' && hfModelMetadata ? status.supported ? ' - supported' : ` - ${status.shortLabel}` : ''}
+                        </option>
+                      );
+                    })}
                   </select>
+                  {props.instanceForm.model_source === 'huggingface' ? (
+                    <small className="field-help" style={{ color: selectedServingLibrarySupported ? 'var(--muted)' : 'var(--danger)' }}>
+                      {hfModelMetadataLoading
+                        ? 'Checking serving library support for this Hugging Face model...'
+                        : hfModelMetadata
+                          ? selectedServingLibraryStatus.detail
+                          : hfModelMetadataError || 'Enter a Hugging Face model to check serving library support.'}
+                    </small>
+                  ) : null}
                 </label>
+                {props.instanceForm.model_source === 'huggingface' ? (
+                  <CloudServingCompatibilityPanel
+                    loading={hfModelMetadataLoading}
+                    metadataError={hfModelMetadataError}
+                    model={hfModelMetadata}
+                  />
+                ) : null}
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
@@ -407,7 +501,7 @@ export function InstancesPage(props: {
               </label>
             </div>
 
-            <div className="rounded-[1rem] border border-white/[0.06] bg-white/[0.02] p-5">
+            <div className="cloud-deploy-summary rounded-[1rem] border border-white/[0.06] bg-white/[0.02] p-5">
               <h4 className="mb-5 text-[1.25rem] font-semibold">Summary</h4>
 
               <div className="mb-6">
@@ -419,7 +513,7 @@ export function InstancesPage(props: {
                   </div>
                   <div>
                     <div className="text-[0.75rem] text-[var(--muted)]">Serving Library</div>
-                    <div>{formatValue(props.instanceForm.serving_library)}</div>
+                    <div>{formatCloudServingLibraryLabel(props.instanceForm.serving_library)}</div>
                   </div>
                   <div>
                     <div className="text-[0.75rem] text-[var(--muted)]">GPU</div>
@@ -459,7 +553,7 @@ export function InstancesPage(props: {
                 <p className="mt-4 text-xs text-[var(--muted)]">Total cost is calculated from the selected GPU and disk size.</p>
               </div>
 
-              <button className="primary-button w-full justify-center" type="submit" disabled={props.busy === 'deploy-cloud-model' || !validProviderName || !props.instanceForm.gpu_id || !props.instanceForm.region || !props.instanceForm.image_url || (props.instanceForm.model_source === 'catalog' ? !props.instanceForm.model_id : !props.instanceForm.hf_model_url)}>
+              <button className="primary-button w-full justify-center" type="submit" disabled={props.busy === 'deploy-cloud-model' || !validProviderName || !props.instanceForm.gpu_id || !props.instanceForm.region || !props.instanceForm.image_url || !selectedServingLibrarySupported || (props.instanceForm.model_source === 'catalog' ? !props.instanceForm.model_id : !props.instanceForm.hf_model_url)}>
                 {props.busy === 'deploy-cloud-model' ? <LoaderCircle className="spin" size="1rem" /> : <Rocket size="1rem" />}
                 Deploy Model
               </button>
@@ -542,9 +636,58 @@ interface ModelOption {
   label: string;
 }
 
+function CloudServingCompatibilityPanel(props: {
+  loading: boolean;
+  metadataError: string | null;
+  model: HfModelInfo | null;
+}) {
+  return (
+    <div className="full-span" style={{ display: 'grid', gap: '8px', padding: '12px', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+      <div className="text-[0.75rem] uppercase tracking-[0.08em] text-[var(--muted)]">Serving Library Support</div>
+      {props.loading ? (
+        <CloudServingStatusRow pending label="Checking Hugging Face model metadata" />
+      ) : props.model ? (
+        cloudServingLibraryOptions.map((library) => {
+          const status = getCloudServingLibraryStatus(library.value, props.model);
+          return (
+            <CloudServingStatusRow
+              detail={status.supported ? status.detail : status.reason}
+              key={library.value}
+              label={`${library.label}: ${status.supported ? 'Supported' : 'Not supported'}`}
+              ok={status.supported}
+            />
+          );
+        })
+      ) : (
+        <CloudServingStatusRow
+          detail={props.metadataError || 'Enter a Hugging Face URL or owner/model id to check compatibility.'}
+          label="Model metadata needed"
+          ok={false}
+        />
+      )}
+    </div>
+  );
+}
+
+function CloudServingStatusRow(props: { ok?: boolean; pending?: boolean; label: string; detail?: string }) {
+  const color = props.pending ? 'var(--muted)' : props.ok ? 'var(--accent)' : 'var(--danger)';
+  const Icon = props.pending ? LoaderCircle : props.ok ? CheckCircle2 : XCircle;
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.78rem', lineHeight: 1.4 }}>
+      <Icon className={props.pending ? 'spin' : undefined} size={15} style={{ color, flexShrink: 0, marginTop: '1px' }} />
+      <div>
+        <strong style={{ color: 'var(--text)', display: 'block' }}>{props.label}</strong>
+        {props.detail ? <span style={{ color: 'var(--muted)' }}>{props.detail}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 function CloudEndpointCard(props: {
   endpoint: CloudEndpointRow;
   onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
 }) {
   return (
     <div className="cloud-endpoint-card">
@@ -564,6 +707,21 @@ function CloudEndpointCard(props: {
         <button className="ghost-button" type="button" disabled={!props.endpoint.canUseInRoute} onClick={() => props.onUseEndpointInRoute(props.endpoint.endpointId, props.endpoint.name)}>
           <Orbit size={14} />
           Use in route
+        </button>
+        <button
+          className="ghost-button"
+          type="button"
+          disabled={!props.endpoint.endpointUrl || !isActiveEndpointStatus(props.endpoint.status)}
+          onClick={() => props.onShowUsage({
+            endpointId: props.endpoint.endpointId,
+            endpointUrl: props.endpoint.endpointUrl,
+            modelId: props.endpoint.modelId,
+            name: props.endpoint.name,
+            source: 'cloud',
+          })}
+        >
+          <PlayCircle size={14} />
+          Usage
         </button>
         <button className="ghost-button" type="button" disabled={!props.endpoint.endpointUrl} onClick={() => navigator.clipboard?.writeText(props.endpoint.endpointUrl)}>
           <Copy size={14} />
@@ -590,6 +748,37 @@ function getModelOptions(models: any[]): ModelOption[] {
       seen.add(model.value);
       return true;
     });
+}
+
+function getCloudServingLibraryStatus(library: ServingLibrary, model: HfModelInfo | null): { supported: boolean; shortLabel: string; detail: string; reason?: string } {
+  if (!model) {
+    return {
+      supported: true,
+      shortLabel: 'Pending',
+      detail: 'Compatibility will be checked after model metadata loads.',
+    };
+  }
+
+  const label = formatCloudServingLibraryLabel(library);
+  const compatibility = getServingLibraryCompatibility(library, model);
+  if (!compatibility.supported) {
+    return {
+      supported: false,
+      shortLabel: 'not supported',
+      detail: compatibility.reason || `${label} does not support this model.`,
+      reason: compatibility.reason || `${label} does not support this model.`,
+    };
+  }
+
+  return {
+    supported: true,
+    shortLabel: 'supported',
+    detail: `${label} supports this Hugging Face model.`,
+  };
+}
+
+function formatCloudServingLibraryLabel(library: ServingLibrary): string {
+  return cloudServingLibraryOptions.find((option) => option.value === library)?.label ?? formatValue(library);
 }
 
 function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem[]): CloudEndpointRow[] {
@@ -751,6 +940,8 @@ type GpuProviderFilter = {
   name: string;
 };
 
+type GpuSortOption = 'most-wanted' | 'price-low' | 'price-high' | 'vram-high' | 'availability' | 'newest';
+
 type SpecEntry = {
   label: string;
   value: string;
@@ -865,7 +1056,7 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
 } {
   const rawProvider = providerInfo[providerName] as Record<string, unknown> | undefined;
   const rawImages = getArrayValue(rawProvider, 'images', 'container_images', 'containerImages', 'image_list', 'imageList');
-  const rawInstances = getArrayValue(rawProvider, 'instances', 'gpus', 'gpu_instances', 'gpuInstances', 'instance_types', 'instanceTypes');
+  const rawInstances = getProviderInstanceRecords(rawProvider);
 
   const images = rawImages
     .map((image) => {
@@ -887,7 +1078,7 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
     .filter(isGpuInstanceRecord)
     .map((instance): Record<string, unknown> & { gpu_id: string } => ({
       ...instance,
-      gpu_id: getStringValue(instance.gpu_id ?? instance.gpuId ?? instance.id ?? instance.instance_id ?? instance.instanceId),
+      gpu_id: getGpuInstanceId(instance),
     }))
     .filter((instance) => instance.gpu_id.trim() !== '')
     .map((instance) => {
@@ -896,17 +1087,17 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
       const ram = getNestedRecord(instance, 'ram', 'RAM');
       const vram = getNestedRecord(instance, 'vram', 'VRAM');
       const regions = Array.isArray(instance.regions) ? instance.regions.filter((region): region is string => typeof region === 'string') : [];
-      const gpuNum = typeof gpu.number_of_gpus === 'number' ? gpu.number_of_gpus : 1;
+      const gpuNum = getGpuCount(instance);
       const cpuCores = typeof cpu.number_of_cores === 'number' ? cpu.number_of_cores : null;
-      const price = typeof instance.price_per_hour === 'number' ? instance.price_per_hour : null;
+      const price = getPricePerHourUsd(instance);
 
       return {
         gpu_id: String(instance.gpu_id),
         gpu_num: gpuNum,
         name: String(instance.name ?? instance.instance_name ?? 'GPU'),
         regions,
-        pricePerHourUsd: price !== null ? price / 100 : 0,
-        chipId: String(instance.chip_id ?? ''),
+        pricePerHourUsd: price ?? 0,
+        chipId: getChipId(instance),
         cpuId: String(instance.cpu_id ?? ''),
         brand: String(instance.manufacturer ?? 'NVIDIA'),
         vram: formatGbValue(vram.size_in_gigabytes),
@@ -916,7 +1107,7 @@ function getSelectedProviderData(providerInfo: DashboardState['providerInfo'], p
           String(instance.name ?? instance.instance_name ?? 'GPU'),
           `${gpuNum} GPU`,
           cpuCores ? `${cpuCores} vCPU` : null,
-          price !== null ? `$${(price / 100).toFixed(2)}/hr` : null,
+          price !== null ? `$${price.toFixed(2)}/hr` : null,
         ].filter(Boolean).join(' | '),
       };
     })
@@ -1032,14 +1223,18 @@ function formatGpuDisplayName(value: string): string {
 
 function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpecs: DashboardState['gpuSpecs']): GpuCardOption[] {
   const allGpuInstances = Object.entries(providerInfo).flatMap(([providerName, provider]) => {
-    const instances = Array.isArray(provider.instances) ? provider.instances as Array<Record<string, unknown>> : [];
-    return instances.filter(isGpuInstanceRecord).map((instance) => ({ ...instance, providerName }));
+    const instances = getProviderInstanceRecords(provider);
+    return instances.filter(isGpuInstanceRecord).map((instance) => ({
+      ...instance,
+      gpu_id: getGpuInstanceId(instance),
+      providerName,
+    }));
   }) as Array<Record<string, unknown> & { providerName: string }>;
 
   const specOptions = gpuSpecs.map((spec) => {
-    const specChipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');
-    const matchingInstances = allGpuInstances.filter((instance) => String(instance.chip_id ?? '') === specChipId);
-    const matchingInstance = matchingInstances.find((instance) => Number(instance.price_per_hour ?? 0) > 0) ?? matchingInstances[0];
+    const specChipId = getChipId(spec);
+    const matchingInstances = allGpuInstances.filter((instance) => getChipId(instance) === specChipId);
+    const matchingInstance = matchingInstances.find((instance) => (getPricePerHourUsd(instance) ?? 0) > 0) ?? matchingInstances[0];
     if (!matchingInstance) {
       return createGpuCardFromSpec(spec);
     }
@@ -1047,10 +1242,10 @@ function getGpuCardOptions(providerInfo: DashboardState['providerInfo'], gpuSpec
     return createGpuCardFromProviderInstance(matchingInstance, String(spec.modelName ?? spec.gpu_name ?? spec.display_name ?? matchingInstance.name ?? 'GPU'), spec);
   });
 
-  const specChipIds = new Set(gpuSpecs.map((spec) => String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '')));
+  const specChipIds = new Set(gpuSpecs.map(getChipId));
   const orphanOptions = allGpuInstances
-    .filter((instance) => !specChipIds.has(String(instance.chip_id ?? '')))
-    .filter((instance, index, self) => index === self.findIndex((item) => String(item.chip_id ?? item.gpu_id) === String(instance.chip_id ?? instance.gpu_id)))
+    .filter((instance) => !specChipIds.has(getChipId(instance)))
+    .filter((instance, index, self) => index === self.findIndex((item) => (getChipId(item) || getGpuInstanceId(item)) === (getChipId(instance) || getGpuInstanceId(instance))))
     .map((instance) => createGpuCardFromProviderInstance(instance, String(instance.name ?? 'GPU')));
 
   return [...specOptions, ...orphanOptions]
@@ -1062,10 +1257,10 @@ function createGpuCardFromProviderInstance(instance: Record<string, unknown>, di
   const cpu = getNestedRecord(instance, 'cpu');
   const ram = getNestedRecord(instance, 'ram', 'RAM');
   const vram = getNestedRecord(instance, 'vram', 'VRAM');
-  const price = typeof instance.price_per_hour === 'number' ? instance.price_per_hour / 100 : null;
+  const price = getPricePerHourUsd(instance);
   const regions = Array.isArray(instance.regions) ? instance.regions.filter((region): region is string => typeof region === 'string') : [];
-  const chipId = String(instance.chip_id ?? '');
-  const gpuId = String(instance.gpu_id ?? chipId);
+  const chipId = getChipId(instance);
+  const gpuId = getGpuInstanceId(instance) || chipId;
   const memorySpecEntries = getMemorySpecEntries(spec);
   const specVram = memorySpecEntries.find((entry) => entry.label === 'Size')?.value?.replace(/\s+/g, '');
 
@@ -1094,7 +1289,7 @@ function createGpuCardFromProviderInstance(instance: Record<string, unknown>, di
 }
 
 function createGpuCardFromSpec(spec: Record<string, unknown>): GpuCardOption {
-  const chipId = String(spec.chipId ?? spec.chip_id ?? spec.gpu_id ?? '');
+  const chipId = getChipId(spec);
   const memorySpecs = getNestedRecord(spec, 'memory_specs');
   const name = String(spec.modelName ?? spec.gpu_name ?? spec.display_name ?? 'GPU');
   const memorySpecEntries = getMemorySpecEntries(spec);
@@ -1142,6 +1337,76 @@ function compareProviderGpuValue(left: ProviderGpuOption, right: ProviderGpuOpti
 
 function compareGpuCardValue(left: GpuCardOption, right: GpuCardOption): number {
   return compareGpuValue(left, right);
+}
+
+function sortGpuCards(gpus: GpuCardOption[], sort: GpuSortOption): GpuCardOption[] {
+  return [...gpus].sort((left, right) => {
+    if (sort === 'price-low') {
+      return compareGpuPrice(left, right, 'asc');
+    }
+
+    if (sort === 'price-high') {
+      return compareGpuPrice(left, right, 'desc');
+    }
+
+    if (sort === 'vram-high') {
+      return compareNumberWithFallback(parseGbValue(right.vram), parseGbValue(left.vram), left, right);
+    }
+
+    if (sort === 'availability') {
+      return compareNumberWithFallback(right.regions.length, left.regions.length, left, right);
+    }
+
+    if (sort === 'newest') {
+      if (left.isNew !== right.isNew) {
+        return left.isNew ? -1 : 1;
+      }
+
+      return compareGpuCardValue(left, right);
+    }
+
+    return compareGpuCardValue(left, right);
+  });
+}
+
+function compareGpuPrice(left: GpuCardOption, right: GpuCardOption, direction: 'asc' | 'desc'): number {
+  const leftPrice = getGpuPrice(left);
+  const rightPrice = getGpuPrice(right);
+  const leftHasPrice = leftPrice !== null;
+  const rightHasPrice = rightPrice !== null;
+
+  if (leftHasPrice !== rightHasPrice) {
+    return leftHasPrice ? -1 : 1;
+  }
+
+  if (leftPrice === null || rightPrice === null) {
+    return compareGpuCardValue(left, right);
+  }
+
+  if (leftPrice !== rightPrice) {
+    return direction === 'asc' ? leftPrice - rightPrice : rightPrice - leftPrice;
+  }
+
+  return compareGpuCardValue(left, right);
+}
+
+function getGpuPrice(gpu: GpuCardOption): number | null {
+  return typeof gpu.pricePerHourUsd === 'number' && gpu.pricePerHourUsd > 0
+    ? gpu.pricePerHourUsd
+    : null;
+}
+
+function compareNumberWithFallback(
+  leftValue: number,
+  rightValue: number,
+  left: GpuCardOption,
+  right: GpuCardOption,
+): number {
+  if (leftValue !== rightValue) {
+    return leftValue - rightValue;
+  }
+
+  return compareGpuCardValue(left, right);
 }
 
 function compareGpuValue(
@@ -1211,18 +1476,79 @@ function getNestedRecord(record: Record<string, unknown>, ...keys: string[]): Re
   return (value ?? {}) as Record<string, unknown>;
 }
 
+function getProviderInstanceRecords(provider: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
+  return getArrayValue(provider, 'instances', 'gpus', 'gpu_instances', 'gpuInstances', 'instance_types', 'instanceTypes');
+}
+
 function getArrayValue(record: Record<string, unknown> | undefined, ...keys: string[]): Array<Record<string, unknown>> {
   const value = keys.map((key) => record?.[key]).find(Array.isArray);
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
 }
 
-function isGpuInstanceRecord(instance: Record<string, unknown>): boolean {
+function getGpuInstanceId(instance: Record<string, unknown>): string {
+  return getStringValue(instance.gpu_id ?? instance.gpuId ?? instance.id ?? instance.instance_id ?? instance.instanceId ?? getChipId(instance));
+}
+
+function getChipId(instance: Record<string, unknown>): string {
+  return getStringValue(instance.chip_id ?? instance.chipId ?? instance.gpu_chip_id ?? instance.gpuChipId ?? instance.gpu_id ?? instance.gpuId);
+}
+
+function getGpuCount(instance: Record<string, unknown>): number {
   const gpu = getNestedRecord(instance, 'gpu');
-  const gpuCount = typeof gpu.number_of_gpus === 'number'
-    ? gpu.number_of_gpus
-    : Number(instance.gpu_num ?? instance.gpuCount ?? 0);
+  const count = getNumberValue(
+    gpu.number_of_gpus,
+    gpu.numberOfGpus,
+    instance.gpu_num,
+    instance.gpuNum,
+    instance.gpuCount,
+    instance.number_of_gpus,
+    instance.numberOfGpus,
+  );
+
+  return count && count > 0 ? count : 1;
+}
+
+function getPricePerHourUsd(instance: Record<string, unknown>): number | null {
+  const pricing = getNestedRecord(instance, 'pricing', 'price', 'cost');
+  const usdPrice = getNumberValue(
+    instance.price_per_hour_usd,
+    instance.pricePerHourUsd,
+    instance.hourly_price_usd,
+    instance.hourlyPriceUsd,
+    instance.usd_per_hour,
+    instance.usdPerHour,
+    pricing.price_per_hour_usd,
+    pricing.pricePerHourUsd,
+    pricing.hourly_price_usd,
+    pricing.hourlyPriceUsd,
+    pricing.usd_per_hour,
+    pricing.usdPerHour,
+  );
+
+  if (usdPrice !== null) {
+    return usdPrice;
+  }
+
+  const centsPrice = getNumberValue(
+    instance.price_per_hour,
+    instance.pricePerHour,
+    instance.hourly_price,
+    instance.hourlyPrice,
+    instance.price,
+    pricing.price_per_hour,
+    pricing.pricePerHour,
+    pricing.hourly_price,
+    pricing.hourlyPrice,
+    pricing.price,
+  );
+
+  return centsPrice !== null ? centsPrice / 100 : null;
+}
+
+function isGpuInstanceRecord(instance: Record<string, unknown>): boolean {
+  const gpuCount = getGpuCount(instance);
   const instanceType = getStringValue(instance.instance_type ?? instance.instanceType).toLowerCase();
-  const gpuId = getStringValue(instance.gpu_id ?? instance.gpuId);
+  const gpuId = getGpuInstanceId(instance);
   const name = getStringValue(instance.name ?? instance.instance_name).toLowerCase();
 
   return gpuCount > 0
@@ -1240,7 +1566,24 @@ function getNestedSpecRecord(spec: Record<string, unknown> | undefined, ...keys:
 }
 
 function getStringValue(value: unknown): string {
-  return typeof value === 'string' ? value : '';
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+}
+
+function getNumberValue(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const numericValue = Number(value.trim().replace(/^\$/, ''));
+      if (Number.isFinite(numericValue)) {
+        return numericValue;
+      }
+    }
+  }
+
+  return null;
 }
 
 function formatSpecValue(value: unknown, suffix = ''): string {
