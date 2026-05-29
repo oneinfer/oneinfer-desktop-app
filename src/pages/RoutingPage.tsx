@@ -224,6 +224,7 @@ export function RoutingPage(props: {
     }));
   const inferenceEndpointOptions = props.dashboard.inferenceEndpoints
     .filter((endpoint) => !isRouterEndpointLike(endpoint))
+    .filter((endpoint) => getEndpointSource(endpoint) !== 'cloud')
     .map((endpoint, index) => {
       const endpointUrl = String(endpoint.endpoint_url ?? '');
       const source = getEndpointSource(endpoint);
