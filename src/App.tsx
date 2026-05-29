@@ -2062,6 +2062,22 @@ function App() {
     });
   }
 
+function normalizeModelIdForMatch(modelId: string): string {
+  let normalized = modelId.trim().toLowerCase();
+  normalized = normalized.split(':')[0]; // remove :latest or tag suffix
+  if (normalized.startsWith('hf.co/')) {
+    normalized = normalized.slice(6); // remove hf.co/ prefix
+  }
+  if (normalized.endsWith('-gguf')) {
+    normalized = normalized.slice(0, -5); // remove -gguf suffix
+  }
+  return normalized;
+}
+
+function isSameLocalModelId(left: string, right: string): boolean {
+  return normalizeModelIdForMatch(left) === normalizeModelIdForMatch(right);
+}
+
   async function validateLocalRouteCandidates(routerEndpointUrl: string, candidates: Record<string, unknown>[]) {
     if (!window.desktopBridge?.getLocalModelMetrics) {
       return;
@@ -2085,7 +2101,7 @@ function App() {
         throw new Error(`${name} is not reachable at ${endpointUrl}. Start/deploy that model before creating the local route.`);
       }
 
-      if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.includes(modelId)) {
+      if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.some((id) => isSameLocalModelId(id, modelId))) {
         throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} reports: ${metrics.modelIds.join(', ')}. Update the endpoint URL or redeploy the model.`);
       }
     }
@@ -2102,8 +2118,7 @@ function App() {
     }
 
     if (Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
-      const normalizedModelIds = metrics.modelIds.map((value) => value.toLowerCase());
-      if (!normalizedModelIds.includes(modelId.toLowerCase())) {
+      if (!metrics.modelIds.some((id) => isSameLocalModelId(id, modelId))) {
         throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} is serving: ${metrics.modelIds.join(', ')}. Use the actual server URL for ${modelId}; do not reuse the router URL.`);
       }
     }
