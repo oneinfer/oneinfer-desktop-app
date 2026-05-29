@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useState } from 'react';
-import { ChevronDown, LogOut, Menu, Plus, RefreshCw, Server, Settings, UserRound, X } from 'lucide-react';
+import { ChevronDown, GitPullRequest, LogOut, Menu, Plus, RefreshCw, Server, Settings, UserRound, X, Bell, Trash2, CheckCheck } from 'lucide-react';
 
 import oneInferLogo from '../assets/oneinfer-logo.png';
 import { sections } from '../constants';
-import type { DashboardState, SectionKey } from '../types';
+import type { DashboardState, SectionKey, Notification } from '../types';
 import { getBalance } from '../utils/format';
 
 export function AppLayout(props: {
@@ -15,7 +15,13 @@ export function AppLayout(props: {
   onSectionChange: (section: SectionKey) => void;
   onAddCredits: () => void;
   onRefresh: () => void;
+  onGitPull?: () => void;
   onLogout: () => void;
+  notifications: Notification[];
+  onMarkAllRead: () => void;
+  onClearAll: () => void;
+  onToggleRead: (id: string) => void;
+  onDeleteNotification: (id: string) => void;
   children: React.ReactNode;
 }) {
   const hostingSectionKeys: SectionKey[] = ['selfHosting', 'instances', 'routing'];
@@ -24,7 +30,9 @@ export function AppLayout(props: {
   const hostingActive = hostingSectionKeys.includes(props.activeSection);
   const [hostingOpen, setHostingOpen] = useState(hostingActive);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
   const accountName = getSidebarAccountName(props.dashboard);
+  const unreadCount = props.notifications.filter((n) => !n.read).length;
 
   useEffect(() => {
     if (hostingActive) {
@@ -34,11 +42,75 @@ export function AppLayout(props: {
 
   return (
     <div className="shell app-shell">
+      {showNotifications && (
+        <div className="notifications-popover glass-panel">
+          <div className="notifications-header">
+            <h3>Notifications</h3>
+            <div className="notifications-header-actions">
+              {props.notifications.length > 0 && (
+                <>
+                  <button className="notif-action-btn" onClick={props.onMarkAllRead}>
+                    <CheckCheck size={13} />
+                    <span>Mark all read</span>
+                  </button>
+                  <button className="notif-action-btn danger" onClick={props.onClearAll}>
+                    <Trash2 size={13} />
+                    <span>Clear all</span>
+                  </button>
+                </>
+              )}
+              <button className="notif-close-btn" onClick={() => setShowNotifications(false)}>
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="notifications-list">
+            {props.notifications.length === 0 ? (
+              <div className="notifications-empty">
+                <Bell size={24} style={{ opacity: 0.3, marginBottom: '8px' }} />
+                <span>No new notifications</span>
+              </div>
+            ) : (
+              props.notifications.map((notif) => (
+                <div key={notif.id} className={`notification-item ${notif.type} ${notif.read ? 'read' : 'unread'}`} onClick={() => props.onToggleRead(notif.id)}>
+                  <div className="notification-item-icon">
+                    <span className={`notification-dot ${notif.type}`} />
+                  </div>
+                  <div className="notification-item-content">
+                    <div className="notification-item-title-row">
+                      <strong>{notif.title}</strong>
+                      <span className="notification-time">{notif.timestamp}</span>
+                    </div>
+                    <p>{notif.message}</p>
+                  </div>
+                  <button className="notification-item-delete" onClick={(e) => { e.stopPropagation(); props.onDeleteNotification(notif.id); }}>
+                    <X size={12} />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       <header className="mobile-header glass-panel">
         <BrandLockup />
-        <button className="ghost-button" type="button" onClick={() => props.onSidebarOpen(true)}>
-          <Menu size={20} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            className={`notifications-bell-btn${showNotifications ? ' active' : ''}`}
+            type="button"
+            onClick={() => setShowNotifications((prev) => !prev)}
+            aria-label="Toggle notifications"
+          >
+            <Bell size={18} />
+            {unreadCount > 0 && (
+              <span className="notifications-badge">{unreadCount}</span>
+            )}
+          </button>
+          <button className="ghost-button" type="button" onClick={() => props.onSidebarOpen(true)}>
+            <Menu size={20} />
+          </button>
+        </div>
       </header>
 
       <div className={`sidebar-overlay${props.sidebarOpen ? ' active' : ''}`} onClick={() => props.onSidebarOpen(false)} />
@@ -50,7 +122,20 @@ export function AppLayout(props: {
             Close
           </button>
 
-          <BrandLockup />
+          <div className="sidebar-header-row">
+            <BrandLockup />
+            <button
+              className={`notifications-bell-btn${showNotifications ? ' active' : ''}`}
+              type="button"
+              onClick={() => setShowNotifications((prev) => !prev)}
+              aria-label="Toggle notifications"
+            >
+              <Bell size={18} />
+              {unreadCount > 0 && (
+                <span className="notifications-badge">{unreadCount}</span>
+              )}
+            </button>
+          </div>
 
           <nav className="nav-stack">
             <div className="sidebar-credit-panel">
@@ -159,6 +244,19 @@ export function AppLayout(props: {
                     <Settings size={18} />
                     Settings
                   </button>
+                  {props.onGitPull ? (
+                    <button
+                      className="sidebar-account-menu-item"
+                      type="button"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        props.onGitPull?.();
+                      }}
+                    >
+                      <GitPullRequest size={18} />
+                      Update
+                    </button>
+                  ) : null}
                   <button
                     className="sidebar-account-menu-item danger"
                     type="button"

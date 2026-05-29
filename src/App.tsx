@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { LoaderCircle, Plus } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Info, LoaderCircle, Plus } from 'lucide-react';
 
 import {
   createApiKey,
@@ -66,6 +66,7 @@ import type {
   RegistrationFormState,
   SectionKey,
   ServingLibrary,
+  Notification,
 } from './types';
 import { getBalance } from './utils/format';
 
@@ -199,12 +200,94 @@ function validateRegistrationForm(form: RegistrationFormState): string | null {
   return null;
 }
 
+const initialNotifications: Notification[] = [
+  {
+    id: 'notif-1',
+    type: 'info',
+    title: 'Welcome to OneInfer!',
+    message: 'Deploy catalog models on cloud GPUs or configure local runtimes in the Self Hosting page.',
+    timestamp: 'Just now',
+    read: false,
+  },
+  {
+    id: 'notif-2',
+    type: 'warning',
+    title: 'Low Credits Alert',
+    message: 'Your credit balance is low ($2.50). Please add credits to prevent active instances from being terminated.',
+    timestamp: '1 hour ago',
+    read: false,
+  },
+  {
+    id: 'notif-3',
+    type: 'success',
+    title: 'System Ready',
+    message: 'Edge host node synced. System is optimized and ready for inference routing.',
+    timestamp: '2 hours ago',
+    read: true,
+  },
+];
+
 function App() {
   const [booting, setBooting] = useState(true);
   const [appVersion, setAppVersion] = useState('');
   const [settingsDraft, setSettingsDraft] = useState(defaultSettings);
   const [session, setSession] = useState<DesktopSession | null>(null);
   const [activeSection, setActiveSection] = useState<SectionKey>('overview');
+  const [notifications, setNotifications] = useState<Notification[]>(initialNotifications);
+
+  const addNotification = useCallback((type: Notification['type'], title: string, message: string) => {
+    setNotifications((prev) => [
+      {
+        id: `notif-${Date.now()}`,
+        type,
+        title,
+        message,
+        timestamp: 'Just now',
+        read: false,
+      },
+      ...prev,
+    ]);
+  }, []);
+
+  const handleMarkAllNotificationsRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  }, []);
+
+  const handleClearAllNotifications = useCallback(() => {
+    setNotifications([]);
+  }, []);
+
+  const handleToggleNotificationRead = useCallback((id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: !n.read } : n))
+    );
+  }, []);
+
+  const handleDeleteNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const [enabledTools, setEnabledTools] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('oneinfer_enabled_tools');
+      return saved ? JSON.parse(saved) : { opencode: false, kilocode: false, openclaw: false };
+    } catch {
+      return { opencode: false, kilocode: false, openclaw: false };
+    }
+  });
+
+  const setToolEnabled = useCallback((tool: string, enabled: boolean) => {
+    setEnabledTools((prev) => {
+      const next = { ...prev, [tool]: enabled };
+      try {
+        localStorage.setItem('oneinfer_enabled_tools', JSON.stringify(next));
+      } catch (err) {
+        console.warn('Failed to save enabled tools:', err);
+      }
+      return next;
+    });
+  }, []);
+
   const [dashboard, setDashboard] = useState<DashboardState>(defaultDashboardState);
   const [message, setMessage] = useState<{ tone: 'info' | 'success' | 'error'; text: string } | null>(null);
   const [usageTarget, setUsageTarget] = useState<EndpointUsageTarget | null>(null);
@@ -235,6 +318,27 @@ function App() {
   const [intelligentEndpointName, setIntelligentEndpointName] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
+  const [toolProviders, setToolProviders] = useState<Record<string, 'oneinfer' | 'tool'>>(() => {
+    try {
+      const saved = localStorage.getItem('oneinfer_tool_providers');
+      return saved ? JSON.parse(saved) : { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+    } catch {
+      return { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+    }
+  });
+
+  const handleToolProviderChange = useCallback((tool: string, provider: 'oneinfer' | 'tool') => {
+    setToolProviders((prev) => {
+      const next = { ...prev, [tool]: provider };
+      try {
+        localStorage.setItem('oneinfer_tool_providers', JSON.stringify(next));
+      } catch (err) {
+        console.warn('Failed to save tool providers:', err);
+      }
+      return next;
+    });
+  }, []);
+
   const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw'>('claude-code');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
@@ -678,6 +782,21 @@ function App() {
     }
   }
 
+  async function triggerAutoUpdate() {
+    if (!window.desktopBridge?.gitPull) return;
+    try {
+      setMessage({ tone: 'info', text: 'Auto-updating: Checking for latest Git pull...' });
+      const result = await window.desktopBridge.gitPull();
+      if (result.success) {
+        setMessage({ tone: 'success', text: result.message || 'Auto-update complete. The application will hot-reload if changed.' });
+      } else {
+        setMessage({ tone: 'error', text: `Auto-update failed: ${result.error}` });
+      }
+    } catch (error: any) {
+      console.error('Auto git pull failed:', error);
+    }
+  }
+
   useEffect(() => {
     let active = true;
 
@@ -716,6 +835,18 @@ function App() {
 
       if (storedState?.session) {
         await loadSectionData('overview', storedState.session, nextBaseUrl, { force: true, silent: true });
+      }
+
+      // Daily auto-update check
+      try {
+        const today = new Date().toDateString();
+        const lastPullDate = localStorage.getItem('lastAutoPullDate');
+        if (lastPullDate !== today && typeof window.desktopBridge?.gitPull === 'function') {
+          localStorage.setItem('lastAutoPullDate', today);
+          void triggerAutoUpdate();
+        }
+      } catch (err) {
+        console.warn('Failed to check daily auto update:', err);
       }
 
       setBooting(false);
@@ -948,6 +1079,7 @@ function App() {
         ? ' OpenClaw was installed first for this operating system.'
         : '';
 
+      setToolEnabled('openclaw', true);
       setMessage({
         tone: 'success',
         text: result.alreadyConfigured
@@ -978,6 +1110,7 @@ function App() {
         ? ' OpenCode was installed first for this operating system.'
         : '';
 
+      setToolEnabled('opencode', true);
       setMessage({
         tone: 'success',
         text: result.alreadyConfigured
@@ -1008,6 +1141,7 @@ function App() {
         ? ' Kilo Code was installed first for this operating system.'
         : '';
 
+      setToolEnabled('kilocode', true);
       setMessage({
         tone: 'success',
         text: result.alreadyConfigured
@@ -1265,6 +1399,7 @@ function App() {
         timestamp: Date.now(),
       };
       setDeploymentProgress((current) => [...current, registeredProgress].slice(-80));
+      addNotification('success', 'Local Deployment Succeeded', `Successfully deployed model "${deployment.modelId}" locally on ${deployment.endpointUrl}.`);
       setMessage({ tone: 'success', text: `Deployed ${deployment.modelId} locally and registered ${deployment.endpointUrl}.` });
       await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
@@ -1283,6 +1418,7 @@ function App() {
         timestamp: Date.now(),
       };
       setDeploymentProgress((current) => [...current, errorProgress].slice(-80));
+      addNotification('error', 'Local Deployment Failed', `Failed to deploy model "${repoId}" locally: ${errorMessage}`);
       setMessage({ tone: 'error', text: errorMessage });
       return false;
     } finally {
@@ -1328,6 +1464,28 @@ function App() {
       await loadSectionData(activeSection === 'settings' ? 'overview' : activeSection, session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Refresh failed.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleGitPull() {
+    if (!window.desktopBridge?.gitPull) {
+      setMessage({ tone: 'error', text: 'Update is not supported in this environment.' });
+      return;
+    }
+
+    setBusy('git-pull');
+    setMessage({ tone: 'info', text: 'Checking for updates...' });
+    try {
+      const result = await window.desktopBridge.gitPull();
+      if (result.success) {
+        setMessage({ tone: 'success', text: result.message || 'Update completed successfully. The application will hot-reload if changed.' });
+      } else {
+        setMessage({ tone: 'error', text: `Update failed: ${result.error}` });
+      }
+    } catch (error: any) {
+      setMessage({ tone: 'error', text: error.message || 'Update failed.' });
     } finally {
       setBusy(null);
     }
@@ -1379,6 +1537,7 @@ function App() {
         ...instanceForm,
         model_id: normalizedModelId,
       });
+      addNotification('success', 'Deployment Request Submitted', `Cloud deployment for model "${normalizedModelId}" on GPU "${instanceForm.gpu_id}" is initializing.`);
       setMessage({ tone: 'success', text: 'Cloud model deployment request submitted.' });
       loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true }).catch((error) => {
         setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Cloud deployment submitted, but refresh failed.' });
@@ -1386,7 +1545,9 @@ function App() {
       loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
       return true;
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy cloud model.' });
+      const errMsg = error instanceof Error ? error.message : 'Failed to deploy cloud model.';
+      addNotification('error', 'Deployment Failed', `Failed to initialize cloud model deployment: ${errMsg}`);
+      setMessage({ tone: 'error', text: errMsg });
       return false;
     } finally {
       setBusy(null);
@@ -1401,10 +1562,14 @@ function App() {
     setBusy(action);
     try {
       await runInstanceAction(settingsDraft.apiBaseUrl, session, action, instanceId, provider);
+      const actionLabel = action === 'start-instance' ? 'Start' : action === 'stop-instance' ? 'Stop' : 'Restart';
+      addNotification('success', `Instance Action Succeeded`, `Successfully executed "${actionLabel}" for cloud instance "${instanceId}".`);
       setMessage({ tone: 'success', text: `${action} completed for ${instanceId}.` });
       await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Instance action failed.' });
+      const errMsg = error instanceof Error ? error.message : 'Instance action failed.';
+      addNotification('error', `Instance Action Failed`, `Failed to run action "${action}" on instance "${instanceId}": ${errMsg}`);
+      setMessage({ tone: 'error', text: errMsg });
     } finally {
       setBusy(null);
     }
@@ -1418,12 +1583,15 @@ function App() {
     setBusy('delete-instance');
     try {
       await deleteInstance(settingsDraft.apiBaseUrl, session, instanceId, provider);
+      addNotification('info', 'Instance Deleted', `Cloud instance "${instanceId}" was deleted successfully.`);
       setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Delete instance failed.';
       if (msg.toLowerCase().includes('no instance mapping found')) {
+        addNotification('info', 'Instance Deleted', `Cloud instance "${instanceId}" was deleted successfully.`);
         setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
       } else {
+        addNotification('error', 'Instance Deletion Failed', `Failed to delete instance "${instanceId}": ${msg}`);
         setMessage({ tone: 'error', text: msg });
       }
     } finally {
@@ -1441,11 +1609,14 @@ function App() {
     setBusy('create-key');
     try {
       await createApiKey(settingsDraft.apiBaseUrl, session, apiKeyName, apiKeyEnvironment);
+      addNotification('success', 'API Key Created', `API key "${apiKeyName}" was created successfully.`);
       setMessage({ tone: 'success', text: 'API key created successfully' });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
       setApiKeyName('');
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'API key creation failed.' });
+      const errMsg = error instanceof Error ? error.message : 'API key creation failed.';
+      addNotification('error', 'API Key Creation Failed', errMsg);
+      setMessage({ tone: 'error', text: errMsg });
     } finally {
       setBusy(null);
     }
@@ -1459,10 +1630,13 @@ function App() {
     setBusy('delete-key');
     try {
       await deleteApiKey(settingsDraft.apiBaseUrl, session, name);
+      addNotification('info', 'API Key Deleted', `API key "${name}" was successfully removed.`);
       setMessage({ tone: 'success', text: 'API Key removed successfully' });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'API key deletion failed.' });
+      const errMsg = error instanceof Error ? error.message : 'API key deletion failed.';
+      addNotification('error', 'API Key Deletion Failed', errMsg);
+      setMessage({ tone: 'error', text: errMsg });
     } finally {
       setBusy(null);
     }
@@ -2195,8 +2369,61 @@ function App() {
       onSectionChange={setActiveSection}
       onAddCredits={handleAddCredits}
       onRefresh={handleRefreshCurrentSection}
+      onGitPull={handleGitPull}
       onLogout={handleLogout}
+      notifications={notifications}
+      onMarkAllRead={handleMarkAllNotificationsRead}
+      onClearAll={handleClearAllNotifications}
+      onToggleRead={handleToggleNotificationRead}
+      onDeleteNotification={handleDeleteNotification}
     >
+      {message ? (
+        <div
+          className={`auth-notice ${message.tone}`}
+          role="status"
+          style={{
+            position: 'fixed',
+            top: '24px',
+            right: '24px',
+            zIndex: 99999,
+            minWidth: '320px',
+            maxWidth: '480px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+            animation: 'slideIn 0.2s ease-out'
+          }}
+        >
+          {message.tone === 'success' ? (
+            <CheckCircle2 size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+          ) : message.tone === 'error' ? (
+            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+          ) : (
+            <Info size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+          )}
+          <span style={{ flex: 1 }}>{message.text}</span>
+          <button
+            onClick={() => setMessage(null)}
+            type="button"
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'currentColor',
+              cursor: 'pointer',
+              fontSize: '18px',
+              fontWeight: 'bold',
+              padding: '0 4px',
+              opacity: 0.7,
+              lineHeight: 1,
+              marginTop: '-2px'
+            }}
+          >
+            &times;
+          </button>
+        </div>
+      ) : null}
       {activeSection === 'overview' ? (
         <div className="app-topbar">
           <div className="welcome-copy">
@@ -2232,6 +2459,9 @@ function App() {
             onEnableOpenCode={handleEnableOpenCode}
             onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
+            enabledTools={enabledTools}
+            toolProviders={toolProviders}
+            onToolProviderChange={handleToolProviderChange}
             onSectionChange={setActiveSection}
             onOpenRoute={(routeId) => {
               setRouteInitialViewId(routeId);

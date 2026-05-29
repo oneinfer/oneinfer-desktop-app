@@ -2779,13 +2779,21 @@ th {
 }
 
 .settings-mini-action.tool {
-  color: #cfe2f2;
-  background: rgba(113, 190, 255, 0.1);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-mini-action.tool.active {
+  color: #aadbff;
+  background: rgba(113, 190, 255, 0.24);
+  border-color: rgba(113, 190, 255, 0.45);
 }
 
 .settings-mini-action.tool:hover:not(:disabled) {
-  color: #eaf6ff;
-  background: rgba(113, 190, 255, 0.16);
+  color: #cfe2f2;
+  background: rgba(113, 190, 255, 0.12);
+  border-color: rgba(113, 190, 255, 0.25);
 }
 
 .settings-list-item.active .settings-list-status {
@@ -3930,3 +3938,361 @@ input:checked + .slider:before {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* In-App Notification Center Styles */
+
+.sidebar-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.notifications-bell-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  transition: all 0.2s ease-out;
+}
+
+.notifications-bell-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.notifications-bell-btn.active {
+  background: rgba(116, 227, 197, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.notifications-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--accent-2); /* Warm amber/orange warning badge */
+  color: #081018;
+  font-size: 0.65rem;
+  font-weight: 900;
+  border: 2px solid #0d1722;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  animation: pulseBadge 2s infinite;
+}
+
+@keyframes pulseBadge {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); box-shadow: 0 2px 12px rgba(255, 182, 94, 0.6); }
+  100% { transform: scale(1); }
+}
+
+.notifications-popover {
+  position: absolute;
+  top: 36px;
+  left: 390px;
+  width: 360px;
+  max-height: 520px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  overflow: visible; /* Changed from hidden to allow arrow pseudo-element visibility */
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  animation: fadeInSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  border: 1px solid rgba(144, 197, 255, 0.18);
+  background: rgba(11, 20, 31, 0.95);
+  backdrop-filter: blur(24px);
+  border-radius: 20px;
+}
+
+.notifications-popover::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  left: -6px;
+  width: 10px;
+  height: 10px;
+  background: rgb(11, 20, 31);
+  border-left: 1px solid rgba(144, 197, 255, 0.18);
+  border-bottom: 1px solid rgba(144, 197, 255, 0.18);
+  transform: rotate(45deg);
+  z-index: 1;
+}
+
+@keyframes fadeInSlide {
+  from {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.98); /* Slide from the left towards the right */
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.notifications-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 12px;
+}
+
+.notifications-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.notifications-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.notif-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.notif-action-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.notif-action-btn.danger {
+  color: var(--danger);
+  opacity: 0.85;
+}
+
+.notif-action-btn.danger:hover {
+  background: rgba(255, 124, 120, 0.1);
+  color: var(--danger);
+  opacity: 1;
+}
+
+.notif-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: 2px;
+}
+
+.notif-close-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.notifications-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+  max-height: 440px;
+}
+
+.notifications-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.88rem;
+}
+
+.notification-item {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: all 0.18s ease-out;
+}
+
+.notification-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.notification-item.unread {
+  background: rgba(144, 197, 255, 0.04);
+  border-color: rgba(144, 197, 255, 0.12);
+}
+
+.notification-item.unread:hover {
+  background: rgba(144, 197, 255, 0.06);
+  border-color: rgba(144, 197, 255, 0.18);
+}
+
+.notification-item-icon {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 3px;
+}
+
+.notification-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.notification-dot.info {
+  background-color: #3b82f6;
+  color: rgba(59, 130, 246, 0.4);
+}
+
+.notification-dot.success {
+  background-color: var(--accent);
+  color: rgba(116, 227, 197, 0.4);
+}
+
+.notification-dot.warning {
+  background-color: var(--accent-2);
+  color: rgba(255, 182, 94, 0.4);
+}
+
+.notification-dot.error {
+  background-color: var(--danger);
+  color: rgba(255, 124, 120, 0.4);
+}
+
+.notification-item-content {
+  flex: 1;
+  min-width: 0;
+  padding-right: 12px;
+}
+
+.notification-item-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.notification-item-title-row strong {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-time {
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.notification-item p {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.notification-item.unread p {
+  color: #c9dbec;
+}
+
+.notification-item-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: all 0.15s ease;
+}
+
+.notification-item:hover .notification-item-delete {
+  opacity: 0.7;
+}
+
+.notification-item-delete:hover {
+  background: rgba(255, 124, 120, 0.16);
+  color: var(--danger) !important;
+  opacity: 1 !important;
+}
+
+@media (max-width: 720px) {
+  .notifications-popover {
+    top: 80px;
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-height: 480px;
+  }
+  .notifications-popover::before {
+    display: none;
+  }
+}
+
+/* Seamless Integration for Overview Setup Panels */
+.overview-setup-panel-container .glass-panel {
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 12px 0 0 0;
+}
+
+.overview-setup-panel-container .glass-panel .panel-header {
+  padding: 0 0 12px 0;
+}
+
+

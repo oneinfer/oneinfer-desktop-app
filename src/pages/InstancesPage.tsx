@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { CheckCircle2, ChevronRight, Copy, LoaderCircle, Orbit, PlayCircle, Rocket, Server, SlidersHorizontal, XCircle } from 'lucide-react';
+import { ChevronRight, Copy, LoaderCircle, Orbit, PlayCircle, Rocket, Server, SlidersHorizontal } from 'lucide-react';
 
 import { getHfModelInfo } from '../api';
 import { Modal } from '../components/Common';
 import type { EndpointUsageTarget } from '../components/EndpointUsageModal';
-import { getServingLibraryCompatibility } from '../helpers/servingCompatibility';
 import type { CreateInstanceFormState, DashboardState, EndpointItem, HfModelInfo, InstanceItem, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -76,12 +75,7 @@ export function InstancesPage(props: {
     : (selectedModel?.label ?? 'Not selected');
   const shouldShowHfTokenInput = props.instanceForm.model_source === 'huggingface'
     && hfAccessCheck.status === 'requires-token';
-  const selectedServingLibraryStatus = props.instanceForm.model_source === 'huggingface'
-    ? getCloudServingLibraryStatus(props.instanceForm.serving_library, hfModelMetadata)
-    : { supported: true, detail: '' };
-  const selectedServingLibrarySupported = props.instanceForm.model_source !== 'huggingface'
-    || !hfModelMetadata
-    || selectedServingLibraryStatus.supported;
+
 
   useEffect(() => {
     if (!props.showCreateInstanceModal || providers.length === 0) {
@@ -305,7 +299,7 @@ export function InstancesPage(props: {
 
       <Modal title={selectedGpu ? `Deploy Model on ${formatGpuDisplayName(selectedGpu.name)}` : 'Deploy Cloud Model'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
         <form className="cloud-deploy-form" onSubmit={async (event) => { const ok = await props.onCreate(event); if (ok) props.onModalChange(false); }}>
-          <p className="mb-6 text-center text-[0.95rem] text-[var(--muted)]">Choose a model and GPU. OneInfer will provision the instance, start the model server, and register the cloud endpoint.</p>
+          <p className="mb-6 text-center text-[0.95rem] text-[var(--muted)]">Select a model and GPU to instantly deploy your dedicated cloud endpoint.</p>
           <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_260px]">
             <div className="space-y-5">
               <div className="grid gap-4 md:grid-cols-2">
@@ -415,34 +409,14 @@ export function InstancesPage(props: {
                       });
                     }}
                   >
-                    {cloudServingLibraryOptions.map((library) => {
-                      const status = props.instanceForm.model_source === 'huggingface'
-                        ? getCloudServingLibraryStatus(library.value, hfModelMetadata)
-                        : { supported: true, shortLabel: 'Supported' };
-                      return (
-                        <option key={library.value} value={library.value}>
-                          {library.label}{props.instanceForm.model_source === 'huggingface' && hfModelMetadata ? status.supported ? ' - supported' : ` - ${status.shortLabel}` : ''}
-                        </option>
-                      );
-                    })}
+                    {cloudServingLibraryOptions.map((library) => (
+                      <option key={library.value} value={library.value}>
+                        {library.label}
+                      </option>
+                    ))}
                   </select>
-                  {props.instanceForm.model_source === 'huggingface' ? (
-                    <small className="field-help" style={{ color: selectedServingLibrarySupported ? 'var(--muted)' : 'var(--danger)' }}>
-                      {hfModelMetadataLoading
-                        ? 'Checking serving library support for this Hugging Face model...'
-                        : hfModelMetadata
-                          ? selectedServingLibraryStatus.detail
-                          : hfModelMetadataError || 'Enter a Hugging Face model to check serving library support.'}
-                    </small>
-                  ) : null}
                 </label>
-                {props.instanceForm.model_source === 'huggingface' ? (
-                  <CloudServingCompatibilityPanel
-                    loading={hfModelMetadataLoading}
-                    metadataError={hfModelMetadataError}
-                    model={hfModelMetadata}
-                  />
-                ) : null}
+
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
@@ -553,7 +527,7 @@ export function InstancesPage(props: {
                 <p className="mt-4 text-xs text-[var(--muted)]">Total cost is calculated from the selected GPU and disk size.</p>
               </div>
 
-              <button className="primary-button w-full justify-center" type="submit" disabled={props.busy === 'deploy-cloud-model' || !validProviderName || !props.instanceForm.gpu_id || !props.instanceForm.region || !props.instanceForm.image_url || !selectedServingLibrarySupported || (props.instanceForm.model_source === 'catalog' ? !props.instanceForm.model_id : !props.instanceForm.hf_model_url)}>
+              <button className="primary-button w-full justify-center" type="submit" disabled={props.busy === 'deploy-cloud-model' || !validProviderName || !props.instanceForm.gpu_id || !props.instanceForm.region || !props.instanceForm.image_url || (props.instanceForm.model_source === 'catalog' ? !props.instanceForm.model_id : !props.instanceForm.hf_model_url)}>
                 {props.busy === 'deploy-cloud-model' ? <LoaderCircle className="spin" size="1rem" /> : <Rocket size="1rem" />}
                 Deploy Model
               </button>
@@ -636,53 +610,7 @@ interface ModelOption {
   label: string;
 }
 
-function CloudServingCompatibilityPanel(props: {
-  loading: boolean;
-  metadataError: string | null;
-  model: HfModelInfo | null;
-}) {
-  return (
-    <div className="full-span" style={{ display: 'grid', gap: '8px', padding: '12px', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-      <div className="text-[0.75rem] uppercase tracking-[0.08em] text-[var(--muted)]">Serving Library Support</div>
-      {props.loading ? (
-        <CloudServingStatusRow pending label="Checking Hugging Face model metadata" />
-      ) : props.model ? (
-        cloudServingLibraryOptions.map((library) => {
-          const status = getCloudServingLibraryStatus(library.value, props.model);
-          return (
-            <CloudServingStatusRow
-              detail={status.supported ? status.detail : status.reason}
-              key={library.value}
-              label={`${library.label}: ${status.supported ? 'Supported' : 'Not supported'}`}
-              ok={status.supported}
-            />
-          );
-        })
-      ) : (
-        <CloudServingStatusRow
-          detail={props.metadataError || 'Enter a Hugging Face URL or owner/model id to check compatibility.'}
-          label="Model metadata needed"
-          ok={false}
-        />
-      )}
-    </div>
-  );
-}
 
-function CloudServingStatusRow(props: { ok?: boolean; pending?: boolean; label: string; detail?: string }) {
-  const color = props.pending ? 'var(--muted)' : props.ok ? 'var(--accent)' : 'var(--danger)';
-  const Icon = props.pending ? LoaderCircle : props.ok ? CheckCircle2 : XCircle;
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.78rem', lineHeight: 1.4 }}>
-      <Icon className={props.pending ? 'spin' : undefined} size={15} style={{ color, flexShrink: 0, marginTop: '1px' }} />
-      <div>
-        <strong style={{ color: 'var(--text)', display: 'block' }}>{props.label}</strong>
-        {props.detail ? <span style={{ color: 'var(--muted)' }}>{props.detail}</span> : null}
-      </div>
-    </div>
-  );
-}
 
 function CloudEndpointCard(props: {
   endpoint: CloudEndpointRow;
@@ -750,32 +678,7 @@ function getModelOptions(models: any[]): ModelOption[] {
     });
 }
 
-function getCloudServingLibraryStatus(library: ServingLibrary, model: HfModelInfo | null): { supported: boolean; shortLabel: string; detail: string; reason?: string } {
-  if (!model) {
-    return {
-      supported: true,
-      shortLabel: 'Pending',
-      detail: 'Compatibility will be checked after model metadata loads.',
-    };
-  }
 
-  const label = formatCloudServingLibraryLabel(library);
-  const compatibility = getServingLibraryCompatibility(library, model);
-  if (!compatibility.supported) {
-    return {
-      supported: false,
-      shortLabel: 'not supported',
-      detail: compatibility.reason || `${label} does not support this model.`,
-      reason: compatibility.reason || `${label} does not support this model.`,
-    };
-  }
-
-  return {
-    supported: true,
-    shortLabel: 'supported',
-    detail: `${label} supports this Hugging Face model.`,
-  };
-}
 
 function formatCloudServingLibraryLabel(library: ServingLibrary): string {
   return cloudServingLibraryOptions.find((option) => option.value === library)?.label ?? formatValue(library);

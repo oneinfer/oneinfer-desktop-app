@@ -307,3 +307,13 @@ export interface LocalModelMetrics {
   lastCheckedAt: string;
   error?: string;
 }
+
+export interface Notification {
+  id: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+}
+

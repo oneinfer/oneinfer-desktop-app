@@ -32,4 +32,5 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   cancelHfDeployment: (payload) => ipcRenderer.invoke('app:cancel-hf-deployment', payload),
   deleteLocalModel: (payload) => ipcRenderer.invoke('app:delete-local-model', payload),
   getLocalModelMetrics: (payload) => ipcRenderer.invoke('app:get-local-model-metrics', payload),
+  gitPull: () => ipcRenderer.invoke('app:git-pull'),
 });

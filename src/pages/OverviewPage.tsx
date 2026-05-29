@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
 import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
+import { OpenCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel } from '../components/SetupPanels';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -19,6 +21,9 @@ export function OverviewPage(props: {
   onEnableOpenCode: () => void | Promise<void>;
   onEnableKiloCode: () => void | Promise<void>;
   onEnableOpenClaw: () => void | Promise<void>;
+  enabledTools: Record<string, boolean>;
+  toolProviders: Record<string, 'oneinfer' | 'tool'>;
+  onToolProviderChange: (tool: string, provider: 'oneinfer' | 'tool') => void;
   onSectionChange: (section: SectionKey) => void;
   onOpenRoute: (routeId: string) => void;
 }) {
@@ -154,7 +159,14 @@ export function OverviewPage(props: {
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'opencode' ? 'active' : ''}`}>
                 <span className="settings-list-icon"><Blocks size={16} /></span>
-                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('opencode')} type="button">
+                <button
+                  className="settings-list-copy"
+                  onClick={() => {
+                    props.onOverviewTabChange('opencode');
+                    props.onEnableOpenCode();
+                  }}
+                  type="button"
+                >
                   <strong>OpenCode</strong>
                   <span>Install OpenCode if needed and write a OneInfer-backed user config.</span>
                 </button>
@@ -162,17 +174,30 @@ export function OverviewPage(props: {
                   busy={isOpenCodeBusy}
                   label="OpenCode"
                   toolLabel="OpenCode"
+                  isActive={props.overviewTab === 'opencode'}
+                  provider={props.toolProviders.opencode || 'oneinfer'}
+                  onProviderChange={(p) => props.onToolProviderChange('opencode', p)}
                   onClick={() => {
                     props.onOverviewTabChange('opencode');
                     props.onEnableOpenCode();
                   }}
-                  onToolClick={() => props.onOverviewTabChange('opencode')}
+                  onToolClick={() => {
+                    props.onOverviewTabChange('opencode');
+                    props.onEnableOpenCode();
+                  }}
                 />
               </div>
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'kilocode' ? 'active' : ''}`}>
                 <span className="settings-list-icon"><Blocks size={16} /></span>
-                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('kilocode')} type="button">
+                <button
+                  className="settings-list-copy"
+                  onClick={() => {
+                    props.onOverviewTabChange('kilocode');
+                    props.onEnableKiloCode();
+                  }}
+                  type="button"
+                >
                   <strong>Kilo Code</strong>
                   <span>Install Kilo Code if needed and write a OneInfer-backed user config.</span>
                 </button>
@@ -180,17 +205,30 @@ export function OverviewPage(props: {
                   busy={isKiloCodeBusy}
                   label="Kilo Code"
                   toolLabel="Kilo Code"
+                  isActive={props.overviewTab === 'kilocode'}
+                  provider={props.toolProviders.kilocode || 'oneinfer'}
+                  onProviderChange={(p) => props.onToolProviderChange('kilocode', p)}
                   onClick={() => {
                     props.onOverviewTabChange('kilocode');
                     props.onEnableKiloCode();
                   }}
-                  onToolClick={() => props.onOverviewTabChange('kilocode')}
+                  onToolClick={() => {
+                    props.onOverviewTabChange('kilocode');
+                    props.onEnableKiloCode();
+                  }}
                 />
               </div>
 
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'openclaw' ? 'active' : ''}`}>
                 <span className="settings-list-icon"><Blocks size={16} /></span>
-                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('openclaw')} type="button">
+                <button
+                  className="settings-list-copy"
+                  onClick={() => {
+                    props.onOverviewTabChange('openclaw');
+                    props.onEnableOpenClaw();
+                  }}
+                  type="button"
+                >
                   <strong>OpenClaw</strong>
                   <span>Install OpenClaw if needed and write a OneInfer-backed user config.</span>
                 </button>
@@ -198,11 +236,17 @@ export function OverviewPage(props: {
                   busy={isOpenClawBusy}
                   label="OpenClaw"
                   toolLabel="OpenClaw"
+                  isActive={props.overviewTab === 'openclaw'}
+                  provider={props.toolProviders.openclaw || 'oneinfer'}
+                  onProviderChange={(p) => props.onToolProviderChange('openclaw', p)}
                   onClick={() => {
                     props.onOverviewTabChange('openclaw');
                     props.onEnableOpenClaw();
                   }}
-                  onToolClick={() => props.onOverviewTabChange('openclaw')}
+                  onToolClick={() => {
+                    props.onOverviewTabChange('openclaw');
+                    props.onEnableOpenClaw();
+                  }}
                 />
               </div>
             </div>
@@ -238,30 +282,61 @@ function OneInferIntegrationAction(props: {
   busy: boolean;
   label: string;
   toolLabel: string;
+  isActive: boolean;
+  provider: 'oneinfer' | 'tool';
+  onProviderChange: (p: 'oneinfer' | 'tool') => void;
   onClick: () => void | Promise<void>;
-  onToolClick: () => void;
+  onToolClick: () => void | Promise<void>;
 }) {
+  const [clickedBtn, setClickedBtn] = useState<'oneinfer' | 'tool' | null>(null);
+
+  useEffect(() => {
+    if (!props.busy) {
+      setClickedBtn(null);
+    }
+  }, [props.busy]);
+
+  const handleLeftClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setClickedBtn('oneinfer');
+    props.onProviderChange('oneinfer');
+    await props.onClick();
+  };
+
+  const handleRightClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setClickedBtn('tool');
+    props.onProviderChange('tool');
+    await props.onToolClick();
+  };
+
+  const isLeftLoading = props.busy && props.isActive && clickedBtn === 'oneinfer';
+  const isRightLoading = props.busy && props.isActive && clickedBtn === 'tool';
+
+  const isLeftActive = props.isActive && props.provider === 'oneinfer';
+  const isRightActive = props.isActive && props.provider === 'tool';
+
   return (
     <div className="settings-list-actions">
       <button
         aria-label={`Enable ${props.label} with OneInfer`}
-        className="settings-mini-action active"
+        className={`settings-mini-action${isLeftActive ? ' active' : ''}`}
         disabled={props.busy}
-        onClick={props.onClick}
+        onClick={handleLeftClick}
         type="button"
       >
-        {props.busy ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
+        {isLeftLoading ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
         OneInfer
       </button>
       <button
         aria-label={`Select ${props.toolLabel}`}
-        className="settings-mini-action tool"
+        className={`settings-mini-action tool${isRightActive ? ' active' : ''}`}
         disabled={props.busy}
-        onClick={props.onToolClick}
+        onClick={handleRightClick}
         type="button"
       >
-        <Blocks size={14} />
-        {props.toolLabel}
+        {isRightLoading ? <LoaderCircle className="spin" size={14} /> : <Blocks size={14} />}
+        {isRightActive ? `✓ ${props.toolLabel}` : props.toolLabel}
       </button>
     </div>
   );
