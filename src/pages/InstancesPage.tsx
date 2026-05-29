@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ChevronRight, Copy, LoaderCircle, Orbit, PlayCircle, Rocket, Server, SlidersHorizontal } from 'lucide-react';
+import { ChevronRight, Copy, LoaderCircle, Orbit, PlayCircle, Rocket, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import { getHfModelInfo } from '../api';
 import { Modal } from '../components/Common';
@@ -30,6 +30,7 @@ export function InstancesPage(props: {
   onDelete: (instanceId: string, provider: string) => void;
   onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
   onShowUsage: (target: EndpointUsageTarget) => void;
+  onDeleteEndpoint?: (endpointId: string) => void;
 }) {
   const [detailsGpu, setDetailsGpu] = useState<GpuCardOption | null>(null);
   const [hfAccessCheck, setHfAccessCheck] = useState<HfAccessCheckState>({ status: 'idle' });
@@ -292,6 +293,8 @@ export function InstancesPage(props: {
               key={endpoint.endpointId}
               onUseEndpointInRoute={props.onUseEndpointInRoute}
               onShowUsage={props.onShowUsage}
+              onDelete={props.onDelete}
+              onDeleteEndpoint={props.onDeleteEndpoint}
             />
           ))}
         </div>
@@ -603,6 +606,8 @@ interface CloudEndpointRow {
   status: string;
   updatedAt: string;
   canUseInRoute: boolean;
+  isInstance?: boolean;
+  instanceId?: string;
 }
 
 interface ModelOption {
@@ -616,6 +621,8 @@ function CloudEndpointCard(props: {
   endpoint: CloudEndpointRow;
   onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
   onShowUsage: (target: EndpointUsageTarget) => void;
+  onDelete: (instanceId: string, provider: string) => void;
+  onDeleteEndpoint?: (endpointId: string) => void;
 }) {
   return (
     <div className="cloud-endpoint-card">
@@ -655,6 +662,33 @@ function CloudEndpointCard(props: {
           <Copy size={14} />
           Copy URL
         </button>
+        {props.endpoint.isInstance && props.endpoint.instanceId ? (
+          <button
+            className="ghost-button danger"
+            type="button"
+            onClick={() => {
+              if (confirm(`Are you sure you want to terminate cloud instance "${props.endpoint.name}"?`)) {
+                props.onDelete(props.endpoint.instanceId!, props.endpoint.provider);
+              }
+            }}
+          >
+            <Trash2 size={14} />
+            Terminate Instance
+          </button>
+        ) : props.onDeleteEndpoint ? (
+          <button
+            className="ghost-button danger"
+            type="button"
+            onClick={() => {
+              if (confirm(`Are you sure you want to delete registered endpoint "${props.endpoint.name}"?`)) {
+                props.onDeleteEndpoint!(props.endpoint.endpointId);
+              }
+            }}
+          >
+            <Trash2 size={14} />
+            Delete Endpoint
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -685,11 +719,20 @@ function formatCloudServingLibraryLabel(library: ServingLibrary): string {
 }
 
 function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem[]): CloudEndpointRow[] {
+  const activeInstancesMap = new Map<string, InstanceItem>();
+  instances.forEach((instance) => {
+    const id = String(instance.inference_endpoint_id ?? instance.endpoint_id ?? instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? '').toLowerCase();
+    if (id) {
+      activeInstancesMap.set(id, instance);
+    }
+  });
+
   const endpointRows = endpoints
     .filter((endpoint) => getEndpointSource(endpoint) === 'cloud')
     .map((endpoint, index) => {
       const endpointId = getEndpointId(endpoint, index);
       const modelId = String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `model-${index + 1}`);
+      const matchingInstance = activeInstancesMap.get(endpointId.toLowerCase());
       return {
         endpointId,
         endpointUrl: String(endpoint.endpoint_url ?? ''),
@@ -699,6 +742,8 @@ function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem
         status: String(endpoint.status ?? endpoint.creation_status ?? 'ready'),
         updatedAt: String(endpoint.updated_at ?? endpoint.created_at ?? 'Registered endpoint'),
         canUseInRoute: true,
+        isInstance: Boolean(matchingInstance),
+        instanceId: matchingInstance ? String(matchingInstance.instance_id ?? matchingInstance.unique_instance_id ?? matchingInstance.id ?? '') : undefined,
       };
     });
 
@@ -717,6 +762,8 @@ function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem
         status: getStringValue(instance.instance_status ?? instance.status ?? 'unknown') || 'unknown',
         updatedAt: getStringValue(instance.updated_at ?? instance.created_at ?? instance.region ?? 'Cloud instance') || 'Cloud instance',
         canUseInRoute: Boolean(endpointUrl || instance.inference_endpoint_id || instance.endpoint_id),
+        isInstance: true,
+        instanceId: String(instance.instance_id ?? instance.unique_instance_id ?? instance.id ?? ''),
       };
     })
     .filter((instance) => !knownInstanceIds.has(instance.endpointId));

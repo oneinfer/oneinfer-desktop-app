@@ -1591,6 +1591,27 @@ function App() {
     }
   }
 
+  async function handleDeleteEndpoint(endpointId: string) {
+    if (!session) {
+      return;
+    }
+
+    setBusy('delete-endpoint');
+    try {
+      await deleteInferenceEndpoint(settingsDraft.apiBaseUrl, session, endpointId);
+      addNotification('info', 'Endpoint Deleted', `Inference endpoint "${endpointId}" was deleted successfully.`);
+      setMessage({ tone: 'success', text: `Deleted endpoint ${endpointId}.` });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Delete endpoint failed.';
+      addNotification('error', 'Endpoint Deletion Failed', `Failed to delete endpoint "${endpointId}": ${msg}`);
+      setMessage({ tone: 'error', text: msg });
+    } finally {
+      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
+      await loadSectionData('overview', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
+      setBusy(null);
+    }
+  }
+
   async function handleCreateApiKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) {
@@ -2539,6 +2560,7 @@ function isSameLocalModelId(left: string, right: string): boolean {
             onDelete={handleDeleteInstance}
             onUseEndpointInRoute={handleUseEndpointInRoute}
             onShowUsage={setUsageTarget}
+            onDeleteEndpoint={handleDeleteEndpoint}
           />
         ) : null}
 
