@@ -1312,6 +1312,21 @@ function compareNumberWithFallback(
   return compareGpuCardValue(left, right);
 }
 
+function getGpuDemandScore(gpuName: string): number {
+  const text = gpuName.toLowerCase();
+  if (text.includes('b200')) return 100;
+  if (text.includes('h200')) return 90;
+  if (text.includes('h100')) return 80;
+  if (text.includes('a100')) return 70;
+  if (text.includes('mi300')) return 65;
+  if (text.includes('l40s')) return 60;
+  if (text.includes('l4')) return 50;
+  if (text.includes('4090')) return 40;
+  if (text.includes('a6000')) return 30;
+  if (text.includes('a10g') || text.includes('a10')) return 20;
+  return 0;
+}
+
 function compareGpuValue(
   left: { name: string; pricePerHourUsd: number | null; vram: string; regions: string[] },
   right: { name: string; pricePerHourUsd: number | null; vram: string; regions: string[] },
@@ -1321,13 +1336,22 @@ function compareGpuValue(
   const leftHasPrice = typeof leftPrice === 'number' && leftPrice > 0;
   const rightHasPrice = typeof rightPrice === 'number' && rightPrice > 0;
 
+  // 1. Price presence: purchaseable cards always prioritized
   if (leftHasPrice !== rightHasPrice) {
     return leftHasPrice ? -1 : 1;
+  }
+
+  // 2. High demand/popularity boost based on active market trends
+  const leftDemand = getGpuDemandScore(left.name);
+  const rightDemand = getGpuDemandScore(right.name);
+  if (leftDemand !== rightDemand) {
+    return rightDemand - leftDemand; // Higher demand score comes first
   }
 
   const leftVramGb = parseGbValue(left.vram);
   const rightVramGb = parseGbValue(right.vram);
 
+  // 3. VRAM Value Efficiency (cost per GB) for identical demand category
   if (leftHasPrice && rightHasPrice) {
     const leftValueScore = leftVramGb > 0 ? leftPrice / leftVramGb : leftPrice;
     const rightValueScore = rightVramGb > 0 ? rightPrice / rightVramGb : rightPrice;
