@@ -3817,7 +3817,7 @@ async function enableCodex(payload) {
     }
 
     const modelVal = isLocalUrl ? modelId : `oneinfer/${modelId}`;
-    const wireApiVal = isLocalUrl ? 'chat' : 'responses';
+    const wireApiVal = 'responses';
 
     let newTomlContent = `model = "${modelVal}"\nmodel_provider = "oneinfer"\n\n`;
     newTomlContent += cleanLines.join('\n').trim() + '\n\n';
