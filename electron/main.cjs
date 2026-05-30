@@ -3824,8 +3824,9 @@ async function enableCodex(payload) {
     newTomlContent += `[model_providers.oneinfer]\n`;
     newTomlContent += `name = "OneInfer"\n`;
     newTomlContent += `base_url = "${baseUrlToUse}"\n`;
-    newTomlContent += `env_key = "ONEINFER_API_KEY"\n`;
-    newTomlContent += `wire_api = "${wireApiVal}"\n`;
+    newTomlContent += `wire_api = "${wireApiVal}"\n\n`;
+    newTomlContent += `[model_providers.oneinfer.http_headers]\n`;
+    newTomlContent += `Authorization = "Bearer ${keyToUse || 'local'}"\n`;
 
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(codexTomlPath, newTomlContent.trim() + '\n', 'utf8');
