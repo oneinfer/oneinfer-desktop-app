@@ -1869,13 +1869,16 @@ def build_generation_inputs(prompt, payload, device):
     messages = payload.get("messages") or []
     if messages and hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
         try:
-            input_ids = tokenizer.apply_chat_template(
+            inputs = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
                 truncation=True,
-            ).to(device)
-            return {"input_ids": input_ids}
+                return_dict=True,
+            )
+            if isinstance(inputs, dict):
+                return {key: value.to(device) for key, value in inputs.items()}
+            return {"input_ids": inputs.to(device)}
         except Exception as template_error:
             print(f"Chat template formatting failed, using plain prompt: {template_error}", flush=True)
 
