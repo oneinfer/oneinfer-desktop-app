@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { AlertCircle, CheckCircle2, Info, LoaderCircle, Plus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { AlertCircle, CheckCircle2, Info, LoaderCircle, Plus, Terminal } from 'lucide-react';
 
 import {
   createApiKey,
@@ -280,6 +280,9 @@ function App() {
   const [message, setMessage] = useState<{ tone: 'info' | 'success' | 'error'; text: string } | null>(null);
   const [usageTarget, setUsageTarget] = useState<EndpointUsageTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [libraryInstallLog, setLibraryInstallLog] = useState<{ name: string; text: string; isError?: boolean }[]>([]);
+  const [isInstallLogOpen, setIsInstallLogOpen] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement>(null);
   const [, setUpdateStatus] = useState<DesktopUpdateStatus>({
     phase: 'idle',
     message: 'Updates are idle.',
@@ -486,6 +489,20 @@ function App() {
       checkLibs();
     }
   }, [activeSection, session]);
+
+  useEffect(() => {
+    if (!window.desktopBridge?.onLibraryInstallLog) return;
+    return window.desktopBridge.onLibraryInstallLog((log) => {
+      setLibraryInstallLog((prev) => [...prev, log]);
+      setIsInstallLogOpen(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [libraryInstallLog]);
 
   useEffect(() => {
     if (booting || !session) {
@@ -1895,12 +1912,16 @@ function App() {
     const currentTransformers = libraries.transformers || (await window.desktopBridge.checkLibrary('transformers'));
     if (!currentPyTorch || !currentTransformers) {
       setMessage({ tone: 'info', text: 'Installing PyTorch and Transformers for the local router endpoint...' });
+      setLibraryInstallLog([]);
+      setIsInstallLogOpen(true);
       await window.desktopBridge.installLibrary('transformers');
     }
 
     let pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
     let transformersInstalled = await window.desktopBridge.checkLibrary('transformers');
     if (!pytorchInstalled) {
+      setLibraryInstallLog([]);
+      setIsInstallLogOpen(true);
       await window.desktopBridge.installLibrary('pytorch');
       pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
     }
@@ -1936,6 +1957,8 @@ function App() {
     }
 
     setMessage({ tone: 'info', text: `${reason} Installing ${formatLocalRuntime(library)} before creating the route...` });
+    setLibraryInstallLog([]);
+    setIsInstallLogOpen(true);
     await window.desktopBridge.installLibrary(library);
     const installed = await window.desktopBridge.checkLibrary(library);
     setLibraries((current) => ({ ...current, [library]: installed }));
@@ -2328,6 +2351,8 @@ function isSameLocalModelId(left: string, right: string): boolean {
   async function handleInstallLibrary(name: ServingLibrary) {
     if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) return;
     setBusy(`install-${name}`);
+    setLibraryInstallLog([]);
+    setIsInstallLogOpen(true);
     try {
       await window.desktopBridge.installLibrary(name);
       const status = await window.desktopBridge.checkLibrary(name);
@@ -2460,6 +2485,132 @@ function isSameLocalModelId(left: string, right: string): boolean {
           </button>
         </div>
       ) : null}
+      {isInstallLogOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            width: '460px',
+            height: '360px',
+            backgroundColor: 'rgba(9, 16, 26, 0.95)',
+            border: message?.tone === 'error' && busy === null ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(0, 112, 243, 0.3)',
+            boxShadow: message?.tone === 'error' && busy === null ? '0 12px 40px rgba(239, 68, 68, 0.25)' : '0 12px 40px rgba(0, 112, 243, 0.2)',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            zIndex: 99998,
+            overflow: 'hidden',
+            fontFamily: 'monospace',
+            color: '#e2e8f0',
+            backdropFilter: 'blur(16px)',
+            transition: 'all 0.3s ease-out'
+          }}
+        >
+          <div
+            style={{
+              padding: '10px 16px',
+              background: 'rgba(15, 27, 43, 0.9)',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '10px'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+              <Terminal size={14} style={{ color: busy ? '#38bdf8' : (message?.tone === 'error' ? '#ef4444' : '#10b981') }} />
+              <span style={{ fontSize: '11px', fontWeight: 'bold', letterSpacing: '0.5px', textTransform: 'uppercase', color: '#94a3b8' }}>
+                {busy ? 'Installing Environment' : (message?.tone === 'error' ? 'Installation Failed' : 'Installation Output')}
+              </span>
+            </div>
+            <button
+              onClick={() => setIsInstallLogOpen(false)}
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#94a3b8',
+                cursor: 'pointer',
+                fontSize: '18px',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'color 0.2s',
+                opacity: 0.8
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = '#fff')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+            >
+              &times;
+            </button>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              overflowY: 'auto',
+              fontSize: '10px',
+              lineHeight: '1.6',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              backgroundColor: '#050a12',
+              color: '#38bdf8'
+            }}
+          >
+            {libraryInstallLog.length === 0 ? (
+              <div style={{ color: '#64748b', fontStyle: 'italic', padding: '12px 0' }}>
+                Waiting for installation output...
+              </div>
+            ) : (
+              libraryInstallLog.map((log, idx) => (
+                <div key={idx} style={{ whiteSpace: 'pre-wrap', color: log.isError ? '#f87171' : '#38bdf8' }}>
+                  {log.text}
+                </div>
+              ))
+            )}
+            <div ref={logsEndRef} />
+          </div>
+          {message?.tone === 'error' && busy === null && (
+            <div
+              style={{
+                padding: '10px 16px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                borderTop: '1px solid rgba(239, 68, 68, 0.2)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '10px'
+              }}
+            >
+              <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 'bold' }}>
+                An error occurred during pip execution.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(libraryInstallLog.map(l => l.text).join(''));
+                  setMessage({ tone: 'success', text: 'Installation logs copied to clipboard!' });
+                }}
+                style={{
+                  fontSize: '10px',
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  color: '#fff',
+                  borderRadius: '4px',
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                Copy Logs
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {activeSection === 'overview' ? (
         <div className="app-topbar">
           <div className="welcome-copy">

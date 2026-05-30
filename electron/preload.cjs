@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   enableOpenClaw: (payload) => ipcRenderer.invoke('app:enable-openclaw', payload),
   checkLibrary: (name) => ipcRenderer.invoke('app:check-library', name),
   installLibrary: (name) => ipcRenderer.invoke('app:install-library', name),
+  onLibraryInstallLog: (listener) => {
+    const handler = (_event, log) => listener(log);
+    ipcRenderer.on('app:library-install-log', handler);
+    return () => ipcRenderer.removeListener('app:library-install-log', handler);
+  },
   deployHfModel: (payload) => ipcRenderer.invoke('app:deploy-hf-model', payload),
   startLocalRoute: (payload) => ipcRenderer.invoke('app:start-local-route', payload),
   stopLocalRoute: (payload) => ipcRenderer.invoke('app:stop-local-route', payload),

@@ -163,6 +163,7 @@ interface Window {
     }) => Promise<DesktopOpenClawResult>;
     checkLibrary: (name: DesktopServingLibrary) => Promise<boolean>;
     installLibrary: (name: DesktopServingLibrary) => Promise<void>;
+    onLibraryInstallLog: (listener: (log: { name: string; text: string; isError?: boolean }) => void) => () => void;
     deployHfModel: (payload: {
       repoId: string;
       port?: number;

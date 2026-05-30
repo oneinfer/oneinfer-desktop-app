@@ -427,10 +427,18 @@ function runCommand(command, args = [], options = {}) {
     }
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      if (options.onStdout) {
+        options.onStdout(text);
+      }
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (options.onStderr) {
+        options.onStderr(text);
+      }
     });
     child.on('error', reject);
     child.on('close', (code) => {
@@ -608,27 +616,79 @@ async function installWindowsManagedVllm() {
   const runtimeDir = getWindowsVllmRuntimeDirectory();
   const pythonPath = getWindowsVllmPythonPath();
 
-  if (!fs.existsSync(pythonPath)) {
-    fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
-    await runCommand('py', ['-3.12', '-m', 'venv', runtimeDir], { timeoutMs: 5 * 60 * 1000 });
+  try {
+    if (!fs.existsSync(pythonPath)) {
+      fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
+      await runCommand('py', ['-3.12', '-m', 'venv', runtimeDir], {
+        timeoutMs: 5 * 60 * 1000,
+        onStdout: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text });
+          }
+        },
+        onStderr: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text, isError: true });
+          }
+        }
+      });
+    }
+
+    await runCommand(pythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'], {
+      timeoutMs: 10 * 60 * 1000,
+      onStdout: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text });
+        }
+      },
+      onStderr: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text, isError: true });
+        }
+      }
+    });
+
+    await runCommand(pythonPath, [
+      '-m',
+      'pip',
+      'install',
+      '--force-reinstall',
+      WINDOWS_VLLM_WHEEL_URL,
+      '--extra-index-url',
+      WINDOWS_VLLM_TORCH_INDEX_URL,
+    ], {
+      timeoutMs: 45 * 60 * 1000,
+      onStdout: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text });
+        }
+      },
+      onStderr: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text, isError: true });
+        }
+      }
+    });
+
+    if (!await isWindowsManagedVllmInstalled()) {
+      throw new Error('OneInfer installed the Windows vLLM runtime, but vLLM could not be imported. Check that the machine has a CUDA 13-compatible NVIDIA driver and try again.');
+    }
+
+    return 'installed';
+  } catch (error) {
+    try {
+      const { Notification } = require('electron');
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'OneInfer Edge',
+          body: 'Failed to install Windows vLLM runtime. Check the logs for details.',
+        }).show();
+      }
+    } catch (err) {
+      console.error('Failed to show system notification', err);
+    }
+    throw error;
   }
-
-  await runCommand(pythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'], { timeoutMs: 10 * 60 * 1000 });
-  await runCommand(pythonPath, [
-    '-m',
-    'pip',
-    'install',
-    '--force-reinstall',
-    WINDOWS_VLLM_WHEEL_URL,
-    '--extra-index-url',
-    WINDOWS_VLLM_TORCH_INDEX_URL,
-  ], { timeoutMs: 45 * 60 * 1000 });
-
-  if (!await isWindowsManagedVllmInstalled()) {
-    throw new Error('OneInfer installed the Windows vLLM runtime, but vLLM could not be imported. Check that the machine has a CUDA 13-compatible NVIDIA driver and try again.');
-  }
-
-  return 'installed';
 }
 
 async function isClaudeCodeInstalled() {
@@ -1093,8 +1153,35 @@ async function installLibrary(name) {
       throw new Error('pip is not installed. Please install Python and pip first.');
     }
 
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...pipInstallPackages[name]], { timeoutMs: 15 * 60 * 1000 });
-    return 'installed';
+    try {
+      await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...pipInstallPackages[name]], {
+        timeoutMs: 15 * 60 * 1000,
+        onStdout: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name, text });
+          }
+        },
+        onStderr: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name, text, isError: true });
+          }
+        }
+      });
+      return 'installed';
+    } catch (error) {
+      try {
+        const { Notification } = require('electron');
+        if (Notification.isSupported()) {
+          new Notification({
+            title: 'OneInfer Edge',
+            body: `Failed to install library "${name}". Check the logs for details.`,
+          }).show();
+        }
+      } catch (err) {
+        console.error('Failed to show system notification', err);
+      }
+      throw error;
+    }
   }
 
   throw new Error(`Automatic installation for "${name}" is not supported.`);
