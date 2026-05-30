@@ -258,9 +258,9 @@ function App() {
   const [enabledTools, setEnabledTools] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem('oneinfer_enabled_tools');
-      return saved ? JSON.parse(saved) : { opencode: false, kilocode: false, openclaw: false };
+      return saved ? JSON.parse(saved) : { opencode: false, kilocode: false, openclaw: false, codex: false };
     } catch {
-      return { opencode: false, kilocode: false, openclaw: false };
+      return { opencode: false, kilocode: false, openclaw: false, codex: false };
     }
   });
 
@@ -313,9 +313,9 @@ function App() {
   const [toolProviders, setToolProviders] = useState<Record<string, 'oneinfer' | 'tool'>>(() => {
     try {
       const saved = localStorage.getItem('oneinfer_tool_providers');
-      return saved ? JSON.parse(saved) : { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+      return saved ? JSON.parse(saved) : { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer', codex: 'oneinfer' };
     } catch {
-      return { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+      return { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer', codex: 'oneinfer' };
     }
   });
 
@@ -331,7 +331,7 @@ function App() {
     });
   }, []);
 
-  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw'>('claude-code');
+  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw' | 'codex'>('claude-code');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
@@ -1108,6 +1108,37 @@ function App() {
       });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable OpenClaw.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleEnableCodex() {
+    if (!session || !window.desktopBridge?.enableCodex) {
+      return;
+    }
+
+    setBusy('configure-codex');
+    setMessage(null);
+
+    try {
+      const result = await window.desktopBridge.enableCodex({
+        apiBaseUrl: settingsDraft.apiBaseUrl,
+        session,
+      });
+      const installMessage = result.codexInstallState === 'installed'
+        ? ' Codex was installed first for this operating system.'
+        : '';
+
+      setToolEnabled('codex', true);
+      setMessage({
+        tone: 'success',
+        text: result.alreadyConfigured
+          ? `Codex is already enabled globally for OneInfer. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`
+          : `Codex enabled globally via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`,
+      });
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Codex.' });
     } finally {
       setBusy(null);
     }
@@ -2658,6 +2689,7 @@ function isSameLocalModelId(left: string, right: string): boolean {
             onEnableOpenCode={handleEnableOpenCode}
             onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
+            onEnableCodex={handleEnableCodex}
             enabledTools={enabledTools}
             toolProviders={toolProviders}
             onToolProviderChange={handleToolProviderChange}

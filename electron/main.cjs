@@ -3658,6 +3658,130 @@ async function enableOpenClaw(payload) {
   };
 }
 
+async function isCodexInstalled() {
+  try {
+    return await commandExists('codex');
+  } catch {
+    return false;
+  }
+}
+
+async function getCodexInstallCommands() {
+  const commands = [];
+  if (await commandExists('npm')) {
+    commands.push({
+      command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      args: ['install', '-g', 'codex-ai'],
+      label: 'npm global installer',
+    });
+  }
+  return commands;
+}
+
+async function ensureCodexInstalled() {
+  if (await isCodexInstalled()) {
+    return 'already-installed';
+  }
+
+  const installCommands = await getCodexInstallCommands();
+  if (installCommands.length === 0) {
+    throw new Error(`Codex was not found and no supported installer was available on this ${process.platform} system.`);
+  }
+
+  let lastError = null;
+  for (const installCommand of installCommands) {
+    try {
+      await runCommand(installCommand.command, installCommand.args, {
+        timeoutMs: 10 * 60 * 1000,
+        shell: process.platform === 'win32',
+      });
+
+      if (await isCodexInstalled()) {
+        return 'installed';
+      }
+    } catch (error) {
+      lastError = {
+        label: installCommand.label,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const detail = lastError ? ` Last attempt via ${lastError.label} failed: ${lastError.message}` : '';
+  throw new Error(`Codex was not found and automatic installation failed.${detail}`);
+}
+
+function createCodexApiKeyName() {
+  const hostname = (os.hostname() || 'device').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 16) || 'device';
+  return `Codex-${hostname}-${Date.now().toString(36)}`;
+}
+
+async function createCodexApiKey(payload) {
+  return createOneInferApiKey(payload, createCodexApiKeyName(), 'Codex');
+}
+
+async function enableCodex(payload) {
+  const codexInstallState = await ensureCodexInstalled();
+  const config = readOneInferConfig();
+  const savedApiKey = toTrimmedString(config.codexApiKey);
+  const savedApiKeyName = toTrimmedString(config.codexApiKeyName);
+
+  const apiKeyFetchResult = await fetchApiKeysWithMeta(payload);
+  
+  let keyToUse = null;
+  let keyNameToUse = savedApiKeyName;
+  let baseUrlToUse = normalizeApiBaseUrl(payload?.apiBaseUrl);
+  let reusedExistingKey = false;
+
+  if (savedApiKey && savedApiKeyName) {
+    const keyExists = apiKeyFetchResult.apiKeys.some((k) =>
+      k.api_key_name === savedApiKeyName || k.id === savedApiKeyName || k.name === savedApiKeyName
+    );
+
+    if (keyExists || !apiKeyFetchResult.reachable) {
+      keyToUse = savedApiKey;
+      reusedExistingKey = true;
+    }
+  }
+
+  if (!keyToUse) {
+    const { apiKey, apiKeyName, apiBaseUrl } = await createCodexApiKey(payload);
+    keyToUse = apiKey;
+    keyNameToUse = apiKeyName;
+    baseUrlToUse = apiBaseUrl;
+
+    writeOneInferConfig({
+      ...config,
+      codexApiKey: apiKey,
+      codexApiKeyName: apiKeyName,
+      codexApiBaseUrl: apiBaseUrl,
+    });
+  }
+
+  const configDir = path.join(os.homedir(), '.config', 'codex');
+  const configFilePath = path.join(configDir, 'codex.json');
+  const modelId = toTrimmedString(payload?.modelId) || 'MiniMax-M2.7';
+
+  const codexConfig = {
+    baseUrl: baseUrlToUse,
+    apiKey: keyToUse,
+    model: `oneinfer/${modelId}`
+  };
+
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(configFilePath, JSON.stringify(codexConfig, null, 2), 'utf8');
+
+  return {
+    alreadyConfigured: false,
+    apiKeyName: keyNameToUse,
+    codexInstallState,
+    configPath: configFilePath,
+    model: `oneinfer/${modelId}`,
+    providerId: 'oneinfer',
+    ...(reusedExistingKey ? { reusedExistingKey: true } : {}),
+  };
+}
+
 function getOrCreateMachineId() {
   const filePath = getMachineIdFilePath();
 
@@ -4316,6 +4440,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:enable-opencode', async (_event, payload) => enableOpenCode(payload));
   ipcMain.handle('app:enable-kilocode', async (_event, payload) => enableKiloCode(payload));
   ipcMain.handle('app:enable-openclaw', async (_event, payload) => enableOpenClaw(payload));
+  ipcMain.handle('app:enable-codex', async (_event, payload) => enableCodex(payload));
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
   ipcMain.handle('app:get-library-error', async (_event, name) => {

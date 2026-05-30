@@ -3,7 +3,7 @@ import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-
 
 import { EmptyState } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
-import { OpenCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel } from '../components/SetupPanels';
+import { OpenCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel, CodexSetupPanel } from '../components/SetupPanels';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -11,16 +11,17 @@ export function OverviewPage(props: {
   dashboard: DashboardState;
   busy: string | null;
   infraTab: 'self-hosted' | 'cloud';
-  overviewTab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw';
+  overviewTab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw' | 'codex';
   claudeCodeProvider: 'oneinfer' | 'anthropic';
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onInfraTabChange: (tab: 'self-hosted' | 'cloud') => void;
-  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw') => void;
+  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw' | 'codex') => void;
   onClaudeProviderChange: (provider: 'oneinfer' | 'anthropic') => void;
   onEnableOpenCode: () => void | Promise<void>;
   onEnableKiloCode: () => void | Promise<void>;
   onEnableOpenClaw: () => void | Promise<void>;
+  onEnableCodex: () => void | Promise<void>;
   enabledTools: Record<string, boolean>;
   toolProviders: Record<string, 'oneinfer' | 'tool'>;
   onToolProviderChange: (tool: string, provider: 'oneinfer' | 'tool') => void;
@@ -32,6 +33,7 @@ export function OverviewPage(props: {
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isKiloCodeBusy = props.busy === 'configure-kilocode';
   const isOpenClawBusy = props.busy === 'configure-openclaw';
+  const isCodexBusy = props.busy === 'configure-codex';
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local' && !isRouterEndpoint(endpoint));
   const cloudEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'cloud' && !isRouterEndpoint(endpoint));
   const validLocalDeployments = props.localDeployments.filter((deployment) => isVisibleLocalDeployment(deployment, props.localModelMetrics));
@@ -247,6 +249,37 @@ export function OverviewPage(props: {
                   onToolClick={() => {
                     props.onOverviewTabChange('openclaw');
                     props.onEnableOpenClaw();
+                  }}
+                />
+              </div>
+
+              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'codex' ? 'active' : ''}`}>
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <button
+                  className="settings-list-copy"
+                  onClick={() => {
+                    props.onOverviewTabChange('codex');
+                    props.onEnableCodex();
+                  }}
+                  type="button"
+                >
+                  <strong>Codex</strong>
+                  <span>Install Codex if needed and write a OneInfer-backed user config.</span>
+                </button>
+                <OneInferIntegrationAction
+                  busy={isCodexBusy}
+                  label="Codex"
+                  toolLabel="Codex"
+                  isActive={props.overviewTab === 'codex'}
+                  provider={props.toolProviders.codex || 'oneinfer'}
+                  onProviderChange={(p) => props.onToolProviderChange('codex', p)}
+                  onClick={() => {
+                    props.onOverviewTabChange('codex');
+                    props.onEnableCodex();
+                  }}
+                  onToolClick={() => {
+                    props.onOverviewTabChange('codex');
+                    props.onEnableCodex();
                   }}
                 />
               </div>

@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   enableOpenCode: (payload) => ipcRenderer.invoke('app:enable-opencode', payload),
   enableKiloCode: (payload) => ipcRenderer.invoke('app:enable-kilocode', payload),
   enableOpenClaw: (payload) => ipcRenderer.invoke('app:enable-openclaw', payload),
+  enableCodex: (payload) => ipcRenderer.invoke('app:enable-codex', payload),
   checkLibrary: (name) => ipcRenderer.invoke('app:check-library', name),
   installLibrary: (name) => ipcRenderer.invoke('app:install-library', name),
   onLibraryInstallLog: (listener) => {

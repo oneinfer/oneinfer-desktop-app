@@ -80,6 +80,15 @@ interface DesktopOpenClawResult {
   providerId: string;
 }
 
+interface DesktopCodexResult {
+  alreadyConfigured: boolean;
+  apiKeyName: string | null;
+  codexInstallState: 'already-installed' | 'installed';
+  configPath: string;
+  model: string;
+  providerId: string;
+}
+
 interface DesktopHfDeploymentResult {
   endpointUrl: string;
   modelId: string;
@@ -161,6 +170,11 @@ interface Window {
       apiBaseUrl?: string;
       session?: DesktopSession;
     }) => Promise<DesktopOpenClawResult>;
+    enableCodex: (payload: {
+      apiBaseUrl?: string;
+      session?: DesktopSession;
+      modelId?: string;
+    }) => Promise<DesktopCodexResult>;
     checkLibrary: (name: DesktopServingLibrary) => Promise<boolean>;
     installLibrary: (name: DesktopServingLibrary) => Promise<void>;
     onLibraryInstallLog: (listener: (log: { name: string; text: string; isError?: boolean }) => void) => () => void;
