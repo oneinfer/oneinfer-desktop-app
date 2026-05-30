@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('desktopBridge', {
     ipcRenderer.on('app:library-install-log', handler);
     return () => ipcRenderer.removeListener('app:library-install-log', handler);
   },
+  getLibraryError: (name) => ipcRenderer.invoke('app:get-library-error', name),
+  installVcRedist: () => ipcRenderer.invoke('app:install-vc-redist'),
   deployHfModel: (payload) => ipcRenderer.invoke('app:deploy-hf-model', payload),
   startLocalRoute: (payload) => ipcRenderer.invoke('app:start-local-route', payload),
   stopLocalRoute: (payload) => ipcRenderer.invoke('app:stop-local-route', payload),

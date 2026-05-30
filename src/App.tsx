@@ -283,6 +283,7 @@ function App() {
   const [libraryInstallLog, setLibraryInstallLog] = useState<{ name: string; text: string; isError?: boolean }[]>([]);
   const [isInstallLogOpen, setIsInstallLogOpen] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const [libraryErrors, setLibraryErrors] = useState<Record<string, string | null>>({});
   const [, setUpdateStatus] = useState<DesktopUpdateStatus>({
     phase: 'idle',
     message: 'Updates are idle.',
@@ -480,6 +481,17 @@ function App() {
           ...initialLibraryStatus,
           ...Object.fromEntries(statuses),
         });
+
+        if (window.desktopBridge.getLibraryError) {
+          const errors = await Promise.all(
+            servingLibraries.map(async (library) => {
+              const isInstalled = statuses.find(([lib]) => lib === library)?.[1];
+              const err = !isInstalled ? await window.desktopBridge.getLibraryError(library) : null;
+              return [library, err] as const;
+            })
+          );
+          setLibraryErrors(Object.fromEntries(errors));
+        }
       } catch (error) {
         console.error('[libraries] check failed', error);
       }
@@ -2658,7 +2670,88 @@ function isSameLocalModelId(left: string, right: string): boolean {
         ) : null}
 
         {activeSection === 'selfHosting' ? (
-          <SelfHostingPage
+          <>
+            {(() => {
+              const activeLibrary = selfHostForm.serving_library;
+              const activeError = libraryErrors[activeLibrary] || (activeLibrary === 'transformers' ? (libraryErrors.pytorch || libraryErrors.transformers) : null);
+              if (!libraries[activeLibrary] && activeError) {
+                const isVcRedistError = activeError.toLowerCase().includes('dll load failed') || 
+                                        activeError.toLowerCase().includes('visual c++') || 
+                                        activeError.toLowerCase().includes('vcruntime') || 
+                                        activeError.toLowerCase().includes('msvcp');
+                return (
+                  <div
+                    style={{
+                      margin: '0 0 20px 0',
+                      padding: '16px',
+                      backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      borderRadius: '8px',
+                      color: '#ef4444',
+                      fontSize: '13px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold' }}>
+                      <AlertCircle size={16} />
+                      <span>Python Environment Diagnostic Warning</span>
+                    </div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '11px', backgroundColor: 'rgba(0, 0, 0, 0.2)', padding: '10px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.05)', color: '#f87171', whiteSpace: 'pre-wrap', maxHeight: '100px', overflowY: 'auto' }}>
+                      {activeError}
+                    </div>
+                    {isVcRedistError ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#94a3b8', fontSize: '12px', flex: 1 }}>
+                          OneInfer Edge detected that Microsoft Visual C++ Runtime is missing on your Windows machine, which prevents PyTorch from loading.
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy === 'install-vc-redist'}
+                          onClick={async () => {
+                            setBusy('install-vc-redist');
+                            setMessage({ tone: 'info', text: 'Installing Microsoft Visual C++ Redistributable silently. Please wait...' });
+                            try {
+                              await window.desktopBridge.installVcRedist();
+                              setMessage({ tone: 'success', text: 'Visual C++ Redistributable installed successfully!' });
+                              if (window.desktopBridge?.checkLibrary) {
+                                await window.desktopBridge.checkLibrary(activeLibrary);
+                              }
+                            } catch (err: any) {
+                              setMessage({ tone: 'error', text: `VC++ Runtime Auto-Installation failed: ${err.message || String(err)}` });
+                            } finally {
+                              setBusy(null);
+                            }
+                          }}
+                          style={{
+                            background: 'rgba(0, 112, 243, 0.15)',
+                            border: '1px solid rgba(0, 112, 243, 0.3)',
+                            color: '#38bdf8',
+                            borderRadius: '4px',
+                            padding: '6px 12px',
+                            fontWeight: 'bold',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {busy === 'install-vc-redist' ? 'Installing VC++...' : 'Auto-Install VC++ Runtime'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#94a3b8', fontSize: '11px' }}>
+                          Tip: If PyTorch or Transformers are installed on your machine but failing to import, ensure you have a 64-bit Python installation and its PATH is added to Windows Environment Variables.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              return null;
+            })()}
+            <SelfHostingPage
             dashboard={visibleDashboard}
             selfHostForm={selfHostForm}
             validationResult={validationResult}
@@ -2696,6 +2789,7 @@ function isSameLocalModelId(left: string, right: string): boolean {
             onShowUsage={setUsageTarget}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
+          </>
         ) : null}
 
         {activeSection === 'instances' ? (
