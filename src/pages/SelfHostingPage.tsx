@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, PlayCircle, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
+import type { EndpointUsageTarget } from '../components/EndpointUsageModal';
 import type { ValidationResult } from '../helpers/hardwareValidation';
 import { getServingLibraryCompatibility } from '../helpers/servingCompatibility';
 import type { DashboardState, EndpointItem, HfModelInfo, LocalModelDeployment, LocalModelMetrics, ServingLibrary } from '../types';
@@ -25,7 +26,7 @@ const servingLibraryOptions: Array<{ value: ServingLibrary; label: string; platf
   { value: 'tensorrt', label: 'TensorRT-LLM', platforms: ['linux'], installable: true },
   { value: 'ollama', label: 'Ollama', platforms: ['windows', 'macos', 'linux'], installable: true },
   { value: 'llama_cpp', label: 'llama.cpp', platforms: ['windows', 'macos', 'linux'], installable: true },
-  { value: 'pytorch', label: 'PyTorch', platforms: ['windows', 'macos', 'linux'], installable: true },
+  { value: 'pytorch', label: 'PyTorch (via Transformers)', platforms: ['windows', 'macos', 'linux'], installable: true },
   { value: 'transformers', label: 'Transformers', platforms: ['windows', 'macos', 'linux'], installable: true },
   { value: 'dynamo', label: 'Dynamo', platforms: ['linux'], installable: true },
 ];
@@ -47,6 +48,7 @@ export function SelfHostingPage(props: {
   onInstallLibrary: (library: ServingLibrary) => Promise<void>;
   onStartLocalDeployment: (deployment: LocalDeploymentRow) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
   onDeleteLocalDeployment: (deployment: LocalDeploymentRow) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -141,11 +143,22 @@ export function SelfHostingPage(props: {
   }
 
   function updateModel(next: Partial<SelfHostFormState>) {
-    const candidate = next.hfUrl ?? next.model_id ?? '';
+    const oldCandidate = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
+    const oldRepoName = getRepoName(oldCandidate);
+
+    const nextHfUrl = next.hfUrl !== undefined ? next.hfUrl : props.selfHostForm.hfUrl;
+    const nextModelId = next.model_id !== undefined ? next.model_id : props.selfHostForm.model_id;
+    const nextUseHfUrl = next.useHfUrl !== undefined ? next.useHfUrl : props.selfHostForm.useHfUrl;
+    const nextCandidate = nextUseHfUrl ? nextHfUrl : nextModelId;
+    const nextRepoName = getRepoName(nextCandidate);
+
+    const currentName = props.selfHostForm.name.trim();
+    const shouldUpdateName = !currentName || currentName === oldRepoName;
+
     props.onFormChange({
       ...props.selfHostForm,
       ...next,
-      name: props.selfHostForm.name || getRepoName(candidate),
+      name: shouldUpdateName ? nextRepoName : props.selfHostForm.name,
     });
   }
 
@@ -174,10 +187,10 @@ export function SelfHostingPage(props: {
             </div>
 
             <div className="cc-toggle" style={{ marginBottom: '8px' }}>
-              <button className={`cc-toggle-btn ${props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => props.onFormChange({ ...props.selfHostForm, useHfUrl: true })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
+              <button className={`cc-toggle-btn ${props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => updateModel({ useHfUrl: true })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
                 Hugging Face
               </button>
-              <button className={`cc-toggle-btn ${!props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => props.onFormChange({ ...props.selfHostForm, useHfUrl: false })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
+              <button className={`cc-toggle-btn ${!props.selfHostForm.useHfUrl ? 'active' : ''}`} onClick={() => updateModel({ useHfUrl: false })} type="button" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
                 OneInfer Catalog
               </button>
             </div>
@@ -330,6 +343,7 @@ export function SelfHostingPage(props: {
               busy={props.busy}
               onStart={props.onStartLocalDeployment}
               onUseInRoute={props.onUseInRoute}
+              onShowUsage={props.onShowUsage}
               onDelete={props.onDeleteLocalDeployment}
             />
           ))}
@@ -518,6 +532,7 @@ function LocalDeploymentCard(props: {
   busy: string | null;
   onStart: (deployment: LocalDeploymentRow) => Promise<void>;
   onUseInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
   onDelete: (deployment: LocalDeploymentRow) => void;
 }) {
   const healthLabel = props.metrics?.healthy === undefined
@@ -552,6 +567,21 @@ function LocalDeploymentCard(props: {
         <button className="ghost-button" type="button" disabled={!props.deployment.registered} onClick={() => props.onUseInRoute(props.deployment.endpointId, props.deployment.name)}>
           <Orbit size={14} />
           Use in route
+        </button>
+        <button
+          className="ghost-button"
+          type="button"
+          disabled={!props.deployment.endpointUrl}
+          onClick={() => props.onShowUsage({
+            endpointId: props.deployment.endpointId,
+            endpointUrl: props.deployment.endpointUrl,
+            modelId: props.deployment.modelId,
+            name: props.deployment.name,
+            source: 'local',
+          })}
+        >
+          <PlayCircle size={14} />
+          Usage
         </button>
         <button className="ghost-button" type="button" onClick={() => navigator.clipboard?.writeText(curlBase)}>
           <Copy size={14} />
@@ -680,8 +710,12 @@ function getEndpointId(endpoint: EndpointItem, index: number): string {
 }
 
 function isLocalEndpoint(endpoint: EndpointItem): boolean {
+  const target = String(endpoint.deployment_target ?? '').toLowerCase();
+  if (target === 'cloud' || target === 'closed_source_api') {
+    return false;
+  }
   const endpointUrl = String(endpoint.endpoint_url ?? '').toLowerCase();
-  return String(endpoint.deployment_target ?? '').toLowerCase() === 'local'
+  return target === 'local'
     || endpointUrl.includes('localhost')
     || endpointUrl.includes('127.0.0.1')
     || endpointUrl.includes('0.0.0.0');

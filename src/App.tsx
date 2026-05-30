@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { LoaderCircle, Plus } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Info, LoaderCircle, Plus } from 'lucide-react';
 
 import {
   createApiKey,
@@ -13,6 +13,7 @@ import {
   getActiveDeveloperPlan,
   getCredits,
   getDeveloperPlans,
+  getGpuPricing,
   getGpuSpecs,
   getHfModelInfo,
   getInstances,
@@ -30,6 +31,7 @@ import {
   verifyRegistration,
 } from './api';
 import { AppLayout } from './components/AppLayout';
+import { EndpointUsageModal, type EndpointUsageTarget } from './components/EndpointUsageModal';
 import { HfModelDetailPanel } from './components/HfModelDetailPanel';
 import {
   createLoadedSections,
@@ -64,6 +66,7 @@ import type {
   RegistrationFormState,
   SectionKey,
   ServingLibrary,
+  Notification,
 } from './types';
 import { getBalance } from './utils/format';
 
@@ -203,8 +206,79 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState(defaultSettings);
   const [session, setSession] = useState<DesktopSession | null>(null);
   const [activeSection, setActiveSection] = useState<SectionKey>('overview');
+  const [notifications, setNotifications] = useState<Notification[]>(() => {
+    try {
+      const saved = localStorage.getItem('oneinfer_notifications');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('oneinfer_notifications', JSON.stringify(notifications));
+    } catch (err) {
+      console.warn('Failed to save notifications:', err);
+    }
+  }, [notifications]);
+
+  const addNotification = useCallback((type: Notification['type'], title: string, message: string) => {
+    setNotifications((prev) => [
+      {
+        id: `notif-${Date.now()}`,
+        type,
+        title,
+        message,
+        timestamp: 'Just now',
+        read: false,
+      },
+      ...prev,
+    ]);
+  }, []);
+
+  const handleMarkAllNotificationsRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  }, []);
+
+  const handleClearAllNotifications = useCallback(() => {
+    setNotifications([]);
+  }, []);
+
+  const handleToggleNotificationRead = useCallback((id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: !n.read } : n))
+    );
+  }, []);
+
+  const handleDeleteNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const [enabledTools, setEnabledTools] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('oneinfer_enabled_tools');
+      return saved ? JSON.parse(saved) : { opencode: false, kilocode: false, openclaw: false };
+    } catch {
+      return { opencode: false, kilocode: false, openclaw: false };
+    }
+  });
+
+  const setToolEnabled = useCallback((tool: string, enabled: boolean) => {
+    setEnabledTools((prev) => {
+      const next = { ...prev, [tool]: enabled };
+      try {
+        localStorage.setItem('oneinfer_enabled_tools', JSON.stringify(next));
+      } catch (err) {
+        console.warn('Failed to save enabled tools:', err);
+      }
+      return next;
+    });
+  }, []);
+
   const [dashboard, setDashboard] = useState<DashboardState>(defaultDashboardState);
   const [message, setMessage] = useState<{ tone: 'info' | 'success' | 'error'; text: string } | null>(null);
+  const [usageTarget, setUsageTarget] = useState<EndpointUsageTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [, setUpdateStatus] = useState<DesktopUpdateStatus>({
     phase: 'idle',
@@ -232,6 +306,27 @@ function App() {
   const [intelligentEndpointName, setIntelligentEndpointName] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeCodeProvider, setClaudeCodeProvider] = useState<'oneinfer' | 'anthropic'>(defaultClaudeCodeProvider);
+  const [toolProviders, setToolProviders] = useState<Record<string, 'oneinfer' | 'tool'>>(() => {
+    try {
+      const saved = localStorage.getItem('oneinfer_tool_providers');
+      return saved ? JSON.parse(saved) : { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+    } catch {
+      return { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+    }
+  });
+
+  const handleToolProviderChange = useCallback((tool: string, provider: 'oneinfer' | 'tool') => {
+    setToolProviders((prev) => {
+      const next = { ...prev, [tool]: provider };
+      try {
+        localStorage.setItem('oneinfer_tool_providers', JSON.stringify(next));
+      } catch (err) {
+        console.warn('Failed to save tool providers:', err);
+      }
+      return next;
+    });
+  }, []);
+
   const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw'>('claude-code');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
@@ -573,20 +668,25 @@ function App() {
           getInstances(currentBaseUrl, currentSession),
           getProviderInfo(currentBaseUrl),
           getGpuSpecs(currentBaseUrl),
+          getGpuPricing(currentBaseUrl, currentSession),
           listModels(currentBaseUrl),
           listInferenceEndpoints(currentBaseUrl, currentSession),
         ]);
 
         setDashboard((current) => ({
           ...current,
-          instances: results[0].status === 'fulfilled' ? results[0].value : current.instances,
+          instances: (results[0].status === 'fulfilled' ? results[0].value : current.instances).filter(i => {
+            const status = String(i.instance_status ?? i.status).toLowerCase();
+            return status !== 'deleted' && status !== 'terminated';
+          }),
           providerInfo: results[1].status === 'fulfilled' ? results[1].value : current.providerInfo,
           gpuSpecs: results[2].status === 'fulfilled' ? results[2].value : current.gpuSpecs,
-          models: results[3].status === 'fulfilled' ? results[3].value : current.models,
-          inferenceEndpoints: results[4].status === 'fulfilled' ? results[4].value : current.inferenceEndpoints,
+          gpuPricing: results[3].status === 'fulfilled' ? results[3].value : current.gpuPricing,
+          models: results[4].status === 'fulfilled' ? results[4].value : current.models,
+          inferenceEndpoints: results[5].status === 'fulfilled' ? results[5].value : current.inferenceEndpoints,
         }));
 
-        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs', 'models', 'inference endpoints']);
+        announcePartialFailures('Instances', results, shouldBeSilent, ['instances', 'provider info', 'GPU specs', 'GPU pricing', 'models', 'inference endpoints']);
       }
 
       if (section === 'apiKeys') {
@@ -673,6 +773,21 @@ function App() {
     }
   }
 
+  async function triggerAutoUpdate() {
+    if (!window.desktopBridge?.gitPull) return;
+    try {
+      setMessage({ tone: 'info', text: 'Auto-updating: Checking for latest Git pull...' });
+      const result = await window.desktopBridge.gitPull();
+      if (result.success) {
+        setMessage({ tone: 'success', text: result.message || 'Auto-update complete. The application will hot-reload if changed.' });
+      } else {
+        setMessage({ tone: 'error', text: `Auto-update failed: ${result.error}` });
+      }
+    } catch (error: any) {
+      console.error('Auto git pull failed:', error);
+    }
+  }
+
   useEffect(() => {
     let active = true;
 
@@ -711,6 +826,18 @@ function App() {
 
       if (storedState?.session) {
         await loadSectionData('overview', storedState.session, nextBaseUrl, { force: true, silent: true });
+      }
+
+      // Daily auto-update check
+      try {
+        const today = new Date().toDateString();
+        const lastPullDate = localStorage.getItem('lastAutoPullDate');
+        if (lastPullDate !== today && typeof window.desktopBridge?.gitPull === 'function') {
+          localStorage.setItem('lastAutoPullDate', today);
+          void triggerAutoUpdate();
+        }
+      } catch (err) {
+        console.warn('Failed to check daily auto update:', err);
       }
 
       setBooting(false);
@@ -943,6 +1070,7 @@ function App() {
         ? ' OpenClaw was installed first for this operating system.'
         : '';
 
+      setToolEnabled('openclaw', true);
       setMessage({
         tone: 'success',
         text: result.alreadyConfigured
@@ -973,6 +1101,7 @@ function App() {
         ? ' OpenCode was installed first for this operating system.'
         : '';
 
+      setToolEnabled('opencode', true);
       setMessage({
         tone: 'success',
         text: result.alreadyConfigured
@@ -1003,6 +1132,7 @@ function App() {
         ? ' Kilo Code was installed first for this operating system.'
         : '';
 
+      setToolEnabled('kilocode', true);
       setMessage({
         tone: 'success',
         text: result.alreadyConfigured
@@ -1128,10 +1258,10 @@ function App() {
     const isOllamaCompatibleRepo = isOllamaCompatibleModelId(repoId);
     const localRuntime = requestedRuntime;
     if (!libraries[localRuntime]) {
-      const dependencyNote = selectedRuntime === 'pytorch' && localRuntime === 'transformers'
-        ? ' PyTorch is the model backend, but OneInfer needs the Transformers serving runtime to expose an OpenAI-compatible local server.'
-        : '';
-      setMessage({ tone: 'error', text: `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.${dependencyNote}` });
+      const errorText = selectedRuntime === 'pytorch'
+        ? 'Install both PyTorch and Transformers before deploying this model locally. OneInfer uses PyTorch as the hardware-accelerated backend framework and the Transformers serving library to expose an OpenAI-compatible local server.'
+        : `Install ${formatLocalRuntime(localRuntime)} before deploying this model locally.`;
+      setMessage({ tone: 'error', text: errorText });
       return false;
     }
 
@@ -1260,6 +1390,7 @@ function App() {
         timestamp: Date.now(),
       };
       setDeploymentProgress((current) => [...current, registeredProgress].slice(-80));
+      addNotification('success', 'Local Deployment Succeeded', `Successfully deployed model "${deployment.modelId}" locally on ${deployment.endpointUrl}.`);
       setMessage({ tone: 'success', text: `Deployed ${deployment.modelId} locally and registered ${deployment.endpointUrl}.` });
       await loadSectionData('selfHosting', session, settingsDraft.apiBaseUrl, { force: true, silent: true });
       await loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true });
@@ -1278,6 +1409,7 @@ function App() {
         timestamp: Date.now(),
       };
       setDeploymentProgress((current) => [...current, errorProgress].slice(-80));
+      addNotification('error', 'Local Deployment Failed', `Failed to deploy model "${repoId}" locally: ${errorMessage}`);
       setMessage({ tone: 'error', text: errorMessage });
       return false;
     } finally {
@@ -1323,6 +1455,28 @@ function App() {
       await loadSectionData(activeSection === 'settings' ? 'overview' : activeSection, session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Refresh failed.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleGitPull() {
+    if (!window.desktopBridge?.gitPull) {
+      setMessage({ tone: 'error', text: 'Update is not supported in this environment.' });
+      return;
+    }
+
+    setBusy('git-pull');
+    setMessage({ tone: 'info', text: 'Checking for updates...' });
+    try {
+      const result = await window.desktopBridge.gitPull();
+      if (result.success) {
+        setMessage({ tone: 'success', text: result.message || 'Update completed successfully. The application will hot-reload if changed.' });
+      } else {
+        setMessage({ tone: 'error', text: `Update failed: ${result.error}` });
+      }
+    } catch (error: any) {
+      setMessage({ tone: 'error', text: error.message || 'Update failed.' });
     } finally {
       setBusy(null);
     }
@@ -1374,6 +1528,7 @@ function App() {
         ...instanceForm,
         model_id: normalizedModelId,
       });
+      addNotification('success', 'Deployment Request Submitted', `Cloud deployment for model "${normalizedModelId}" on GPU "${instanceForm.gpu_id}" is initializing.`);
       setMessage({ tone: 'success', text: 'Cloud model deployment request submitted.' });
       loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true }).catch((error) => {
         setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Cloud deployment submitted, but refresh failed.' });
@@ -1381,7 +1536,9 @@ function App() {
       loadSectionData('routing', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
       return true;
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to deploy cloud model.' });
+      const errMsg = error instanceof Error ? error.message : 'Failed to deploy cloud model.';
+      addNotification('error', 'Deployment Failed', `Failed to initialize cloud model deployment: ${errMsg}`);
+      setMessage({ tone: 'error', text: errMsg });
       return false;
     } finally {
       setBusy(null);
@@ -1396,10 +1553,14 @@ function App() {
     setBusy(action);
     try {
       await runInstanceAction(settingsDraft.apiBaseUrl, session, action, instanceId, provider);
+      const actionLabel = action === 'start-instance' ? 'Start' : action === 'stop-instance' ? 'Stop' : 'Restart';
+      addNotification('success', `Instance Action Succeeded`, `Successfully executed "${actionLabel}" for cloud instance "${instanceId}".`);
       setMessage({ tone: 'success', text: `${action} completed for ${instanceId}.` });
       await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Instance action failed.' });
+      const errMsg = error instanceof Error ? error.message : 'Instance action failed.';
+      addNotification('error', `Instance Action Failed`, `Failed to run action "${action}" on instance "${instanceId}": ${errMsg}`);
+      setMessage({ tone: 'error', text: errMsg });
     } finally {
       setBusy(null);
     }
@@ -1413,16 +1574,40 @@ function App() {
     setBusy('delete-instance');
     try {
       await deleteInstance(settingsDraft.apiBaseUrl, session, instanceId, provider);
+      addNotification('info', 'Instance Deleted', `Cloud instance "${instanceId}" was deleted successfully.`);
       setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Delete instance failed.';
       if (msg.toLowerCase().includes('no instance mapping found')) {
+        addNotification('info', 'Instance Deleted', `Cloud instance "${instanceId}" was deleted successfully.`);
         setMessage({ tone: 'success', text: `Deleted ${instanceId}.` });
       } else {
+        addNotification('error', 'Instance Deletion Failed', `Failed to delete instance "${instanceId}": ${msg}`);
         setMessage({ tone: 'error', text: msg });
       }
     } finally {
       await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
+      setBusy(null);
+    }
+  }
+
+  async function handleDeleteEndpoint(endpointId: string) {
+    if (!session) {
+      return;
+    }
+
+    setBusy('delete-endpoint');
+    try {
+      await deleteInferenceEndpoint(settingsDraft.apiBaseUrl, session, endpointId);
+      addNotification('info', 'Endpoint Deleted', `Inference endpoint "${endpointId}" was deleted successfully.`);
+      setMessage({ tone: 'success', text: `Deleted endpoint ${endpointId}.` });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Delete endpoint failed.';
+      addNotification('error', 'Endpoint Deletion Failed', `Failed to delete endpoint "${endpointId}": ${msg}`);
+      setMessage({ tone: 'error', text: msg });
+    } finally {
+      await loadSectionData('instances', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
+      await loadSectionData('overview', session, settingsDraft.apiBaseUrl, { force: true, silent: true }).catch(() => {});
       setBusy(null);
     }
   }
@@ -1436,11 +1621,14 @@ function App() {
     setBusy('create-key');
     try {
       await createApiKey(settingsDraft.apiBaseUrl, session, apiKeyName, apiKeyEnvironment);
+      addNotification('success', 'API Key Created', `API key "${apiKeyName}" was created successfully.`);
       setMessage({ tone: 'success', text: 'API key created successfully' });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
       setApiKeyName('');
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'API key creation failed.' });
+      const errMsg = error instanceof Error ? error.message : 'API key creation failed.';
+      addNotification('error', 'API Key Creation Failed', errMsg);
+      setMessage({ tone: 'error', text: errMsg });
     } finally {
       setBusy(null);
     }
@@ -1454,10 +1642,13 @@ function App() {
     setBusy('delete-key');
     try {
       await deleteApiKey(settingsDraft.apiBaseUrl, session, name);
+      addNotification('info', 'API Key Deleted', `API key "${name}" was successfully removed.`);
       setMessage({ tone: 'success', text: 'API Key removed successfully' });
       await loadSectionData('apiKeys', session, settingsDraft.apiBaseUrl, { force: true });
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'API key deletion failed.' });
+      const errMsg = error instanceof Error ? error.message : 'API key deletion failed.';
+      addNotification('error', 'API Key Deletion Failed', errMsg);
+      setMessage({ tone: 'error', text: errMsg });
     } finally {
       setBusy(null);
     }
@@ -1475,10 +1666,13 @@ function App() {
 
     const existingRouterEndpoint = dashboard.inferenceEndpoints.find((endpoint, index) => {
       const record = endpoint as Record<string, unknown>;
+      const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
+      if (deploymentTarget === 'cloud' || deploymentTarget === 'closed_source_api') {
+        return false;
+      }
       const endpointModelId = String(record.model_id ?? record.modelId ?? '');
       const endpointRole = String(record.endpoint_role ?? record.role ?? '').toLowerCase();
       const endpointUrl = String(record.endpoint_url ?? '').toLowerCase();
-      const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
       return endpointModelId === routerModelId
         && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'))
         && (!endpointRole || endpointRole === 'router' || endpointRole === 'model' || String(record.name ?? '').toLowerCase().includes('router'))
@@ -1895,6 +2089,22 @@ function App() {
     });
   }
 
+function normalizeModelIdForMatch(modelId: string): string {
+  let normalized = modelId.trim().toLowerCase();
+  normalized = normalized.split(':')[0]; // remove :latest or tag suffix
+  if (normalized.startsWith('hf.co/')) {
+    normalized = normalized.slice(6); // remove hf.co/ prefix
+  }
+  if (normalized.endsWith('-gguf')) {
+    normalized = normalized.slice(0, -5); // remove -gguf suffix
+  }
+  return normalized;
+}
+
+function isSameLocalModelId(left: string, right: string): boolean {
+  return normalizeModelIdForMatch(left) === normalizeModelIdForMatch(right);
+}
+
   async function validateLocalRouteCandidates(routerEndpointUrl: string, candidates: Record<string, unknown>[]) {
     if (!window.desktopBridge?.getLocalModelMetrics) {
       return;
@@ -1905,6 +2115,12 @@ function App() {
       const endpointUrl = String(candidate.endpoint_url ?? candidate.endpointUrl ?? '').trim();
       const modelId = String(candidate.model_id ?? candidate.modelId ?? '').trim();
       const name = String(candidate.endpoint_name ?? candidate.name ?? modelId ?? 'candidate');
+
+      // Only validate local endpoints! External/cloud endpoints do not run locally and do not need to be verified against local Ollama/model-server metrics.
+      if (!isLocalEndpoint(candidate as any)) {
+        continue;
+      }
+
       if (!endpointUrl) {
         throw new Error(`${name} does not have a local endpoint URL. Deploy/register the model before attaching it to a local route.`);
       }
@@ -1918,7 +2134,7 @@ function App() {
         throw new Error(`${name} is not reachable at ${endpointUrl}. Start/deploy that model before creating the local route.`);
       }
 
-      if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.includes(modelId)) {
+      if (modelId && Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0 && !metrics.modelIds.some((id) => isSameLocalModelId(id, modelId))) {
         throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} reports: ${metrics.modelIds.join(', ')}. Update the endpoint URL or redeploy the model.`);
       }
     }
@@ -1935,8 +2151,7 @@ function App() {
     }
 
     if (Array.isArray(metrics.modelIds) && metrics.modelIds.length > 0) {
-      const normalizedModelIds = metrics.modelIds.map((value) => value.toLowerCase());
-      if (!normalizedModelIds.includes(modelId.toLowerCase())) {
+      if (!metrics.modelIds.some((id) => isSameLocalModelId(id, modelId))) {
         throw new Error(`${name} is registered as ${modelId}, but ${endpointUrl} is serving: ${metrics.modelIds.join(', ')}. Use the actual server URL for ${modelId}; do not reuse the router URL.`);
       }
     }
@@ -2188,9 +2403,63 @@ function App() {
       sidebarOpen={sidebarOpen}
       onSidebarOpen={setSidebarOpen}
       onSectionChange={setActiveSection}
+      onAddCredits={handleAddCredits}
       onRefresh={handleRefreshCurrentSection}
+      onGitPull={handleGitPull}
       onLogout={handleLogout}
+      notifications={notifications}
+      onMarkAllRead={handleMarkAllNotificationsRead}
+      onClearAll={handleClearAllNotifications}
+      onToggleRead={handleToggleNotificationRead}
+      onDeleteNotification={handleDeleteNotification}
     >
+      {message ? (
+        <div
+          className={`auth-notice ${message.tone}`}
+          role="status"
+          style={{
+            position: 'fixed',
+            top: '24px',
+            right: '24px',
+            zIndex: 99999,
+            minWidth: '320px',
+            maxWidth: '480px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+            animation: 'slideIn 0.2s ease-out'
+          }}
+        >
+          {message.tone === 'success' ? (
+            <CheckCircle2 size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+          ) : message.tone === 'error' ? (
+            <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+          ) : (
+            <Info size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+          )}
+          <span style={{ flex: 1 }}>{message.text}</span>
+          <button
+            onClick={() => setMessage(null)}
+            type="button"
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'currentColor',
+              cursor: 'pointer',
+              fontSize: '18px',
+              fontWeight: 'bold',
+              padding: '0 4px',
+              opacity: 0.7,
+              lineHeight: 1,
+              marginTop: '-2px'
+            }}
+          >
+            &times;
+          </button>
+        </div>
+      ) : null}
       {activeSection === 'overview' ? (
         <div className="app-topbar">
           <div className="welcome-copy">
@@ -2198,13 +2467,11 @@ function App() {
             <span>{getGreeting()}, {getWelcomeName(session, visibleDashboard.profile)}</span>
           </div>
           <div className="top-credit-pill">
-            <strong>{dashboard.credits ? getBalance(dashboard.credits) : '-'}</strong>
-            <span>Available Credits</span>
-            <button
-              className="top-credit-action"
-              type="button"
-              onClick={handleAddCredits}
-            >
+            <div className="top-credit-copy">
+              <span>Available Credits</span>
+              <strong>{getBalance(visibleDashboard.credits)}</strong>
+            </div>
+            <button className="top-credit-action" type="button" onClick={handleAddCredits}>
               <Plus size={13} />
               Add credits
             </button>
@@ -2228,6 +2495,9 @@ function App() {
             onEnableOpenCode={handleEnableOpenCode}
             onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
+            enabledTools={enabledTools}
+            toolProviders={toolProviders}
+            onToolProviderChange={handleToolProviderChange}
             onSectionChange={setActiveSection}
             onOpenRoute={(routeId) => {
               setRouteInitialViewId(routeId);
@@ -2272,6 +2542,7 @@ function App() {
             onInstallLibrary={handleInstallLibrary}
             onStartLocalDeployment={handleStartLocalDeployment}
             onUseInRoute={handleUseEndpointInRoute}
+            onShowUsage={setUsageTarget}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
         ) : null}
@@ -2288,6 +2559,8 @@ function App() {
             onAction={handleInstanceAction}
             onDelete={handleDeleteInstance}
             onUseEndpointInRoute={handleUseEndpointInRoute}
+            onShowUsage={setUsageTarget}
+            onDeleteEndpoint={handleDeleteEndpoint}
           />
         ) : null}
 
@@ -2338,6 +2611,13 @@ function App() {
         ) : null}
 
       </main>
+
+      <EndpointUsageModal
+        target={usageTarget}
+        session={session}
+        onClose={() => setUsageTarget(null)}
+        onError={(text) => setMessage({ tone: 'error', text })}
+      />
 
       {busy?.startsWith('load-') ? (
         <div className="sync-status-overlay" role="status" aria-live="polite">
@@ -2393,6 +2673,7 @@ function buildAttachedInferenceEndpointPayload(
     endpoint_id: endpoint ? endpointId : localDeployment ? getLocalDeploymentSelectionId(localDeployment) : endpointId,
     endpoint_name: getAttachedInferenceEndpointName(endpointRecord, routeName || endpointId),
     endpoint_url: String(endpointRecord.endpoint_url ?? localDeployment?.endpointUrl ?? ''),
+    deployment_target: endpointRecord.deployment_target ?? endpointRecord.deploymentTarget ?? (localDeployment ? 'local' : undefined),
     model_id: endpointModelId,
     model_description: getModelRoutingDescription(endpointRecord, modelRecord),
     model_context_length: getFirstStringValue(modelRecord.modelContextLength, modelRecord.model_context_length, endpointRecord.model_context_length, endpointRecord.modelContextLength),
@@ -2659,6 +2940,18 @@ function toOpenAiChatCompletionsUrl(endpointUrl: string): string {
   return `${normalized}/v1/chat/completions`;
 }
 
+function isLocalEndpoint(endpoint: Record<string, unknown> | EndpointItem): boolean {
+  const target = String(endpoint.deployment_target ?? endpoint.deploymentTarget ?? '').toLowerCase();
+  if (target === 'cloud' || target === 'closed_source_api') {
+    return false;
+  }
+  const endpointUrl = String(endpoint.endpoint_url ?? endpoint.endpointUrl ?? '').toLowerCase();
+  return target === 'local'
+    || endpointUrl.includes('localhost')
+    || endpointUrl.includes('127.0.0.1')
+    || endpointUrl.includes('0.0.0.0');
+}
+
 function isLocalEndpointUrl(value: unknown): boolean {
   if (!value) {
     return false;
@@ -2741,7 +3034,7 @@ function formatLocalRuntime(runtime: ServingLibrary): string {
     tensorrt: 'TensorRT-LLM',
     ollama: 'Ollama',
     llama_cpp: 'llama.cpp',
-    pytorch: 'PyTorch',
+    pytorch: 'PyTorch (via Transformers)',
     transformers: 'Transformers',
     dynamo: 'Dynamo',
   };
@@ -2867,8 +3160,12 @@ function isDeletedLocalInferenceEndpoint(endpoint: EndpointItem, deletedKeys: Se
 }
 
 function isLocalInferenceEndpoint(endpoint: EndpointItem): boolean {
+  const target = String(endpoint.deployment_target ?? '').toLowerCase();
+  if (target === 'cloud' || target === 'closed_source_api') {
+    return false;
+  }
   const endpointUrl = String(endpoint.endpoint_url ?? '').toLowerCase();
-  return String(endpoint.deployment_target ?? '').toLowerCase() === 'local'
+  return target === 'local'
     || endpointUrl.includes('localhost')
     || endpointUrl.includes('127.0.0.1')
     || endpointUrl.includes('0.0.0.0');

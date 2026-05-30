@@ -1,5 +1,4 @@
 import {
-  AppWindowMac,
   KeyRound,
   Orbit,
   Server,
@@ -29,6 +28,7 @@ export const defaultDashboardState: DashboardState = {
   inferenceEndpoints: [],
   providerInfo: {},
   gpuSpecs: [],
+  gpuPricing: [],
   models: [],
   developerPlans: [],
   activeDeveloperPlan: null,
@@ -44,7 +44,7 @@ export const defaultInstanceForm: CreateInstanceFormState = {
   region: 'US-IL-1',
   startup_script: 'echo OneInfer Edge instance ready',
   model_id: '',
-  model_source: 'catalog',
+  model_source: 'huggingface',
   hf_model_url: '',
   serving_library: 'vllm',
   hf_access_token: '',
@@ -74,7 +74,6 @@ export const sections: Array<{ key: SectionKey; label: string; icon: typeof Spar
   { key: 'apiKeys', label: 'API Keys', icon: KeyRound },
   { key: 'routing', label: 'Routing', icon: Orbit },
   { key: 'bandwidth', label: 'AI Bandwidth', icon: Wifi },
-  { key: 'settings', label: 'Settings', icon: AppWindowMac },
 ];
 
 export function createLoadedSections() {
