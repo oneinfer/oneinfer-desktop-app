@@ -1480,6 +1480,8 @@ function compactDeploymentLogTail(logTail, maxLines = 18) {
   return lines.slice(-maxLines).join('\n');
 }
 
+const PYTHON_CHECK_TIMEOUT_MS = 45000;
+
 async function getPythonCommandForModule(moduleName, importScript = null) {
   const script = importScript || `import ${moduleName}`;
   const basicCandidates = process.platform === 'win32'
@@ -1497,7 +1499,7 @@ async function getPythonCommandForModule(moduleName, importScript = null) {
       if (!await commandExists(candidate.command)) {
         continue;
       }
-      await runCommand(candidate.command, [...candidate.prefixArgs, '-c', script], { timeoutMs: 10000 });
+      await runCommand(candidate.command, [...candidate.prefixArgs, '-c', script], { timeoutMs: PYTHON_CHECK_TIMEOUT_MS });
       return {
         command: candidate.command,
         prefixArgs: candidate.prefixArgs,
@@ -1529,7 +1531,7 @@ async function getPythonCommandForModule(moduleName, importScript = null) {
         if (arg === '-m') break;
         prefixArgs.push(arg);
       }
-      await runCommand(candidate.command, [...prefixArgs, '-c', script], { timeoutMs: 10000 });
+      await runCommand(candidate.command, [...prefixArgs, '-c', script], { timeoutMs: PYTHON_CHECK_TIMEOUT_MS });
       return {
         command: candidate.command,
         prefixArgs,
