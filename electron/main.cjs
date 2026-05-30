@@ -3720,6 +3720,62 @@ async function createCodexApiKey(payload) {
   return createOneInferApiKey(payload, createCodexApiKeyName(), 'Codex');
 }
 
+let codexProxyServer = null;
+
+function startCodexProxy(localModelUrl) {
+  if (codexProxyServer) {
+    try {
+      codexProxyServer.close();
+    } catch (e) {}
+  }
+
+  codexProxyServer = http.createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
+    let targetPath = req.url;
+    if (targetPath.replace(/\/+$/, '') === '/v1/responses') {
+      targetPath = '/v1/chat/completions';
+    }
+
+    const parsedTarget = new URL(localModelUrl);
+    const targetUrl = new URL(targetPath, parsedTarget.origin);
+
+    const headers = { ...req.headers };
+    delete headers.host;
+    delete headers.connection;
+
+    const proxyReq = http.request(targetUrl, {
+      method: req.method,
+      headers: headers,
+    }, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('error', (err) => {
+      console.error('Codex Proxy Error:', err);
+      res.statusCode = 502;
+      res.end(JSON.stringify({ error: { message: `Codex Proxy Error: ${err.message}` } }));
+    });
+
+    req.pipe(proxyReq);
+  });
+
+  const proxyPort = 8010;
+  codexProxyServer.listen(proxyPort, '127.0.0.1');
+  codexProxyServer.unref();
+
+  return `http://127.0.0.1:${proxyPort}/v1`;
+}
+
 async function enableCodex(payload) {
   const codexInstallState = await ensureCodexInstalled();
   const config = readOneInferConfig();
@@ -3770,12 +3826,21 @@ async function enableCodex(payload) {
     }
   }
 
+  let finalBaseUrl = baseUrlToUse;
+  if (isLocalUrl) {
+    try {
+      finalBaseUrl = startCodexProxy(baseUrlToUse);
+    } catch (err) {
+      console.error('Failed to start Codex Proxy:', err);
+    }
+  }
+
   const configDir = path.join(os.homedir(), '.config', 'codex');
   const configFilePath = path.join(configDir, 'codex.json');
   const modelId = toTrimmedString(payload?.modelId) || 'MiniMax-M2.7';
 
   const codexConfig = {
-    baseUrl: baseUrlToUse,
+    baseUrl: finalBaseUrl,
     apiKey: keyToUse,
     model: isLocalUrl ? modelId : `oneinfer/${modelId}`
   };
@@ -3823,7 +3888,7 @@ async function enableCodex(payload) {
     newTomlContent += cleanLines.join('\n').trim() + '\n\n';
     newTomlContent += `[model_providers.oneinfer]\n`;
     newTomlContent += `name = "OneInfer"\n`;
-    newTomlContent += `base_url = "${baseUrlToUse}"\n`;
+    newTomlContent += `base_url = "${finalBaseUrl}"\n`;
     newTomlContent += `wire_api = "${wireApiVal}"\n\n`;
     newTomlContent += `[model_providers.oneinfer.http_headers]\n`;
     newTomlContent += `Authorization = "Bearer ${keyToUse || 'local'}"\n`;
