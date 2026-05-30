@@ -4233,6 +4233,19 @@ app.whenReady().then(() => {
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
   ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
+  ipcMain.handle('app:git-pull', async () => {
+    try {
+      const projectRoot = path.join(__dirname, '..');
+      const { stdout, stderr } = await runCommand('git', ['pull'], {
+        cwd: projectRoot,
+        timeoutMs: 60000,
+      });
+      return { success: true, message: (stdout || stderr || 'Already up to date.').trim() };
+    } catch (error) {
+      console.error('Git pull failed:', error);
+      return { success: false, error: error.message || String(error) };
+    }
+  });
 
   createWindow();
 

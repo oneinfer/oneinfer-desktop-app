@@ -224,6 +224,7 @@ export function RoutingPage(props: {
     }));
   const inferenceEndpointOptions = props.dashboard.inferenceEndpoints
     .filter((endpoint) => !isRouterEndpointLike(endpoint))
+    .filter((endpoint) => getEndpointSource(endpoint) !== 'cloud')
     .map((endpoint, index) => {
       const endpointUrl = String(endpoint.endpoint_url ?? '');
       const source = getEndpointSource(endpoint);
@@ -1242,9 +1243,12 @@ function getRouterSetupIssue(routerModelId: string, dashboard: DashboardState, l
 function hasLocalRouterEndpoint(routerModelId: string, dashboard: DashboardState, localDeployments: LocalModelDeployment[]): boolean {
   return dashboard.inferenceEndpoints.some((endpoint) => {
     const record = endpoint as Record<string, unknown>;
+    const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
+    if (deploymentTarget === 'cloud' || deploymentTarget === 'closed_source_api') {
+      return false;
+    }
     const endpointModelId = String(record.model_id ?? record.modelId ?? '');
     const endpointUrl = String(record.endpoint_url ?? '').toLowerCase();
-    const deploymentTarget = String(record.deployment_target ?? '').toLowerCase();
     return endpointModelId === routerModelId
       && (deploymentTarget === 'local' || endpointUrl.includes('localhost') || endpointUrl.includes('127.0.0.1'));
   }) || localDeployments.some((deployment) => deployment.modelId === routerModelId);
@@ -1496,7 +1500,15 @@ function getEndpointSource(endpoint: EndpointItem): EndpointSource {
     return 'openbandwidth';
   }
 
-  if (String(record.deployment_target ?? '').toLowerCase() === 'local' || isLocalEndpointUrl(record.endpoint_url)) {
+  const target = String(record.deployment_target ?? '').toLowerCase();
+  if (target === 'cloud') {
+    return 'cloud';
+  }
+  if (target === 'closed_source_api') {
+    return 'closed_source_api';
+  }
+
+  if (target === 'local' || isLocalEndpointUrl(record.endpoint_url)) {
     return 'local';
   }
 

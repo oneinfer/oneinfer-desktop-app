@@ -7,6 +7,7 @@ import type {
   DeveloperPlanItem,
   DesktopSession,
   EndpointItem,
+  GpuPricingItem,
   GpuSpecItem,
   InstanceItem,
   MachineDetailsItem,
@@ -521,6 +522,29 @@ export async function getGpuSpecs(baseUrl: string): Promise<GpuSpecItem[]> {
     path: '/gpu-specs',
   });
   return normalizeList<GpuSpecItem>(data);
+}
+
+export async function getGpuPricing(baseUrl: string, session: DesktopSession): Promise<GpuPricingItem[]> {
+  const data = await request<unknown>({
+    baseUrl,
+    path: `/developer/${session.developerId}/get-gpu-pricing`,
+    token: session.accessToken,
+  });
+
+  const pricingItems = data && typeof data === 'object' && !Array.isArray(data) && Array.isArray((data as AnyRecord).gpu_pricing)
+    ? (data as AnyRecord).gpu_pricing
+    : data;
+
+  return normalizeList<AnyRecord>(pricingItems).map((item) => ({
+    gpuId: String(item.gpu_id ?? item.gpuId ?? ''),
+    providerName: String(item.provider_name ?? item.providerName ?? ''),
+    gpuName: String(item.gpu_name ?? item.gpuName ?? ''),
+    regions: Array.isArray(item.regions) ? item.regions.map(String) : [],
+    pricePerHour: Number(item.price_per_hour ?? item.pricePerHour ?? 0) / 100,
+    gpuAvailability: item.gpu_availability === null || item.gpu_availability === undefined ? null : String(item.gpu_availability),
+    vram: typeof item.vram === 'string' ? item.vram : undefined,
+    logoUrl: typeof item.logo_url === 'string' ? item.logo_url : undefined,
+  })).filter((item) => item.gpuId || item.gpuName);
 }
 
 export async function getInstances(baseUrl: string, session: DesktopSession): Promise<InstanceItem[]> {

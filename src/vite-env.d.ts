@@ -197,5 +197,6 @@ interface Window {
     getLocalModelMetrics: (payload: {
       endpointUrl: string;
     }) => Promise<DesktopLocalModelMetrics>;
+    gitPull: () => Promise<{ success: boolean; message?: string; error?: string }>;
   };
 }
