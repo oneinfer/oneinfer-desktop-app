@@ -970,6 +970,8 @@ function normalizeServingLibraryName(name) {
   return aliases[normalized] || normalized;
 }
 
+let lastLibraryErrors = {};
+
 async function isLibraryInstalled(name) {
   name = normalizeServingLibraryName(name);
   try {
@@ -1492,18 +1494,23 @@ async function getPythonCommandForModule(moduleName, importScript = null) {
         { command: 'python', prefixArgs: [] }
       ];
 
+  let lastRunError = null;
+
   for (const candidate of basicCandidates) {
     try {
       if (!await commandExists(candidate.command)) {
         continue;
       }
       await runCommand(candidate.command, [...candidate.prefixArgs, '-c', script], { timeoutMs: 10000 });
+      // Clear error on success
+      const key = moduleName === 'torch' ? 'pytorch' : moduleName;
+      delete lastLibraryErrors[key];
       return {
         command: candidate.command,
         prefixArgs: candidate.prefixArgs,
       };
-    } catch {
-      // Try next
+    } catch (err) {
+      lastRunError = err.message || String(err);
     }
   }
 
@@ -1530,13 +1537,24 @@ async function getPythonCommandForModule(moduleName, importScript = null) {
         prefixArgs.push(arg);
       }
       await runCommand(candidate.command, [...prefixArgs, '-c', script], { timeoutMs: 10000 });
+      // Clear error on success
+      const key = moduleName === 'torch' ? 'pytorch' : moduleName;
+      delete lastLibraryErrors[key];
       return {
         command: candidate.command,
         prefixArgs,
       };
-    } catch {
-      // Try next
+    } catch (err) {
+      lastRunError = err.message || String(err);
     }
+  }
+
+  // Store the diagnostic error if we failed completely
+  const key = moduleName === 'torch' ? 'pytorch' : moduleName;
+  if (lastRunError) {
+    lastLibraryErrors[key] = lastRunError;
+  } else {
+    lastLibraryErrors[key] = 'No python or pip environment could be found on the system.';
   }
 
   return null;
@@ -4298,6 +4316,18 @@ app.whenReady().then(() => {
   ipcMain.handle('app:enable-openclaw', async (_event, payload) => enableOpenClaw(payload));
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
+  ipcMain.handle('app:get-library-error', async (_event, name) => {
+    name = normalizeServingLibraryName(name);
+    return lastLibraryErrors[name] || null;
+  });
+  ipcMain.handle('app:install-vc-redist', async () => {
+    if (process.platform !== 'win32') {
+      throw new Error('Visual C++ Redistributable is only required on Windows systems.');
+    }
+    const psScript = "Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile 'vc_redist.x64.exe'; Start-Process 'vc_redist.x64.exe' -ArgumentList '/passive /norestart' -Wait; Remove-Item 'vc_redist.x64.exe'";
+    await runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psScript], { timeoutMs: 10 * 60 * 1000 });
+    return 'installed';
+  });
   ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
   ipcMain.handle('app:start-local-route', async (_event, payload) => startLocalRoute(payload));
   ipcMain.handle('app:stop-local-route', async (_event, payload) => stopLocalRoute(payload));
