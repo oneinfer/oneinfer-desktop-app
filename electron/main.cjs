@@ -3830,6 +3830,11 @@ async function enableCodex(payload) {
   if (isLocalUrl) {
     try {
       finalBaseUrl = startCodexProxy(baseUrlToUse);
+      writeOneInferConfig({
+        ...config,
+        codexLocalModelUrl: baseUrlToUse,
+        codexApiBaseUrl: finalBaseUrl,
+      });
     } catch (err) {
       console.error('Failed to start Codex Proxy:', err);
     }
@@ -4521,6 +4526,17 @@ function createWindow() {
 app.whenReady().then(() => {
   if (!isDev) {
     configureAutoUpdater();
+  }
+
+  // Auto-start Codex Proxy if a local model was previously configured
+  try {
+    const config = readOneInferConfig();
+    const localModelUrl = config.codexLocalModelUrl || '';
+    if (localModelUrl) {
+      startCodexProxy(localModelUrl);
+    }
+  } catch (err) {
+    console.error('Failed to auto-start Codex Proxy on boot:', err);
   }
 
   ipcMain.handle('app:get-state', () => {
