@@ -3783,6 +3783,56 @@ async function enableCodex(payload) {
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(configFilePath, JSON.stringify(codexConfig, null, 2), 'utf8');
 
+  // Also write to the official ~/.codex/config.toml
+  try {
+    const codexDir = path.join(os.homedir(), '.codex');
+    const codexTomlPath = path.join(codexDir, 'config.toml');
+
+    let existingTomlContent = '';
+    if (fs.existsSync(codexTomlPath)) {
+      existingTomlContent = fs.readFileSync(codexTomlPath, 'utf8');
+    }
+
+    const lines = existingTomlContent.split(/\r?\n/);
+    const cleanLines = [];
+    let inOneInferBlock = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('[model_providers.oneinfer]')) {
+        inOneInferBlock = true;
+        continue;
+      }
+      if (inOneInferBlock) {
+        if (trimmed.startsWith('[') && !trimmed.startsWith('[model_providers.oneinfer]')) {
+          inOneInferBlock = false;
+        } else {
+          continue;
+        }
+      }
+      if (trimmed.startsWith('model ') || trimmed.startsWith('model=') || trimmed.startsWith('model_provider ') || trimmed.startsWith('model_provider=')) {
+        continue;
+      }
+      cleanLines.push(line);
+    }
+
+    const modelVal = isLocalUrl ? modelId : `oneinfer/${modelId}`;
+    const wireApiVal = isLocalUrl ? 'chat' : 'responses';
+
+    let newTomlContent = `model = "${modelVal}"\nmodel_provider = "oneinfer"\n\n`;
+    newTomlContent += cleanLines.join('\n').trim() + '\n\n';
+    newTomlContent += `[model_providers.oneinfer]\n`;
+    newTomlContent += `name = "OneInfer"\n`;
+    newTomlContent += `base_url = "${baseUrlToUse}"\n`;
+    newTomlContent += `env_key = "ONEINFER_API_KEY"\n`;
+    newTomlContent += `wire_api = "${wireApiVal}"\n`;
+
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(codexTomlPath, newTomlContent.trim() + '\n', 'utf8');
+  } catch (err) {
+    console.error('Failed to write ~/.codex/config.toml:', err);
+  }
+
   return {
     alreadyConfigured: false,
     apiKeyName: keyNameToUse,
