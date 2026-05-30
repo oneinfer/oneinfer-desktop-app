@@ -929,19 +929,17 @@ async function isLibraryInstalled(name) {
       // First try standard command
       if (await commandExists('vllm')) return true;
       // Then try python import
+      const pyCmd = await getPythonCommandForModule('vllm');
+      if (pyCmd) return true;
+
+      // Fallback to pip check
       try {
-        await runCommand('python3', ['-c', 'import vllm'], { timeoutMs: 10000 });
-        return true;
+        const pipCommand = await getPythonPipCommand();
+        if (!pipCommand) return false;
+        const { stdout } = await runCommand(pipCommand.command, [...pipCommand.args, 'show', 'vllm'], { timeoutMs: 5000 });
+        return stdout.includes('Name: vllm');
       } catch {
-        // Fallback to pip check
-        try {
-          const pipCommand = await getPythonPipCommand();
-          if (!pipCommand) return false;
-          const { stdout } = await runCommand(pipCommand.command, [...pipCommand.args, 'show', 'vllm'], { timeoutMs: 5000 });
-          return stdout.includes('Name: vllm');
-        } catch {
-          return false;
-        }
+        return false;
       }
     }
     
@@ -957,92 +955,38 @@ async function isLibraryInstalled(name) {
 
     if (name === 'sglang') {
       if (await commandExists('sglang')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import sglang'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import sglang'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('sglang');
+      return !!pyCmd;
     }
 
     if (name === 'tensorrt') {
       if (await commandExists('trtllm-serve')) return true;
       if (await commandExists('tensorrt_llm')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('tensorrt', 'import tensorrt; import tensorrt_llm');
+      return !!pyCmd;
     }
 
     if (name === 'pytorch') {
-      try {
-        await runCommand('python3', ['-c', 'import torch'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import torch'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('torch');
+      return !!pyCmd;
     }
 
     if (name === 'llama_cpp') {
       if (await commandExists('llama-server')) return true;
       if (await commandExists('llama-cli')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('llama_cpp');
+      return !!pyCmd;
     }
 
     if (name === 'transformers') {
-      try {
-        await runCommand('python3', ['-c', 'import transformers'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import transformers'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('transformers');
+      return !!pyCmd;
     }
 
     if (name === 'dynamo') {
       if (await commandExists('dynamo')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import dynamo'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import dynamo'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('dynamo');
+      return !!pyCmd;
     }
 
     return await commandExists(name);
@@ -1449,22 +1393,62 @@ function compactDeploymentLogTail(logTail, maxLines = 18) {
   return lines.slice(-maxLines).join('\n');
 }
 
-async function getPythonCommandForModule(moduleName) {
-  const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
-  for (const command of candidates) {
-    if (!await commandExists(command)) {
-      continue;
-    }
+async function getPythonCommandForModule(moduleName, importScript = null) {
+  const script = importScript || `import ${moduleName}`;
+  const basicCandidates = process.platform === 'win32'
+    ? [
+        { command: 'python', prefixArgs: [] },
+        { command: 'py', prefixArgs: ['-3'] }
+      ]
+    : [
+        { command: 'python3', prefixArgs: [] },
+        { command: 'python', prefixArgs: [] }
+      ];
 
-    const args = command === 'py' ? ['-3', '-c', `import ${moduleName}`] : ['-c', `import ${moduleName}`];
+  for (const candidate of basicCandidates) {
     try {
-      await runCommand(command, args, { timeoutMs: 10000 });
+      if (!await commandExists(candidate.command)) {
+        continue;
+      }
+      await runCommand(candidate.command, [...candidate.prefixArgs, '-c', script], { timeoutMs: 10000 });
       return {
-        command,
-        prefixArgs: command === 'py' ? ['-3'] : [],
+        command: candidate.command,
+        prefixArgs: candidate.prefixArgs,
       };
     } catch {
-      // Try the next Python command.
+      // Try next
+    }
+  }
+
+  // Next, check candidates based on the same list of Python/pip entry points that getPythonPipCommand uses
+  const pipCandidates = [
+    { command: 'py', args: ['-3.12', '-m', 'pip'] },
+    { command: 'py', args: ['-3.11', '-m', 'pip'] },
+    { command: 'py', args: ['-3.10', '-m', 'pip'] },
+    { command: 'python3', args: ['-m', 'pip'] },
+    { command: 'python', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', args: ['-m', 'pip'] },
+    { command: '/opt/homebrew/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/local/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/bin/python3', args: ['-m', 'pip'] },
+  ];
+
+  for (const candidate of pipCandidates) {
+    try {
+      const prefixArgs = [];
+      for (const arg of candidate.args) {
+        if (arg === '-m') break;
+        prefixArgs.push(arg);
+      }
+      await runCommand(candidate.command, [...prefixArgs, '-c', script], { timeoutMs: 10000 });
+      return {
+        command: candidate.command,
+        prefixArgs,
+      };
+    } catch {
+      // Try next
     }
   }
 
