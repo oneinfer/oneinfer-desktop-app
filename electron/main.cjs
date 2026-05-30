@@ -3726,36 +3726,48 @@ async function enableCodex(payload) {
   const savedApiKey = toTrimmedString(config.codexApiKey);
   const savedApiKeyName = toTrimmedString(config.codexApiKeyName);
 
-  const apiKeyFetchResult = await fetchApiKeysWithMeta(payload);
-  
+  let baseUrlToUse = normalizeApiBaseUrl(payload?.apiBaseUrl);
+  const isLocalUrl = typeof baseUrlToUse === 'string' && (
+    baseUrlToUse.includes('127.0.0.1') ||
+    baseUrlToUse.includes('localhost') ||
+    baseUrlToUse.includes('0.0.0.0')
+  );
+
   let keyToUse = null;
   let keyNameToUse = savedApiKeyName;
-  let baseUrlToUse = normalizeApiBaseUrl(payload?.apiBaseUrl);
   let reusedExistingKey = false;
 
-  if (savedApiKey && savedApiKeyName) {
-    const keyExists = apiKeyFetchResult.apiKeys.some((k) =>
-      k.api_key_name === savedApiKeyName || k.id === savedApiKeyName || k.name === savedApiKeyName
-    );
+  if (isLocalUrl) {
+    keyToUse = savedApiKey || 'local';
+    keyNameToUse = savedApiKeyName || 'local';
+    reusedExistingKey = true;
+  } else {
+    const apiKeyFetchResult = await fetchApiKeysWithMeta(payload);
+    
+    if (savedApiKey && savedApiKeyName) {
+      const keyExists = apiKeyFetchResult.apiKeys.some((k) =>
+        k.api_key_name === savedApiKeyName || k.id === savedApiKeyName || k.name === savedApiKeyName
+      );
 
-    if (keyExists || !apiKeyFetchResult.reachable) {
-      keyToUse = savedApiKey;
-      reusedExistingKey = true;
+      if (keyExists || !apiKeyFetchResult.reachable) {
+        keyToUse = savedApiKey;
+        reusedExistingKey = true;
+      }
     }
-  }
 
-  if (!keyToUse) {
-    const { apiKey, apiKeyName, apiBaseUrl } = await createCodexApiKey(payload);
-    keyToUse = apiKey;
-    keyNameToUse = apiKeyName;
-    baseUrlToUse = apiBaseUrl;
+    if (!keyToUse) {
+      const { apiKey, apiKeyName, apiBaseUrl } = await createCodexApiKey(payload);
+      keyToUse = apiKey;
+      keyNameToUse = apiKeyName;
+      baseUrlToUse = apiBaseUrl;
 
-    writeOneInferConfig({
-      ...config,
-      codexApiKey: apiKey,
-      codexApiKeyName: apiKeyName,
-      codexApiBaseUrl: apiBaseUrl,
-    });
+      writeOneInferConfig({
+        ...config,
+        codexApiKey: apiKey,
+        codexApiKeyName: apiKeyName,
+        codexApiBaseUrl: apiBaseUrl,
+      });
+    }
   }
 
   const configDir = path.join(os.homedir(), '.config', 'codex');
@@ -3765,7 +3777,7 @@ async function enableCodex(payload) {
   const codexConfig = {
     baseUrl: baseUrlToUse,
     apiKey: keyToUse,
-    model: `oneinfer/${modelId}`
+    model: isLocalUrl ? modelId : `oneinfer/${modelId}`
   };
 
   fs.mkdirSync(configDir, { recursive: true });
@@ -3776,7 +3788,7 @@ async function enableCodex(payload) {
     apiKeyName: keyNameToUse,
     codexInstallState,
     configPath: configFilePath,
-    model: `oneinfer/${modelId}`,
+    model: isLocalUrl ? modelId : `oneinfer/${modelId}`,
     providerId: 'oneinfer',
     ...(reusedExistingKey ? { reusedExistingKey: true } : {}),
   };

@@ -1122,9 +1122,19 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+      const modelIdToUse = activeLocalDeployment ? activeLocalDeployment.modelId : undefined;
+
       const result = await window.desktopBridge.enableCodex({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
+        modelId: modelIdToUse,
       });
       const installMessage = result.codexInstallState === 'installed'
         ? ' Codex was installed first for this operating system.'
