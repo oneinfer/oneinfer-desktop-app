@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Copy, Download, LoaderCircle, Orbit, PlayCircle, Power, Rocket, Search, Server, Settings2, Trash2, XCircle } from 'lucide-react';
 
 import { DataList, MiniTable, Panel } from '../components/Common';
@@ -58,6 +58,20 @@ export function SelfHostingPage(props: {
   const selectedModelValue = props.selfHostForm.useHfUrl ? props.selfHostForm.hfUrl : props.selfHostForm.model_id;
   const hasModelInput = selectedModelValue.trim().length > 0;
   const platform = getSupportedPlatform(props.dashboard.machineDetails?.platform);
+  const sortedOptions = useMemo(() => {
+    return [...servingLibraryOptions].sort((a, b) => {
+      const aStatus = getServingLibraryStatus(a, platform, props.hfModelMetadata);
+      const bStatus = getServingLibraryStatus(b, platform, props.hfModelMetadata);
+      if (aStatus.supported && !bStatus.supported) return -1;
+      if (!aStatus.supported && bStatus.supported) return 1;
+      const aInstalled = props.libraries[a.value];
+      const bInstalled = props.libraries[b.value];
+      if (aInstalled && !bInstalled) return -1;
+      if (!aInstalled && bInstalled) return 1;
+      return 0;
+    });
+  }, [platform, props.hfModelMetadata, props.libraries]);
+
   const hasLocalRuntime = servingLibraryOptions.some((library) => props.libraries[library.value] && isServingLibrarySupported(library, platform, props.hfModelMetadata));
   const selectedLibrary = servingLibraryOptions.find((library) => library.value === props.selfHostForm.serving_library) ?? servingLibraryOptions[0];
   const selectedLibraryStatus = getServingLibraryStatus(selectedLibrary, platform, props.hfModelMetadata);
@@ -246,7 +260,7 @@ export function SelfHostingPage(props: {
                   <span>Serving Library</span>
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '8px', alignItems: 'center' }}>
                     <select value={props.selfHostForm.serving_library} onChange={(event) => props.onFormChange({ ...props.selfHostForm, serving_library: event.target.value as ServingLibrary })}>
-                      {servingLibraryOptions.map((library) => {
+                      {sortedOptions.map((library) => {
                         const status = getServingLibraryStatus(library, platform, props.hfModelMetadata);
                         const installed = status.supported && props.libraries[library.value];
                         return (
