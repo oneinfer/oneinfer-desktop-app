@@ -21,7 +21,7 @@ export function OverviewPage(props: {
   onEnableOpenCode: () => void | Promise<void>;
   onEnableKiloCode: () => void | Promise<void>;
   onEnableOpenClaw: () => void | Promise<void>;
-  onEnableCodex: () => void | Promise<void>;
+  onEnableCodex: (provider?: 'oneinfer' | 'tool') => void | Promise<void>;
   enabledTools: Record<string, boolean>;
   toolProviders: Record<string, 'oneinfer' | 'tool'>;
   onToolProviderChange: (tool: string, provider: 'oneinfer' | 'tool') => void;
@@ -124,6 +124,9 @@ export function OverviewPage(props: {
 
         <main className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
           <h3 className="overview-settings-heading">AI Coding Tool</h3>
+          <p className="overview-settings-description">
+            OneInfer connects this tool to your locally deployed model. The tool provider keeps its default coding-agent setup.
+          </p>
           <div className="card-stack">
             <div className="settings-list overview-tab-list">
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'claude-code' ? 'active' : ''}`}>
@@ -259,7 +262,7 @@ export function OverviewPage(props: {
                   className="settings-list-copy"
                   onClick={() => {
                     props.onOverviewTabChange('codex');
-                    props.onEnableCodex();
+                    props.onEnableCodex(props.toolProviders.codex || 'oneinfer');
                   }}
                   type="button"
                 >
@@ -275,11 +278,11 @@ export function OverviewPage(props: {
                   onProviderChange={(p) => props.onToolProviderChange('codex', p)}
                   onClick={() => {
                     props.onOverviewTabChange('codex');
-                    props.onEnableCodex();
+                    props.onEnableCodex('oneinfer');
                   }}
                   onToolClick={() => {
                     props.onOverviewTabChange('codex');
-                    props.onEnableCodex();
+                    props.onEnableCodex('tool');
                   }}
                 />
               </div>

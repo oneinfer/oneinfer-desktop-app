@@ -174,6 +174,7 @@ interface Window {
       apiBaseUrl?: string;
       session?: DesktopSession;
       modelId?: string;
+      provider?: 'oneinfer' | 'tool';
     }) => Promise<DesktopCodexResult>;
     checkLibrary: (name: DesktopServingLibrary) => Promise<boolean>;
     installLibrary: (name: DesktopServingLibrary) => Promise<void>;

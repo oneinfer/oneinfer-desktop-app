@@ -1091,8 +1091,16 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+
       const result = await window.desktopBridge.enableOpenClaw({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
       });
       const installMessage = result.openclawInstallState === 'installed'
@@ -1113,7 +1121,7 @@ function App() {
     }
   }
 
-  async function handleEnableCodex() {
+  async function handleEnableCodex(provider?: 'oneinfer' | 'tool') {
     if (!session || !window.desktopBridge?.enableCodex) {
       return;
     }
@@ -1122,6 +1130,8 @@ function App() {
     setMessage(null);
 
     try {
+      const activeProvider = provider || toolProviders.codex || 'oneinfer';
+
       // Find a running/active local model deployment
       const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
         const metrics = localModelMetrics[deployment.endpointUrl];
@@ -1135,18 +1145,26 @@ function App() {
         apiBaseUrl: apiBaseUrlToUse,
         session,
         modelId: modelIdToUse,
+        provider: activeProvider,
       });
       const installMessage = result.codexInstallState === 'installed'
         ? ' Codex was installed first for this operating system.'
         : '';
 
       setToolEnabled('codex', true);
-      setMessage({
-        tone: 'success',
-        text: result.alreadyConfigured
-          ? `Codex is already enabled globally for OneInfer. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`
-          : `Codex enabled globally via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`,
-      });
+      if (activeProvider === 'tool') {
+        setMessage({
+          tone: 'success',
+          text: `Codex restored to its default configuration. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`,
+        });
+      } else {
+        setMessage({
+          tone: 'success',
+          text: result.alreadyConfigured
+            ? `Codex is already enabled globally for OneInfer. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`
+            : `Codex enabled globally via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`,
+        });
+      }
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Codex.' });
     } finally {
@@ -1163,8 +1181,16 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+
       const result = await window.desktopBridge.enableOpenCode({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
       });
       const installMessage = result.opencodeInstallState === 'installed'
@@ -1194,8 +1220,16 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+
       const result = await window.desktopBridge.enableKiloCode({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
       });
       const installMessage = result.kilocodeInstallState === 'installed'

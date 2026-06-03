@@ -4512,6 +4512,64 @@ function startCodexProxy(localModelUrl) {
 
 async function enableCodex(payload) {
   const codexInstallState = await ensureCodexInstalled();
+
+  if (payload?.provider === 'tool') {
+    const configDir = path.join(os.homedir(), '.config', 'codex');
+    const configFilePath = path.join(configDir, 'codex.json');
+    const codexConfig = {};
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(configFilePath, JSON.stringify(codexConfig, null, 2), 'utf8');
+
+    try {
+      const codexDir = path.join(os.homedir(), '.codex');
+      const codexTomlPath = path.join(codexDir, 'config.toml');
+
+      let existingTomlContent = '';
+      if (fs.existsSync(codexTomlPath)) {
+        existingTomlContent = fs.readFileSync(codexTomlPath, 'utf8');
+      }
+
+      const lines = existingTomlContent.split(/\r?\n/);
+      const cleanLines = [];
+      let inOneInferBlock = false;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('[model_providers.oneinfer')) {
+          inOneInferBlock = true;
+          continue;
+        }
+        if (inOneInferBlock) {
+          if (trimmed.startsWith('[') && !trimmed.startsWith('[model_providers.oneinfer')) {
+            inOneInferBlock = false;
+          } else {
+            continue;
+          }
+        }
+        if (/^(model|model_provider)\s*=/i.test(trimmed)) {
+          continue;
+        }
+        cleanLines.push(line);
+      }
+
+      let newTomlContent = cleanLines.join('\n').trim() + '\n';
+
+      fs.mkdirSync(codexDir, { recursive: true });
+      fs.writeFileSync(codexTomlPath, newTomlContent, 'utf8');
+    } catch (err) {
+      console.error('Failed to write default ~/.codex/config.toml:', err);
+    }
+
+    return {
+      alreadyConfigured: false,
+      apiKeyName: null,
+      codexInstallState,
+      configPath: configFilePath,
+      model: 'Default Selection',
+      providerId: 'Default Selection',
+    };
+  }
+
   const config = readOneInferConfig();
   const savedApiKey = toTrimmedString(config.codexApiKey);
   const savedApiKeyName = toTrimmedString(config.codexApiKeyName);
@@ -4603,18 +4661,18 @@ async function enableCodex(payload) {
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith('[model_providers.oneinfer]')) {
+      if (trimmed.startsWith('[model_providers.oneinfer')) {
         inOneInferBlock = true;
         continue;
       }
       if (inOneInferBlock) {
-        if (trimmed.startsWith('[') && !trimmed.startsWith('[model_providers.oneinfer]')) {
+        if (trimmed.startsWith('[') && !trimmed.startsWith('[model_providers.oneinfer')) {
           inOneInferBlock = false;
         } else {
           continue;
         }
       }
-      if (trimmed.startsWith('model ') || trimmed.startsWith('model=') || trimmed.startsWith('model_provider ') || trimmed.startsWith('model_provider=')) {
+      if (/^(model|model_provider)\s*=/i.test(trimmed)) {
         continue;
       }
       cleanLines.push(line);
