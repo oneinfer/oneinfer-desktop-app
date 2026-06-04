@@ -331,7 +331,7 @@ function App() {
     });
   }, []);
 
-  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw' | 'codex'>('claude-code');
+  const [overviewTab, setOverviewTab] = useState<'opencode' | 'kilocode' | 'openclaw' | 'codex'>('opencode');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);

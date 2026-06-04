@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
+import { Blocks, LoaderCircle, Orbit, Server, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
@@ -11,12 +11,12 @@ export function OverviewPage(props: {
   dashboard: DashboardState;
   busy: string | null;
   infraTab: 'self-hosted' | 'cloud';
-  overviewTab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw' | 'codex';
+  overviewTab: 'opencode' | 'kilocode' | 'openclaw' | 'codex';
   claudeCodeProvider: 'oneinfer' | 'anthropic';
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onInfraTabChange: (tab: 'self-hosted' | 'cloud') => void;
-  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw' | 'codex') => void;
+  onOverviewTabChange: (tab: 'opencode' | 'kilocode' | 'openclaw' | 'codex') => void;
   onClaudeProviderChange: (provider: 'oneinfer' | 'anthropic') => void;
   onEnableOpenCode: () => void | Promise<void>;
   onEnableKiloCode: () => void | Promise<void>;
@@ -28,8 +28,6 @@ export function OverviewPage(props: {
   onSectionChange: (section: SectionKey) => void;
   onOpenRoute: (routeId: string) => void;
 }) {
-  const isClaudeOneInfer = props.claudeCodeProvider === 'oneinfer';
-  const isClaudeBusy = props.busy === 'configure-claude-code';
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isKiloCodeBusy = props.busy === 'configure-kilocode';
   const isOpenClawBusy = props.busy === 'configure-openclaw';
@@ -129,40 +127,6 @@ export function OverviewPage(props: {
           </p>
           <div className="card-stack">
             <div className="settings-list overview-tab-list">
-              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'claude-code' ? 'active' : ''}`}>
-                <span className="settings-list-icon"><Bot size={16} /></span>
-                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('claude-code')} type="button">
-                  <strong>Claude Code</strong>
-                  <span>Choose the provider Claude Code should use.</span>
-                </button>
-                <div className="settings-list-actions">
-                  <button
-                    className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
-                    disabled={isClaudeBusy}
-                    onClick={() => {
-                      props.onOverviewTabChange('claude-code');
-                      props.onClaudeProviderChange('oneinfer');
-                    }}
-                    type="button"
-                  >
-                    {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
-                    OneInfer
-                  </button>
-                  <button
-                    className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
-                    disabled={isClaudeBusy}
-                    onClick={() => {
-                      props.onOverviewTabChange('claude-code');
-                      props.onClaudeProviderChange('anthropic');
-                    }}
-                    type="button"
-                  >
-                    {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                    Anthropic
-                  </button>
-                </div>
-              </div>
-
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'opencode' ? 'active' : ''}`}>
                 <span className="settings-list-icon"><Blocks size={16} /></span>
                 <button
