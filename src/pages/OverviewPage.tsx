@@ -27,6 +27,8 @@ export function OverviewPage(props: {
   onToolProviderChange: (tool: string, provider: 'oneinfer' | 'tool') => void;
   onSectionChange: (section: SectionKey) => void;
   onOpenRoute: (routeId: string) => void;
+  selectedModelKey: string;
+  onSelectedModelChange: (key: string) => void;
 }) {
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isKiloCodeBusy = props.busy === 'configure-kilocode';
@@ -125,6 +127,51 @@ export function OverviewPage(props: {
           <p className="overview-settings-description">
             OneInfer connects this tool to your locally deployed model. The tool provider keeps its default coding-agent setup.
           </p>
+          <div className="overview-model-select-container" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+            <span style={{ fontSize: '0.74rem', color: 'var(--muted)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Current Model</span>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              border: '1px solid rgba(144, 197, 255, 0.14)',
+              borderRadius: '6px',
+              background: 'rgba(8, 14, 22, 0.62)',
+              padding: '2px 6px',
+            }}>
+              <select
+                id="current-model-select"
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  outline: 'none',
+                  cursor: visibleLocalDeployments.length === 0 ? 'not-allowed' : 'pointer',
+                  minWidth: '160px',
+                  maxWidth: '240px',
+                  height: '24px',
+                  padding: '0 4px',
+                }}
+                value={props.selectedModelKey}
+                onChange={(e) => props.onSelectedModelChange(e.target.value)}
+                disabled={visibleLocalDeployments.length === 0}
+              >
+                {visibleLocalDeployments.length === 0 ? (
+                  <option value="" style={{ background: '#0a1017', color: 'var(--muted)' }}>No model available</option>
+                ) : (
+                  visibleLocalDeployments.map((d) => {
+                    const key = `${d.endpointUrl}||${d.modelId}`;
+                    const displayName = d.modelId.startsWith('hf.co/') ? d.modelId.slice(6) : d.modelId;
+                    return (
+                      <option key={key} value={key} style={{ background: '#0a1017', color: 'var(--text)' }}>
+                        {displayName}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+            </div>
+          </div>
           <div className="card-stack">
             <div className="settings-list overview-tab-list">
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'opencode' ? 'active' : ''}`}>
@@ -155,6 +202,7 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('opencode');
                     props.onEnableOpenCode();
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
 
@@ -186,6 +234,7 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('kilocode');
                     props.onEnableKiloCode();
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
 
@@ -217,6 +266,7 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('openclaw');
                     props.onEnableOpenClaw();
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
 
@@ -248,6 +298,7 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('codex');
                     props.onEnableCodex('tool');
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
             </div>
@@ -288,6 +339,7 @@ function OneInferIntegrationAction(props: {
   onProviderChange: (p: 'oneinfer' | 'tool') => void;
   onClick: () => void | Promise<void>;
   onToolClick: () => void | Promise<void>;
+  oneInferDisabled?: boolean;
 }) {
   const [clickedBtn, setClickedBtn] = useState<'oneinfer' | 'tool' | null>(null);
 
@@ -322,7 +374,7 @@ function OneInferIntegrationAction(props: {
       <button
         aria-label={`Enable ${props.label} with OneInfer`}
         className={`settings-mini-action${isLeftActive ? ' active' : ''}`}
-        disabled={props.busy}
+        disabled={props.busy || props.oneInferDisabled}
         onClick={handleLeftClick}
         type="button"
       >

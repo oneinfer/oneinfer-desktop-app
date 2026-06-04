@@ -331,6 +331,9 @@ function App() {
     });
   }, []);
 
+  const [selectedModelKey, setSelectedModelKey] = useState<string>(() => {
+    return localStorage.getItem('oneinfer_selected_model_key') || '';
+  });
   const [overviewTab, setOverviewTab] = useState<'opencode' | 'kilocode' | 'openclaw' | 'codex'>('opencode');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
@@ -353,6 +356,131 @@ function App() {
     () => localDeployments.filter((deployment) => !isDeletedLocalDeployment(deployment, deletedLocalEndpointKeySet)),
     [deletedLocalEndpointKeySet, localDeployments],
   );
+
+  const handleConfigureAllTools = useCallback(async (targetDeployment: LocalModelDeployment) => {
+    if (!session) return;
+    setBusy('configure-all-tools');
+    setMessage(null);
+    try {
+      const apiBaseUrlToUse = targetDeployment.endpointUrl;
+      const modelIdToUse = targetDeployment.modelId;
+
+      const promises = [];
+
+      if (window.desktopBridge?.enableOpenCode) {
+        promises.push(
+          window.desktopBridge.enableOpenCode({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+            modelId: modelIdToUse,
+          }).then(() => {
+            setToolEnabled('opencode', true);
+          })
+        );
+      }
+
+      if (window.desktopBridge?.enableKiloCode) {
+        promises.push(
+          window.desktopBridge.enableKiloCode({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+            modelId: modelIdToUse,
+          }).then(() => {
+            setToolEnabled('kilocode', true);
+          })
+        );
+      }
+
+      if (window.desktopBridge?.enableOpenClaw) {
+        promises.push(
+          window.desktopBridge.enableOpenClaw({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+          }).then(() => {
+            setToolEnabled('openclaw', true);
+          })
+        );
+      }
+
+      if (window.desktopBridge?.enableCodex) {
+        const activeProvider = toolProviders.codex || 'oneinfer';
+        promises.push(
+          window.desktopBridge.enableCodex({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+            modelId: modelIdToUse,
+            provider: activeProvider,
+          }).then(() => {
+            setToolEnabled('codex', true);
+          })
+        );
+      }
+
+      const results = await Promise.allSettled(promises);
+      const rejected = results.filter((r) => r.status === 'rejected');
+      if (rejected.length > 0) {
+        const errors = rejected.map((r) => (r as PromiseRejectedResult).reason?.message || 'Unknown error').join(', ');
+        setMessage({
+          tone: 'error',
+          text: `Configured some tools, but others failed: ${errors}`,
+        });
+      } else {
+        setMessage({
+          tone: 'success',
+          text: `All AI tools successfully configured for model "${targetDeployment.modelId}" on ${targetDeployment.endpointUrl}.`,
+        });
+      }
+    } catch (error) {
+      setMessage({
+        tone: 'error',
+        text: error instanceof Error ? error.message : 'Failed to configure all tools.',
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, [session, toolProviders.codex, setToolEnabled]);
+
+  const handleSelectedModelChange = useCallback(async (key: string) => {
+    setSelectedModelKey(key);
+    try {
+      localStorage.setItem('oneinfer_selected_model_key', key);
+    } catch (err) {
+      console.warn('Failed to save selected model key:', err);
+    }
+
+    if (!key) {
+      return;
+    }
+
+    const deployment = visibleLocalDeployments.find((d) => `${d.endpointUrl}||${d.modelId}` === key);
+    if (deployment) {
+      await handleConfigureAllTools(deployment);
+    }
+  }, [visibleLocalDeployments, handleConfigureAllTools]);
+
+  useEffect(() => {
+    if (visibleLocalDeployments.length === 0) {
+      if (selectedModelKey) {
+        setSelectedModelKey('');
+      }
+      return;
+    }
+
+    const exists = visibleLocalDeployments.some(
+      (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+    );
+
+    if (!exists) {
+      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      if (activeLocalDeployment) {
+        setSelectedModelKey(`${activeLocalDeployment.endpointUrl}||${activeLocalDeployment.modelId}`);
+      }
+    }
+  }, [selectedModelKey, visibleLocalDeployments, localModelMetrics]);
   const visibleDashboard = useMemo(() => ({
     ...dashboard,
     inferenceEndpoints: dashboard.inferenceEndpoints.filter((endpoint, index) => !isDeletedLocalInferenceEndpoint(endpoint, deletedLocalEndpointKeySet, index)),
@@ -1092,7 +1220,10 @@ function App() {
 
     try {
       // Find a running/active local model deployment
-      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
         const metrics = localModelMetrics[deployment.endpointUrl];
         return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
       }) || visibleLocalDeployments[0];
@@ -1133,7 +1264,10 @@ function App() {
       const activeProvider = provider || toolProviders.codex || 'oneinfer';
 
       // Find a running/active local model deployment
-      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
         const metrics = localModelMetrics[deployment.endpointUrl];
         return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
       }) || visibleLocalDeployments[0];
@@ -1182,7 +1316,10 @@ function App() {
 
     try {
       // Find a running/active local model deployment
-      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
         const metrics = localModelMetrics[deployment.endpointUrl];
         return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
       }) || visibleLocalDeployments[0];
@@ -1221,7 +1358,10 @@ function App() {
 
     try {
       // Find a running/active local model deployment
-      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
         const metrics = localModelMetrics[deployment.endpointUrl];
         return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
       }) || visibleLocalDeployments[0];
@@ -2742,6 +2882,8 @@ function isSameLocalModelId(left: string, right: string): boolean {
               setRouteInitialViewId(routeId);
               setActiveSection('routing');
             }}
+            selectedModelKey={selectedModelKey}
+            onSelectedModelChange={handleSelectedModelChange}
           />
         ) : null}
 
