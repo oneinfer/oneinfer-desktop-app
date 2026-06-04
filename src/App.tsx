@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { AlertCircle, CheckCircle2, Info, LoaderCircle, Plus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { AlertCircle, CheckCircle2, Info, LoaderCircle, Plus, Terminal } from 'lucide-react';
 
 import {
   createApiKey,
@@ -258,9 +258,9 @@ function App() {
   const [enabledTools, setEnabledTools] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem('oneinfer_enabled_tools');
-      return saved ? JSON.parse(saved) : { opencode: false, kilocode: false, openclaw: false };
+      return saved ? JSON.parse(saved) : { opencode: false, kilocode: false, openclaw: false, codex: false };
     } catch {
-      return { opencode: false, kilocode: false, openclaw: false };
+      return { opencode: false, kilocode: false, openclaw: false, codex: false };
     }
   });
 
@@ -280,6 +280,10 @@ function App() {
   const [message, setMessage] = useState<{ tone: 'info' | 'success' | 'error'; text: string } | null>(null);
   const [usageTarget, setUsageTarget] = useState<EndpointUsageTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [libraryInstallLog, setLibraryInstallLog] = useState<{ name: string; text: string; isError?: boolean }[]>([]);
+  const [isInstallLogOpen, setIsInstallLogOpen] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const [libraryErrors, setLibraryErrors] = useState<Record<string, string | null>>({});
   const [, setUpdateStatus] = useState<DesktopUpdateStatus>({
     phase: 'idle',
     message: 'Updates are idle.',
@@ -309,9 +313,9 @@ function App() {
   const [toolProviders, setToolProviders] = useState<Record<string, 'oneinfer' | 'tool'>>(() => {
     try {
       const saved = localStorage.getItem('oneinfer_tool_providers');
-      return saved ? JSON.parse(saved) : { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+      return saved ? JSON.parse(saved) : { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer', codex: 'oneinfer' };
     } catch {
-      return { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer' };
+      return { opencode: 'oneinfer', kilocode: 'oneinfer', openclaw: 'oneinfer', codex: 'oneinfer' };
     }
   });
 
@@ -327,7 +331,10 @@ function App() {
     });
   }, []);
 
-  const [overviewTab, setOverviewTab] = useState<'claude-code' | 'opencode' | 'kilocode' | 'openclaw'>('claude-code');
+  const [selectedModelKey, setSelectedModelKey] = useState<string>(() => {
+    return localStorage.getItem('oneinfer_selected_model_key') || '';
+  });
+  const [overviewTab, setOverviewTab] = useState<'opencode' | 'kilocode' | 'openclaw' | 'codex'>('opencode');
   const [infraTab, setInfraTab] = useState<'self-hosted' | 'cloud'>('self-hosted');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('account');
   const [showCreateKeyModal, setShowCreateKeyModal] = useState(false);
@@ -349,6 +356,131 @@ function App() {
     () => localDeployments.filter((deployment) => !isDeletedLocalDeployment(deployment, deletedLocalEndpointKeySet)),
     [deletedLocalEndpointKeySet, localDeployments],
   );
+
+  const handleConfigureAllTools = useCallback(async (targetDeployment: LocalModelDeployment) => {
+    if (!session) return;
+    setBusy('configure-all-tools');
+    setMessage(null);
+    try {
+      const apiBaseUrlToUse = targetDeployment.endpointUrl;
+      const modelIdToUse = targetDeployment.modelId;
+
+      const promises = [];
+
+      if (window.desktopBridge?.enableOpenCode) {
+        promises.push(
+          window.desktopBridge.enableOpenCode({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+            modelId: modelIdToUse,
+          }).then(() => {
+            setToolEnabled('opencode', true);
+          })
+        );
+      }
+
+      if (window.desktopBridge?.enableKiloCode) {
+        promises.push(
+          window.desktopBridge.enableKiloCode({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+            modelId: modelIdToUse,
+          }).then(() => {
+            setToolEnabled('kilocode', true);
+          })
+        );
+      }
+
+      if (window.desktopBridge?.enableOpenClaw) {
+        promises.push(
+          window.desktopBridge.enableOpenClaw({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+          }).then(() => {
+            setToolEnabled('openclaw', true);
+          })
+        );
+      }
+
+      if (window.desktopBridge?.enableCodex) {
+        const activeProvider = toolProviders.codex || 'oneinfer';
+        promises.push(
+          window.desktopBridge.enableCodex({
+            apiBaseUrl: apiBaseUrlToUse,
+            session,
+            modelId: modelIdToUse,
+            provider: activeProvider,
+          }).then(() => {
+            setToolEnabled('codex', true);
+          })
+        );
+      }
+
+      const results = await Promise.allSettled(promises);
+      const rejected = results.filter((r) => r.status === 'rejected');
+      if (rejected.length > 0) {
+        const errors = rejected.map((r) => (r as PromiseRejectedResult).reason?.message || 'Unknown error').join(', ');
+        setMessage({
+          tone: 'error',
+          text: `Configured some tools, but others failed: ${errors}`,
+        });
+      } else {
+        setMessage({
+          tone: 'success',
+          text: `All AI tools successfully configured for model "${targetDeployment.modelId}" on ${targetDeployment.endpointUrl}.`,
+        });
+      }
+    } catch (error) {
+      setMessage({
+        tone: 'error',
+        text: error instanceof Error ? error.message : 'Failed to configure all tools.',
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, [session, toolProviders.codex, setToolEnabled]);
+
+  const handleSelectedModelChange = useCallback(async (key: string) => {
+    setSelectedModelKey(key);
+    try {
+      localStorage.setItem('oneinfer_selected_model_key', key);
+    } catch (err) {
+      console.warn('Failed to save selected model key:', err);
+    }
+
+    if (!key) {
+      return;
+    }
+
+    const deployment = visibleLocalDeployments.find((d) => `${d.endpointUrl}||${d.modelId}` === key);
+    if (deployment) {
+      await handleConfigureAllTools(deployment);
+    }
+  }, [visibleLocalDeployments, handleConfigureAllTools]);
+
+  useEffect(() => {
+    if (visibleLocalDeployments.length === 0) {
+      if (selectedModelKey) {
+        setSelectedModelKey('');
+      }
+      return;
+    }
+
+    const exists = visibleLocalDeployments.some(
+      (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+    );
+
+    if (!exists) {
+      const activeLocalDeployment = visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      if (activeLocalDeployment) {
+        setSelectedModelKey(`${activeLocalDeployment.endpointUrl}||${activeLocalDeployment.modelId}`);
+      }
+    }
+  }, [selectedModelKey, visibleLocalDeployments, localModelMetrics]);
   const visibleDashboard = useMemo(() => ({
     ...dashboard,
     inferenceEndpoints: dashboard.inferenceEndpoints.filter((endpoint, index) => !isDeletedLocalInferenceEndpoint(endpoint, deletedLocalEndpointKeySet, index)),
@@ -477,6 +609,17 @@ function App() {
           ...initialLibraryStatus,
           ...Object.fromEntries(statuses),
         });
+
+        if (window.desktopBridge.getLibraryError) {
+          const errors = await Promise.all(
+            servingLibraries.map(async (library) => {
+              const isInstalled = statuses.find(([lib]) => lib === library)?.[1];
+              const err = !isInstalled ? await window.desktopBridge.getLibraryError(library) : null;
+              return [library, err] as const;
+            })
+          );
+          setLibraryErrors(Object.fromEntries(errors));
+        }
       } catch (error) {
         console.error('[libraries] check failed', error);
       }
@@ -486,6 +629,20 @@ function App() {
       checkLibs();
     }
   }, [activeSection, session]);
+
+  useEffect(() => {
+    if (!window.desktopBridge?.onLibraryInstallLog) return;
+    return window.desktopBridge.onLibraryInstallLog((log) => {
+      setLibraryInstallLog((prev) => [...prev, log]);
+      setIsInstallLogOpen(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [libraryInstallLog]);
 
   useEffect(() => {
     if (booting || !session) {
@@ -1062,8 +1219,19 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+
       const result = await window.desktopBridge.enableOpenClaw({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
       });
       const installMessage = result.openclawInstallState === 'installed'
@@ -1084,6 +1252,60 @@ function App() {
     }
   }
 
+  async function handleEnableCodex(provider?: 'oneinfer' | 'tool') {
+    if (!session || !window.desktopBridge?.enableCodex) {
+      return;
+    }
+
+    setBusy('configure-codex');
+    setMessage(null);
+
+    try {
+      const activeProvider = provider || toolProviders.codex || 'oneinfer';
+
+      // Find a running/active local model deployment
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+      const modelIdToUse = activeLocalDeployment ? activeLocalDeployment.modelId : undefined;
+
+      const result = await window.desktopBridge.enableCodex({
+        apiBaseUrl: apiBaseUrlToUse,
+        session,
+        modelId: modelIdToUse,
+        provider: activeProvider,
+      });
+      const installMessage = result.codexInstallState === 'installed'
+        ? ' Codex was installed first for this operating system.'
+        : '';
+
+      setToolEnabled('codex', true);
+      if (activeProvider === 'tool') {
+        setMessage({
+          tone: 'success',
+          text: `Codex restored to its default configuration. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`,
+        });
+      } else {
+        setMessage({
+          tone: 'success',
+          text: result.alreadyConfigured
+            ? `Codex is already enabled globally for OneInfer. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`
+            : `Codex enabled globally via OneInfer${result.apiKeyName ? ` with ${result.apiKeyName}` : ''}. Config: ${result.configPath}. Model: ${result.model}.${installMessage}`,
+        });
+      }
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to enable Codex.' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleEnableOpenCode() {
     if (!session || !window.desktopBridge?.enableOpenCode) {
       return;
@@ -1093,8 +1315,19 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+
       const result = await window.desktopBridge.enableOpenCode({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
       });
       const installMessage = result.opencodeInstallState === 'installed'
@@ -1124,8 +1357,19 @@ function App() {
     setMessage(null);
 
     try {
+      // Find a running/active local model deployment
+      const userSelectedDeployment = selectedModelKey ? visibleLocalDeployments.find(
+        (d) => `${d.endpointUrl}||${d.modelId}` === selectedModelKey
+      ) : undefined;
+      const activeLocalDeployment = userSelectedDeployment || visibleLocalDeployments.find((deployment) => {
+        const metrics = localModelMetrics[deployment.endpointUrl];
+        return (metrics?.healthy && metrics.modelCount > 0) || deployment.pid !== null;
+      }) || visibleLocalDeployments[0];
+
+      const apiBaseUrlToUse = activeLocalDeployment ? activeLocalDeployment.endpointUrl : settingsDraft.apiBaseUrl;
+
       const result = await window.desktopBridge.enableKiloCode({
-        apiBaseUrl: settingsDraft.apiBaseUrl,
+        apiBaseUrl: apiBaseUrlToUse,
         session,
       });
       const installMessage = result.kilocodeInstallState === 'installed'
@@ -1895,12 +2139,16 @@ function App() {
     const currentTransformers = libraries.transformers || (await window.desktopBridge.checkLibrary('transformers'));
     if (!currentPyTorch || !currentTransformers) {
       setMessage({ tone: 'info', text: 'Installing PyTorch and Transformers for the local router endpoint...' });
+      setLibraryInstallLog([]);
+      setIsInstallLogOpen(true);
       await window.desktopBridge.installLibrary('transformers');
     }
 
     let pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
     let transformersInstalled = await window.desktopBridge.checkLibrary('transformers');
     if (!pytorchInstalled) {
+      setLibraryInstallLog([]);
+      setIsInstallLogOpen(true);
       await window.desktopBridge.installLibrary('pytorch');
       pytorchInstalled = await window.desktopBridge.checkLibrary('pytorch');
     }
@@ -1936,6 +2184,8 @@ function App() {
     }
 
     setMessage({ tone: 'info', text: `${reason} Installing ${formatLocalRuntime(library)} before creating the route...` });
+    setLibraryInstallLog([]);
+    setIsInstallLogOpen(true);
     await window.desktopBridge.installLibrary(library);
     const installed = await window.desktopBridge.checkLibrary(library);
     setLibraries((current) => ({ ...current, [library]: installed }));
@@ -2328,6 +2578,8 @@ function isSameLocalModelId(left: string, right: string): boolean {
   async function handleInstallLibrary(name: ServingLibrary) {
     if (!window.desktopBridge?.installLibrary || !window.desktopBridge?.checkLibrary) return;
     setBusy(`install-${name}`);
+    setLibraryInstallLog([]);
+    setIsInstallLogOpen(true);
     try {
       await window.desktopBridge.installLibrary(name);
       const status = await window.desktopBridge.checkLibrary(name);
@@ -2460,6 +2712,132 @@ function isSameLocalModelId(left: string, right: string): boolean {
           </button>
         </div>
       ) : null}
+      {isInstallLogOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            width: '460px',
+            height: '360px',
+            backgroundColor: 'rgba(9, 16, 26, 0.95)',
+            border: message?.tone === 'error' && busy === null ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(0, 112, 243, 0.3)',
+            boxShadow: message?.tone === 'error' && busy === null ? '0 12px 40px rgba(239, 68, 68, 0.25)' : '0 12px 40px rgba(0, 112, 243, 0.2)',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            zIndex: 99998,
+            overflow: 'hidden',
+            fontFamily: 'monospace',
+            color: '#e2e8f0',
+            backdropFilter: 'blur(16px)',
+            transition: 'all 0.3s ease-out'
+          }}
+        >
+          <div
+            style={{
+              padding: '10px 16px',
+              background: 'rgba(15, 27, 43, 0.9)',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '10px'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+              <Terminal size={14} style={{ color: busy ? '#38bdf8' : (message?.tone === 'error' ? '#ef4444' : '#10b981') }} />
+              <span style={{ fontSize: '11px', fontWeight: 'bold', letterSpacing: '0.5px', textTransform: 'uppercase', color: '#94a3b8' }}>
+                {busy ? 'Installing Environment' : (message?.tone === 'error' ? 'Installation Failed' : 'Installation Output')}
+              </span>
+            </div>
+            <button
+              onClick={() => setIsInstallLogOpen(false)}
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#94a3b8',
+                cursor: 'pointer',
+                fontSize: '18px',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'color 0.2s',
+                opacity: 0.8
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = '#fff')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+            >
+              &times;
+            </button>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              overflowY: 'auto',
+              fontSize: '10px',
+              lineHeight: '1.6',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              backgroundColor: '#050a12',
+              color: '#38bdf8'
+            }}
+          >
+            {libraryInstallLog.length === 0 ? (
+              <div style={{ color: '#64748b', fontStyle: 'italic', padding: '12px 0' }}>
+                Waiting for installation output...
+              </div>
+            ) : (
+              libraryInstallLog.map((log, idx) => (
+                <div key={idx} style={{ whiteSpace: 'pre-wrap', color: log.isError ? '#f87171' : '#38bdf8' }}>
+                  {log.text}
+                </div>
+              ))
+            )}
+            <div ref={logsEndRef} />
+          </div>
+          {message?.tone === 'error' && busy === null && (
+            <div
+              style={{
+                padding: '10px 16px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                borderTop: '1px solid rgba(239, 68, 68, 0.2)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '10px'
+              }}
+            >
+              <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 'bold' }}>
+                An error occurred during pip execution.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(libraryInstallLog.map(l => l.text).join(''));
+                  setMessage({ tone: 'success', text: 'Installation logs copied to clipboard!' });
+                }}
+                style={{
+                  fontSize: '10px',
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  color: '#fff',
+                  borderRadius: '4px',
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                Copy Logs
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {activeSection === 'overview' ? (
         <div className="app-topbar">
           <div className="welcome-copy">
@@ -2495,6 +2873,7 @@ function isSameLocalModelId(left: string, right: string): boolean {
             onEnableOpenCode={handleEnableOpenCode}
             onEnableKiloCode={handleEnableKiloCode}
             onEnableOpenClaw={handleEnableOpenClaw}
+            onEnableCodex={handleEnableCodex}
             enabledTools={enabledTools}
             toolProviders={toolProviders}
             onToolProviderChange={handleToolProviderChange}
@@ -2503,11 +2882,94 @@ function isSameLocalModelId(left: string, right: string): boolean {
               setRouteInitialViewId(routeId);
               setActiveSection('routing');
             }}
+            selectedModelKey={selectedModelKey}
+            onSelectedModelChange={handleSelectedModelChange}
           />
         ) : null}
 
         {activeSection === 'selfHosting' ? (
-          <SelfHostingPage
+          <>
+            {(() => {
+              const activeLibrary = selfHostForm.serving_library;
+              const activeError = libraryErrors[activeLibrary] || (activeLibrary === 'transformers' ? (libraryErrors.pytorch || libraryErrors.transformers) : null);
+              if (!libraries[activeLibrary] && activeError) {
+                const isVcRedistError = activeError.toLowerCase().includes('dll load failed') || 
+                                        activeError.toLowerCase().includes('visual c++') || 
+                                        activeError.toLowerCase().includes('vcruntime') || 
+                                        activeError.toLowerCase().includes('msvcp');
+                return (
+                  <div
+                    style={{
+                      margin: '0 0 20px 0',
+                      padding: '16px',
+                      backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      borderRadius: '8px',
+                      color: '#ef4444',
+                      fontSize: '13px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold' }}>
+                      <AlertCircle size={16} />
+                      <span>Python Environment Diagnostic Warning</span>
+                    </div>
+                    <div style={{ fontFamily: 'monospace', fontSize: '11px', backgroundColor: 'rgba(0, 0, 0, 0.2)', padding: '10px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.05)', color: '#f87171', whiteSpace: 'pre-wrap', maxHeight: '100px', overflowY: 'auto' }}>
+                      {activeError}
+                    </div>
+                    {isVcRedistError ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#94a3b8', fontSize: '12px', flex: 1 }}>
+                          OneInfer Edge detected that Microsoft Visual C++ Runtime is missing on your Windows machine, which prevents PyTorch from loading.
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy === 'install-vc-redist'}
+                          onClick={async () => {
+                            setBusy('install-vc-redist');
+                            setMessage({ tone: 'info', text: 'Installing Microsoft Visual C++ Redistributable silently. Please wait...' });
+                            try {
+                              await window.desktopBridge.installVcRedist();
+                              setMessage({ tone: 'success', text: 'Visual C++ Redistributable installed successfully!' });
+                              if (window.desktopBridge?.checkLibrary) {
+                                await window.desktopBridge.checkLibrary(activeLibrary);
+                              }
+                            } catch (err: any) {
+                              setMessage({ tone: 'error', text: `VC++ Runtime Auto-Installation failed: ${err.message || String(err)}` });
+                            } finally {
+                              setBusy(null);
+                            }
+                          }}
+                          style={{
+                            background: 'rgba(0, 112, 243, 0.15)',
+                            border: '1px solid rgba(0, 112, 243, 0.3)',
+                            color: '#38bdf8',
+                            borderRadius: '4px',
+                            padding: '6px 12px',
+                            fontWeight: 'bold',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {busy === 'install-vc-redist' ? 'Installing VC++...' : 'Auto-Install VC++ Runtime'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#94a3b8', fontSize: '11px' }}>
+                          Tip: If PyTorch or Transformers are installed on your machine but failing to import, ensure you have a 64-bit Python installation and its PATH is added to Windows Environment Variables.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              return null;
+            })()}
+            <SelfHostingPage
             dashboard={visibleDashboard}
             selfHostForm={selfHostForm}
             validationResult={validationResult}
@@ -2545,6 +3007,7 @@ function isSameLocalModelId(left: string, right: string): boolean {
             onShowUsage={setUsageTarget}
             onDeleteLocalDeployment={handleDeleteLocalDeployment}
           />
+          </>
         ) : null}
 
         {activeSection === 'instances' ? (

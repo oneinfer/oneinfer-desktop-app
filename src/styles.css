@@ -2577,6 +2577,14 @@ th {
   font-weight: 700;
 }
 
+.overview-settings-description {
+  margin: -6px 0 16px;
+  max-width: 620px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
 .settings-list-item {
   width: 100%;
   display: grid;
@@ -4294,5 +4302,4 @@ input:checked + .slider:before {
 .overview-setup-panel-container .glass-panel .panel-header {
   padding: 0 0 12px 0;
 }
-
 

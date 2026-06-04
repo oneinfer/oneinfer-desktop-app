@@ -427,10 +427,18 @@ function runCommand(command, args = [], options = {}) {
     }
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      if (options.onStdout) {
+        options.onStdout(text);
+      }
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (options.onStderr) {
+        options.onStderr(text);
+      }
     });
     child.on('error', reject);
     child.on('close', (code) => {
@@ -608,27 +616,79 @@ async function installWindowsManagedVllm() {
   const runtimeDir = getWindowsVllmRuntimeDirectory();
   const pythonPath = getWindowsVllmPythonPath();
 
-  if (!fs.existsSync(pythonPath)) {
-    fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
-    await runCommand('py', ['-3.12', '-m', 'venv', runtimeDir], { timeoutMs: 5 * 60 * 1000 });
+  try {
+    if (!fs.existsSync(pythonPath)) {
+      fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
+      await runCommand('py', ['-3.12', '-m', 'venv', runtimeDir], {
+        timeoutMs: 5 * 60 * 1000,
+        onStdout: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text });
+          }
+        },
+        onStderr: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text, isError: true });
+          }
+        }
+      });
+    }
+
+    await runCommand(pythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'], {
+      timeoutMs: 10 * 60 * 1000,
+      onStdout: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text });
+        }
+      },
+      onStderr: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text, isError: true });
+        }
+      }
+    });
+
+    await runCommand(pythonPath, [
+      '-m',
+      'pip',
+      'install',
+      '--force-reinstall',
+      WINDOWS_VLLM_WHEEL_URL,
+      '--extra-index-url',
+      WINDOWS_VLLM_TORCH_INDEX_URL,
+    ], {
+      timeoutMs: 45 * 60 * 1000,
+      onStdout: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text });
+        }
+      },
+      onStderr: (text) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:library-install-log', { name: 'vllm', text, isError: true });
+        }
+      }
+    });
+
+    if (!await isWindowsManagedVllmInstalled()) {
+      throw new Error('OneInfer installed the Windows vLLM runtime, but vLLM could not be imported. Check that the machine has a CUDA 13-compatible NVIDIA driver and try again.');
+    }
+
+    return 'installed';
+  } catch (error) {
+    try {
+      const { Notification } = require('electron');
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'OneInfer Edge',
+          body: 'Failed to install Windows vLLM runtime. Check the logs for details.',
+        }).show();
+      }
+    } catch (err) {
+      console.error('Failed to show system notification', err);
+    }
+    throw error;
   }
-
-  await runCommand(pythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'], { timeoutMs: 10 * 60 * 1000 });
-  await runCommand(pythonPath, [
-    '-m',
-    'pip',
-    'install',
-    '--force-reinstall',
-    WINDOWS_VLLM_WHEEL_URL,
-    '--extra-index-url',
-    WINDOWS_VLLM_TORCH_INDEX_URL,
-  ], { timeoutMs: 45 * 60 * 1000 });
-
-  if (!await isWindowsManagedVllmInstalled()) {
-    throw new Error('OneInfer installed the Windows vLLM runtime, but vLLM could not be imported. Check that the machine has a CUDA 13-compatible NVIDIA driver and try again.');
-  }
-
-  return 'installed';
 }
 
 async function isClaudeCodeInstalled() {
@@ -910,6 +970,8 @@ function normalizeServingLibraryName(name) {
   return aliases[normalized] || normalized;
 }
 
+let lastLibraryErrors = {};
+
 async function isLibraryInstalled(name) {
   name = normalizeServingLibraryName(name);
   try {
@@ -929,19 +991,17 @@ async function isLibraryInstalled(name) {
       // First try standard command
       if (await commandExists('vllm')) return true;
       // Then try python import
+      const pyCmd = await getPythonCommandForModule('vllm');
+      if (pyCmd) return true;
+
+      // Fallback to pip check
       try {
-        await runCommand('python3', ['-c', 'import vllm'], { timeoutMs: 10000 });
-        return true;
+        const pipCommand = await getPythonPipCommand();
+        if (!pipCommand) return false;
+        const { stdout } = await runCommand(pipCommand.command, [...pipCommand.args, 'show', 'vllm'], { timeoutMs: 5000 });
+        return stdout.includes('Name: vllm');
       } catch {
-        // Fallback to pip check
-        try {
-          const pipCommand = await getPythonPipCommand();
-          if (!pipCommand) return false;
-          const { stdout } = await runCommand(pipCommand.command, [...pipCommand.args, 'show', 'vllm'], { timeoutMs: 5000 });
-          return stdout.includes('Name: vllm');
-        } catch {
-          return false;
-        }
+        return false;
       }
     }
     
@@ -957,92 +1017,38 @@ async function isLibraryInstalled(name) {
 
     if (name === 'sglang') {
       if (await commandExists('sglang')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import sglang'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import sglang'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('sglang');
+      return !!pyCmd;
     }
 
     if (name === 'tensorrt') {
       if (await commandExists('trtllm-serve')) return true;
       if (await commandExists('tensorrt_llm')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import tensorrt; import tensorrt_llm'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('tensorrt', 'import tensorrt; import tensorrt_llm');
+      return !!pyCmd;
     }
 
     if (name === 'pytorch') {
-      try {
-        await runCommand('python3', ['-c', 'import torch'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import torch'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('torch');
+      return !!pyCmd;
     }
 
     if (name === 'llama_cpp') {
       if (await commandExists('llama-server')) return true;
       if (await commandExists('llama-cli')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import llama_cpp'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('llama_cpp');
+      return !!pyCmd;
     }
 
     if (name === 'transformers') {
-      try {
-        await runCommand('python3', ['-c', 'import transformers'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import transformers'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('transformers');
+      return !!pyCmd;
     }
 
     if (name === 'dynamo') {
       if (await commandExists('dynamo')) return true;
-      try {
-        await runCommand('python3', ['-c', 'import dynamo'], { timeoutMs: 10000 });
-        return true;
-      } catch {
-        try {
-          await runCommand('python', ['-c', 'import dynamo'], { timeoutMs: 10000 });
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const pyCmd = await getPythonCommandForModule('dynamo');
+      return !!pyCmd;
     }
 
     return await commandExists(name);
@@ -1149,8 +1155,35 @@ async function installLibrary(name) {
       throw new Error('pip is not installed. Please install Python and pip first.');
     }
 
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...pipInstallPackages[name]], { timeoutMs: 15 * 60 * 1000 });
-    return 'installed';
+    try {
+      await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...pipInstallPackages[name]], {
+        timeoutMs: 15 * 60 * 1000,
+        onStdout: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name, text });
+          }
+        },
+        onStderr: (text) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app:library-install-log', { name, text, isError: true });
+          }
+        }
+      });
+      return 'installed';
+    } catch (error) {
+      try {
+        const { Notification } = require('electron');
+        if (Notification.isSupported()) {
+          new Notification({
+            title: 'OneInfer Edge',
+            body: `Failed to install library "${name}". Check the logs for details.`,
+          }).show();
+        }
+      } catch (err) {
+        console.error('Failed to show system notification', err);
+      }
+      throw error;
+    }
   }
 
   throw new Error(`Automatic installation for "${name}" is not supported.`);
@@ -1449,23 +1482,81 @@ function compactDeploymentLogTail(logTail, maxLines = 18) {
   return lines.slice(-maxLines).join('\n');
 }
 
-async function getPythonCommandForModule(moduleName) {
-  const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
-  for (const command of candidates) {
-    if (!await commandExists(command)) {
-      continue;
-    }
+const PYTHON_CHECK_TIMEOUT_MS = 45000;
 
-    const args = command === 'py' ? ['-3', '-c', `import ${moduleName}`] : ['-c', `import ${moduleName}`];
+async function getPythonCommandForModule(moduleName, importScript = null) {
+  const script = importScript || `import ${moduleName}`;
+  const basicCandidates = process.platform === 'win32'
+    ? [
+        { command: 'python', prefixArgs: [] },
+        { command: 'py', prefixArgs: ['-3'] }
+      ]
+    : [
+        { command: 'python3', prefixArgs: [] },
+        { command: 'python', prefixArgs: [] }
+      ];
+
+  let lastRunError = null;
+
+  for (const candidate of basicCandidates) {
     try {
-      await runCommand(command, args, { timeoutMs: 10000 });
+      if (!await commandExists(candidate.command)) {
+        continue;
+      }
+      await runCommand(candidate.command, [...candidate.prefixArgs, '-c', script], { timeoutMs: PYTHON_CHECK_TIMEOUT_MS });
+      // Clear error on success
+      const key = moduleName === 'torch' ? 'pytorch' : moduleName;
+      delete lastLibraryErrors[key];
       return {
-        command,
-        prefixArgs: command === 'py' ? ['-3'] : [],
+        command: candidate.command,
+        prefixArgs: candidate.prefixArgs,
       };
-    } catch {
-      // Try the next Python command.
+    } catch (err) {
+      lastRunError = err.message || String(err);
     }
+  }
+
+  // Next, check candidates based on the same list of Python/pip entry points that getPythonPipCommand uses
+  const pipCandidates = [
+    { command: 'py', args: ['-3.12', '-m', 'pip'] },
+    { command: 'py', args: ['-3.11', '-m', 'pip'] },
+    { command: 'py', args: ['-3.10', '-m', 'pip'] },
+    { command: 'python3', args: ['-m', 'pip'] },
+    { command: 'python', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3', args: ['-m', 'pip'] },
+    { command: '/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', args: ['-m', 'pip'] },
+    { command: '/opt/homebrew/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/local/bin/python3', args: ['-m', 'pip'] },
+    { command: '/usr/bin/python3', args: ['-m', 'pip'] },
+  ];
+
+  for (const candidate of pipCandidates) {
+    try {
+      const prefixArgs = [];
+      for (const arg of candidate.args) {
+        if (arg === '-m') break;
+        prefixArgs.push(arg);
+      }
+      await runCommand(candidate.command, [...prefixArgs, '-c', script], { timeoutMs: PYTHON_CHECK_TIMEOUT_MS });
+      // Clear error on success
+      const key = moduleName === 'torch' ? 'pytorch' : moduleName;
+      delete lastLibraryErrors[key];
+      return {
+        command: candidate.command,
+        prefixArgs,
+      };
+    } catch (err) {
+      lastRunError = err.message || String(err);
+    }
+  }
+
+  // Store the diagnostic error if we failed completely
+  const key = moduleName === 'torch' ? 'pytorch' : moduleName;
+  if (lastRunError) {
+    lastLibraryErrors[key] = lastRunError;
+  } else {
+    lastLibraryErrors[key] = 'No python or pip environment could be found on the system.';
   }
 
   return null;
@@ -1718,7 +1809,10 @@ const TRANSFORMERS_OPENAI_SERVER_SCRIPT = String.raw`
 import json
 import sys
 import time
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+model_lock = threading.Lock()
 
 repo_id = sys.argv[1]
 port = int(sys.argv[2])
@@ -1731,8 +1825,15 @@ from transformers import AutoModelForCausalLM, AutoModelForSequenceClassificatio
 tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True)
 model = None
 model_kind = "causal-lm"
-device = "cuda" if torch.cuda.is_available() and torch.cuda.mem_get_info()[0] > 4 * 1024 * 1024 * 1024 else "cpu"
-dtype = torch.float16 if device == "cuda" else torch.float32
+if torch.cuda.is_available() and torch.cuda.mem_get_info()[0] > 4 * 1024 * 1024 * 1024:
+    device = "cuda"
+    dtype = torch.float16
+elif torch.backends.mps.is_available():
+    device = "mps"
+    dtype = torch.float16
+else:
+    device = "cpu"
+    dtype = torch.float32
 print(f"Using device={device}, dtype={dtype}", flush=True)
 try:
     model = AutoModelForCausalLM.from_pretrained(repo_id, trust_remote_code=True, torch_dtype=dtype)
@@ -1757,6 +1858,14 @@ if hasattr(model, "to"):
         else:
             raise
 
+def strip_thinking(text):
+    if not text:
+        return text
+    import re
+    text = re.sub(r'<(thinking|thought|think|reasoning)>.*?</\1>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<(thinking|thought|think|reasoning)>.*', '', text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
 def response_payload(content, request_id):
     return {
         "id": request_id,
@@ -1778,13 +1887,17 @@ def build_generation_inputs(prompt, payload, device):
     messages = payload.get("messages") or []
     if messages and hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
         try:
-            input_ids = tokenizer.apply_chat_template(
+            from collections.abc import Mapping
+            inputs = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
                 truncation=True,
-            ).to(device)
-            return {"input_ids": input_ids}
+                return_dict=True,
+            )
+            if isinstance(inputs, Mapping):
+                return {key: value.to(device) for key, value in inputs.items()}
+            return {"input_ids": inputs.to(device)}
         except Exception as template_error:
             print(f"Chat template formatting failed, using plain prompt: {template_error}", flush=True)
 
@@ -1802,7 +1915,7 @@ def run_model(prompt, payload):
 
     with torch.no_grad():
         if model_kind == "causal-lm":
-            max_new_tokens = max(1, min(int(payload.get("max_tokens") or 128), 512))
+            max_new_tokens = max(1, min(int(payload.get("max_tokens") or 1024), 2048))
             temperature = float(payload.get("temperature") or 0)
             eos_token_id = tokenizer.eos_token_id
             pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_token_id
@@ -1827,7 +1940,7 @@ def run_model(prompt, payload):
                 **generation_args,
             )
             generated = output_ids[0][inputs["input_ids"].shape[-1]:]
-            return tokenizer.decode(generated, skip_special_tokens=True).strip() or "ok"
+            return strip_thinking(tokenizer.decode(generated, skip_special_tokens=True)) or "ok"
 
         outputs = model(**inputs)
         scores = torch.softmax(outputs.logits[0], dim=-1)
@@ -1876,10 +1989,246 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(body or "{}")
             prompt = prompt_from_messages(payload)
-            content = run_model(prompt, payload)
+            if not prompt:
+                prompt = str(payload.get("prompt") or "")
+            if not prompt:
+                prompt = "Route this request."
+            is_stream = payload.get("stream") is True
+
+            if is_stream and model_kind == "causal-lm":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+
+                from transformers import TextIteratorStreamer
+                from threading import Thread
+
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                
+                device = next(model.parameters()).device
+                inputs = build_generation_inputs(prompt, payload, device)
+                
+                max_new_tokens = max(1, min(int(payload.get("max_tokens") or 1024), 2048))
+                temperature = float(payload.get("temperature") or 0)
+                eos_token_id = tokenizer.eos_token_id
+                pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_token_id
+                
+                generation_args = {
+                    **inputs,
+                    "max_new_tokens": max_new_tokens,
+                    "repetition_penalty": float(payload.get("repetition_penalty") or 1.12),
+                    "no_repeat_ngram_size": int(payload.get("no_repeat_ngram_size") or 4),
+                    "eos_token_id": eos_token_id,
+                    "pad_token_id": pad_token_id,
+                    "streamer": streamer,
+                }
+                if temperature > 0:
+                    generation_args.update({
+                        "do_sample": True,
+                        "temperature": temperature,
+                        "top_p": float(payload.get("top_p") or 0.9),
+                    })
+                else:
+                    generation_args["do_sample"] = False
+
+                def generate_with_lock():
+                    try:
+                        import traceback
+                        with model_lock:
+                            model.generate(**generation_args)
+                    except Exception as thread_e:
+                        import traceback
+                        print(f"[THREAD ERROR] Exception inside generation thread: {thread_e}", flush=True)
+                        traceback.print_exc(file=sys.stdout)
+
+                thread = Thread(target=generate_with_lock)
+                thread.start()
+
+                request_id = f"chatcmpl-{int(time.time() * 1000)}"
+                created_time = int(time.time())
+
+                # Send initial role chunk
+                first_chunk = {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_time,
+                    "model": repo_id,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None
+                    }]
+                }
+                self.wfile.write(f"data: {json.dumps(first_chunk)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+                try:
+                    in_thinking = False
+                    stream_buffer = ""
+                    for new_text in streamer:
+                        print(f"[DEBUG_STREAMER] Raw yielded text: {repr(new_text)}", flush=True)
+                        if not new_text:
+                            continue
+                        stream_buffer += new_text
+                        while True:
+                            if not in_thinking:
+                                found_idx = -1
+                                tag_len = 0
+                                for tag in ["<thinking>", "<thought>", "<think>", "<reasoning>"]:
+                                    if tag in stream_buffer.lower():
+                                        idx = stream_buffer.lower().index(tag)
+                                        if found_idx == -1 or idx < found_idx:
+                                            found_idx = idx
+                                            tag_len = len(tag)
+                                if found_idx != -1:
+                                    to_send = stream_buffer[:found_idx]
+                                    if to_send:
+                                        chunk = {
+                                            "id": request_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created_time,
+                                            "model": repo_id,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"content": to_send},
+                                                "finish_reason": None
+                                            }]
+                                        }
+                                        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                                        self.wfile.flush()
+                                    in_thinking = True
+                                    stream_buffer = stream_buffer[found_idx + tag_len:]
+                                    continue
+                                
+                                has_partial = False
+                                for tag in ["<thinking>", "<thought>", "<think>", "<reasoning>"]:
+                                    for length in range(1, len(tag)):
+                                        prefix = tag[:length]
+                                        if stream_buffer.lower().endswith(prefix):
+                                            has_partial = True
+                                            break
+                                    if has_partial:
+                                        break
+                                if has_partial:
+                                    longest_prefix_len = 0
+                                    for tag in ["<thinking>", "<thought>", "<think>", "<reasoning>"]:
+                                        for length in range(1, len(tag)):
+                                            prefix = tag[:length]
+                                            if stream_buffer.lower().endswith(prefix) and length > longest_prefix_len:
+                                                longest_prefix_len = length
+                                    to_send = stream_buffer[:-longest_prefix_len]
+                                    if to_send:
+                                        chunk = {
+                                            "id": request_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created_time,
+                                            "model": repo_id,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"content": to_send},
+                                                "finish_reason": None
+                                            }]
+                                        }
+                                        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                                        self.wfile.flush()
+                                    stream_buffer = stream_buffer[-longest_prefix_len:]
+                                    break
+                                else:
+                                    chunk = {
+                                        "id": request_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created_time,
+                                        "model": repo_id,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {"content": stream_buffer},
+                                            "finish_reason": None
+                                        }]
+                                    }
+                                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                                    self.wfile.flush()
+                                    stream_buffer = ""
+                                    break
+                            else:
+                                found_idx = -1
+                                tag_len = 0
+                                for tag in ["</thinking>", "</thought>", "</think>", "</reasoning>"]:
+                                    if tag in stream_buffer.lower():
+                                        idx = stream_buffer.lower().index(tag)
+                                        if found_idx == -1 or idx < found_idx:
+                                            found_idx = idx
+                                            tag_len = len(tag)
+                                if found_idx != -1:
+                                    in_thinking = False
+                                    stream_buffer = stream_buffer[found_idx + tag_len:]
+                                    stream_buffer = stream_buffer.lstrip("\r\n ")
+                                    continue
+                                
+                                has_partial = False
+                                for tag in ["</thinking>", "</thought>", "</think>", "</reasoning>"]:
+                                    for length in range(1, len(tag)):
+                                        prefix = tag[:length]
+                                        if stream_buffer.lower().endswith(prefix):
+                                            has_partial = True
+                                            break
+                                    if has_partial:
+                                        break
+                                if has_partial:
+                                    longest_prefix_len = 0
+                                    for tag in ["</thinking>", "</thought>", "</think>", "</reasoning>"]:
+                                        for length in range(1, len(tag)):
+                                            prefix = tag[:length]
+                                            if stream_buffer.lower().endswith(prefix) and length > longest_prefix_len:
+                                                longest_prefix_len = length
+                                    stream_buffer = stream_buffer[-longest_prefix_len:]
+                                    break
+                                else:
+                                    stream_buffer = ""
+                                    break
+                    
+                    if stream_buffer and not in_thinking:
+                        chunk = {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_time,
+                            "model": repo_id,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": stream_buffer},
+                                "finish_reason": None
+                            }]
+                        }
+                        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+
+                    stop_chunk = {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_time,
+                        "model": repo_id,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }]
+                    }
+                    self.wfile.write(f"data: {json.dumps(stop_chunk)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except Exception as stream_err:
+                    print(f"Streaming write error: {stream_err}", flush=True)
+                return
+
+            with model_lock:
+                content = run_model(prompt, payload)
             self.send_json(200, response_payload(content, f"chatcmpl-{int(time.time() * 1000)}"))
         except Exception as error:
-            self.send_json(500, {"error": {"message": str(error)}})
+            try:
+                self.send_json(500, {"error": {"message": str(error)}})
+            except Exception:
+                pass
 
     def log_message(self, format, *args):
         print(format % args, flush=True)
@@ -3567,6 +3916,797 @@ async function enableOpenClaw(payload) {
   };
 }
 
+async function isCodexInstalled() {
+  try {
+    return await commandExists('codex');
+  } catch {
+    return false;
+  }
+}
+
+async function getCodexInstallCommands() {
+  const commands = [];
+  if (await commandExists('npm')) {
+    commands.push({
+      command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      args: ['install', '-g', 'codex-ai'],
+      label: 'npm global installer',
+    });
+  }
+  return commands;
+}
+
+async function ensureCodexInstalled() {
+  if (await isCodexInstalled()) {
+    return 'already-installed';
+  }
+
+  const installCommands = await getCodexInstallCommands();
+  if (installCommands.length === 0) {
+    throw new Error(`Codex was not found and no supported installer was available on this ${process.platform} system.`);
+  }
+
+  let lastError = null;
+  for (const installCommand of installCommands) {
+    try {
+      await runCommand(installCommand.command, installCommand.args, {
+        timeoutMs: 10 * 60 * 1000,
+        shell: process.platform === 'win32',
+      });
+
+      if (await isCodexInstalled()) {
+        return 'installed';
+      }
+    } catch (error) {
+      lastError = {
+        label: installCommand.label,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const detail = lastError ? ` Last attempt via ${lastError.label} failed: ${lastError.message}` : '';
+  throw new Error(`Codex was not found and automatic installation failed.${detail}`);
+}
+
+function createCodexApiKeyName() {
+  const hostname = (os.hostname() || 'device').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 16) || 'device';
+  return `Codex-${hostname}-${Date.now().toString(36)}`;
+}
+
+async function createCodexApiKey(payload) {
+  return createOneInferApiKey(payload, createCodexApiKeyName(), 'Codex');
+}
+
+let codexProxyServer = null;
+
+function stripThinking(text) {
+  if (typeof text !== 'string') return text;
+  let clean = text.replace(/<(thinking|thought|think|reasoning)>[\s\S]*?<\/\1>/gi, '');
+  clean = clean.replace(/<(thinking|thought|think|reasoning)>[\s\S]*/gi, '');
+  return clean.trim();
+}
+
+function mapCodexToOpenAi(codexBody) {
+  if (!codexBody || (!codexBody.input && !codexBody.instructions)) {
+    return codexBody;
+  }
+  
+  const messages = [];
+  
+  if (codexBody.instructions && typeof codexBody.instructions === 'string') {
+    messages.push({
+      role: 'system',
+      content: codexBody.instructions
+    });
+  }
+  
+  if (Array.isArray(codexBody.input)) {
+    for (const msg of codexBody.input) {
+      let role = msg.role || 'user';
+      if (role === 'developer') {
+        role = 'system';
+      }
+      
+      let textContent = '';
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part && part.type === 'input_text' && typeof part.text === 'string') {
+            textContent += part.text;
+          } else if (part && typeof part === 'string') {
+            textContent += part;
+          }
+        }
+      } else if (typeof msg.content === 'string') {
+        textContent = msg.content;
+      }
+      
+      messages.push({
+        role: role,
+        content: textContent
+      });
+    }
+  }
+  
+  const openAiBody = {
+    model: codexBody.model || 'local-model',
+    messages: messages,
+    stream: codexBody.stream !== false,
+  };
+  
+  if (typeof codexBody.temperature === 'number') openAiBody.temperature = codexBody.temperature;
+  if (typeof codexBody.max_tokens === 'number') openAiBody.max_tokens = codexBody.max_tokens;
+  if (typeof codexBody.top_p === 'number') openAiBody.top_p = codexBody.top_p;
+  
+  return openAiBody;
+}
+
+function startCodexProxy(localModelUrl) {
+  if (codexProxyServer) {
+    try {
+      codexProxyServer.close();
+    } catch (e) {}
+  }
+
+  let activeModelUrl = localModelUrl;
+  let hasSelfHealed = false;
+
+  function probeOllamaFallback() {
+    return new Promise((resolve) => {
+      try {
+        const reqProbe = http.get('http://127.0.0.1:11434/v1/models', (resProbe) => {
+          resolve(resProbe.statusCode === 200);
+        });
+        reqProbe.on('error', () => resolve(false));
+        reqProbe.setTimeout(1000, () => {
+          reqProbe.destroy();
+          resolve(false);
+        });
+      } catch (err) {
+        resolve(false);
+      }
+    });
+  }
+
+  async function checkActiveUrl() {
+    if (hasSelfHealed) {
+      return activeModelUrl;
+    }
+
+    const isPort8000 = activeModelUrl && activeModelUrl.includes(':8000');
+    if (isPort8000 || !activeModelUrl) {
+      const ollamaActive = await probeOllamaFallback();
+      if (ollamaActive) {
+        console.log(`[Proxy] Local model URL was '${activeModelUrl}', but Ollama is active on port 11434. Automatically healing and redirecting to Ollama 'http://127.0.0.1:11434/v1'.`);
+        activeModelUrl = 'http://127.0.0.1:11434/v1';
+        hasSelfHealed = true;
+
+        try {
+          const config = readOneInferConfig();
+          if (config && config.codexLocalModelUrl !== activeModelUrl) {
+            config.codexLocalModelUrl = activeModelUrl;
+            writeOneInferConfig(config);
+            console.log(`[Proxy] Persisted self-healed local model URL in config.`);
+          }
+        } catch (e) {
+          console.error(`[Proxy] Failed to persist self-healed URL: ${e.message}`);
+        }
+      }
+    }
+    return activeModelUrl;
+  }
+
+  // Run initial check immediately
+  checkActiveUrl().catch((err) => {
+    console.error(`[Proxy] Initial active URL check failed:`, err);
+  });
+
+  function getAvailableModels(url) {
+    return new Promise((resolve) => {
+      try {
+        const parsedTarget = new URL(url);
+        const modelsUrl = new URL('/v1/models', parsedTarget.origin);
+        const reqModels = http.get(modelsUrl, (resModels) => {
+          let data = '';
+          resModels.on('data', (chunk) => data += chunk);
+          resModels.on('end', () => {
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed && Array.isArray(parsed.data)) {
+                resolve(parsed.data.map(m => m.id));
+              } else {
+                resolve([]);
+              }
+            } catch (e) {
+              resolve([]);
+            }
+          });
+        });
+        reqModels.on('error', () => resolve([]));
+        reqModels.setTimeout(1000, () => {
+          reqModels.destroy();
+          resolve([]);
+        });
+      } catch (err) {
+        resolve([]);
+      }
+    });
+  }
+
+  codexProxyServer = http.createServer((req, res) => {
+    let clientAborted = false;
+    res.on('close', () => {
+      clientAborted = true;
+    });
+
+    function safeWrite(data) {
+      if (!clientAborted && !res.destroyed && !res.writableEnded) {
+        try {
+          res.write(data);
+        } catch (e) {
+          console.warn(`[Proxy] safeWrite failed: ${e.message}`);
+        }
+      }
+    }
+
+    function safeEnd(data) {
+      if (!clientAborted && !res.destroyed && !res.writableEnded) {
+        try {
+          res.end(data);
+        } catch (e) {
+          console.warn(`[Proxy] safeEnd failed: ${e.message}`);
+        }
+      }
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+
+    console.log(`[Proxy] Incoming request: ${req.method} ${req.url}`);
+
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
+    let targetPath = req.url;
+    if (targetPath.replace(/\/+$/, '') === '/v1/responses') {
+      targetPath = '/v1/chat/completions';
+    }
+
+    const headers = { ...req.headers };
+    delete headers.host;
+    delete headers.connection;
+    delete headers['accept-encoding'];
+
+    const isChatPath = targetPath.includes('/chat/completions') || targetPath.includes('/responses');
+    if (req.method === 'POST' && isChatPath) {
+      let bodyData = '';
+      req.on('data', (chunk) => {
+        bodyData += chunk.toString();
+      });
+
+      req.on('end', () => {
+        checkActiveUrl().then(async (resolvedUrl) => {
+          const parsedTarget = new URL(resolvedUrl);
+          const targetUrl = new URL(targetPath, parsedTarget.origin);
+          console.log(`[Proxy] Routing ${req.url} -> ${targetUrl.toString()}`);
+
+          let isStream = false;
+          let modifiedBody = bodyData;
+          const isResponsesPath = req.url.includes('/responses');
+
+          console.log(`[Proxy] POST body: ${bodyData}`);
+
+          try {
+            let parsedBody = JSON.parse(bodyData);
+            
+            // Map Codex specific responses request to OpenAI compatible messages request
+            if (parsedBody && (parsedBody.input || parsedBody.instructions)) {
+              console.log(`[Proxy] Mapping Codex responses format to OpenAI messages format...`);
+              parsedBody = mapCodexToOpenAi(parsedBody);
+            }
+
+            // Auto-rewrite model name if it doesn't match the local server's models
+            if (parsedBody && parsedBody.model) {
+              const availableModels = await getAvailableModels(resolvedUrl);
+              if (availableModels.length > 0 && !availableModels.includes(parsedBody.model)) {
+                console.log(`[Proxy] Model '${parsedBody.model}' not found in local server models list [${availableModels.join(', ')}]. Rewriting model to '${availableModels[0]}' for compatibility.`);
+                parsedBody.model = availableModels[0];
+              }
+            }
+            
+            if ((parsedBody && parsedBody.stream === true) || isResponsesPath) {
+              isStream = true;
+              if (parsedBody) {
+                parsedBody.stream = true;
+              }
+            }
+            
+            modifiedBody = JSON.stringify(parsedBody);
+            if (isStream) {
+              console.log(`[Proxy] Intercepted streaming request (path: ${targetPath}). Keeping stream: true for native local streaming.`);
+            }
+          } catch (e) {
+            console.warn(`[Proxy] Failed to parse/map body JSON: ${e.message}`);
+          }
+
+          headers['content-length'] = Buffer.byteLength(modifiedBody).toString();
+          delete headers['transfer-encoding'];
+          delete headers['content-encoding'];
+
+          const proxyReq = http.request(targetUrl, {
+            method: 'POST',
+            headers: headers,
+          }, (proxyRes) => {
+            console.log(`[Proxy] Forwarded server responded: ${proxyRes.statusCode}`);
+            if (isStream && proxyRes.statusCode === 200) {
+              const contentType = proxyRes.headers['content-type'] || '';
+              if (contentType.includes('event-stream')) {
+                if (isResponsesPath) {
+                  console.log(`[Proxy] Forwarded server responded with event-stream. Translating Chat Completions stream to Responses API stream...`);
+                  res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                  });
+
+                  const responseId = `resp_${Date.now().toString(36)}`;
+                  const itemId = `item_${Date.now().toString(36)}`;
+                  let fullText = '';
+
+                  safeWrite(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: responseId, status: 'in_progress' } })}\n\n`);
+                  safeWrite(`event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', response_id: responseId, output_index: 0, item: { id: itemId, object: 'realtime.item', type: 'message', status: 'in_progress', role: 'assistant', content: [] } })}\n\n`);
+                  safeWrite(`event: response.content_part.added\ndata: ${JSON.stringify({ type: 'response.content_part.added', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, part: { type: 'text', text: '' } })}\n\n`);
+
+                  let buffer = '';
+                  proxyRes.on('data', (chunk) => {
+                    buffer += chunk.toString();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep the last incomplete line in buffer
+
+                    for (const line of lines) {
+                      const trimmed = line.trim();
+                      if (!trimmed) continue;
+                      if (trimmed === 'data: [DONE]') {
+                        continue;
+                      }
+                      if (trimmed.startsWith('data: ')) {
+                        const dataStr = trimmed.slice(6);
+                        try {
+                          const parsed = JSON.parse(dataStr);
+                          if (parsed && parsed.choices && parsed.choices[0]) {
+                            const delta = parsed.choices[0].delta;
+                            const content = (delta && delta.content) || '';
+                            if (content) {
+                              fullText += content;
+                              safeWrite(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, delta: content })}\n\n`);
+                            }
+                          }
+                        } catch (err) {
+                          console.warn(`[Proxy] Failed to parse SSE chunk: ${err.message}`, dataStr);
+                        }
+                      }
+                    }
+                  });
+
+                  proxyRes.on('end', () => {
+                    if (buffer) {
+                      const trimmed = buffer.trim();
+                      if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+                        const dataStr = trimmed.slice(6);
+                        try {
+                          const parsed = JSON.parse(dataStr);
+                          if (parsed && parsed.choices && parsed.choices[0]) {
+                            const delta = parsed.choices[0].delta;
+                            const content = (delta && delta.content) || '';
+                            if (content) {
+                              fullText += content;
+                              safeWrite(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, delta: content })}\n\n`);
+                            }
+                          }
+                        } catch (e) {}
+                      }
+                    }
+
+                    safeWrite(`event: response.output_text.done\ndata: ${JSON.stringify({ type: 'response.output_text.done', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, text: fullText })}\n\n`);
+                    safeWrite(`event: response.content_part.done\ndata: ${JSON.stringify({ type: 'response.content_part.done', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, part: { type: 'text', text: fullText } })}\n\n`);
+                    safeWrite(`event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', response_id: responseId, output_index: 0, item: { id: itemId, object: 'realtime.item', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'text', text: fullText }] } })}\n\n`);
+                    safeWrite(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: responseId, status: 'completed', output: [{ id: itemId, object: 'realtime.item', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'text', text: fullText }] }] } })}\n\n`);
+                    safeEnd();
+                    console.log(`[Proxy] Responses API stream translation complete.`);
+                  });
+
+                  proxyRes.on('error', (err) => {
+                    console.error(`[Proxy] Stream translation error: ${err.message}`);
+                    safeWrite(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: responseId, status: 'failed', error: { message: err.message } } })}\n\n`);
+                    safeEnd();
+                  });
+
+                  return;
+                }
+
+                console.log(`[Proxy] Forwarded server responded with event-stream. Piping stream directly.`);
+                res.writeHead(200, proxyRes.headers);
+                proxyRes.pipe(res);
+                return;
+              }
+
+              console.log(`[Proxy] Forwarded server responded with non-stream. Buffering and emulating stream...`);
+              let resBody = '';
+              proxyRes.on('data', (chunk) => {
+                resBody += chunk.toString();
+              });
+
+              proxyRes.on('end', () => {
+                console.log(`[Proxy] Forwarded server full response: ${resBody}`);
+                try {
+                  const parsedRes = JSON.parse(resBody);
+                  if (parsedRes && parsedRes.choices && parsedRes.choices[0]) {
+                    const rawContent = (parsedRes.choices[0].message && parsedRes.choices[0].message.content) || 
+                                       (parsedRes.choices[0].delta && parsedRes.choices[0].delta.content) || 
+                                       '';
+                    const content = stripThinking(rawContent);
+                    const id = parsedRes.id || `chatcmpl-${Date.now()}`;
+                    const created = parsedRes.created || Math.floor(Date.now() / 1000);
+                    const model = parsedRes.model || "local-model";
+
+                    if (isResponsesPath) {
+                      console.log(`[Proxy] Extracted content length: ${content.length}. Emulating Responses API SSE stream...`);
+                      res.writeHead(200, {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                      });
+
+                      const responseId = `resp_${Date.now().toString(36)}`;
+                      const itemId = `item_${Date.now().toString(36)}`;
+
+                      safeWrite(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: responseId, status: 'in_progress' } })}\n\n`);
+                      safeWrite(`event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', response_id: responseId, output_index: 0, item: { id: itemId, object: 'realtime.item', type: 'message', status: 'in_progress', role: 'assistant', content: [] } })}\n\n`);
+                      safeWrite(`event: response.content_part.added\ndata: ${JSON.stringify({ type: 'response.content_part.added', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, part: { type: 'text', text: '' } })}\n\n`);
+
+                      safeWrite(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, delta: content })}\n\n`);
+
+                      safeWrite(`event: response.output_text.done\ndata: ${JSON.stringify({ type: 'response.output_text.done', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, text: content })}\n\n`);
+                      safeWrite(`event: response.content_part.done\ndata: ${JSON.stringify({ type: 'response.content_part.done', response_id: responseId, item_id: itemId, output_index: 0, content_index: 0, part: { type: 'text', text: content } })}\n\n`);
+                      safeWrite(`event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', response_id: responseId, output_index: 0, item: { id: itemId, object: 'realtime.item', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'text', text: content }] } })}\n\n`);
+                      safeWrite(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: responseId, status: 'completed', output: [{ id: itemId, object: 'realtime.item', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'text', text: content }] }] } })}\n\n`);
+                      
+                      safeEnd();
+                      console.log(`[Proxy] Responses API SSE stream emulated successfully.`);
+                      return;
+                    }
+
+                    console.log(`[Proxy] Extracted content length: ${content.length}. Emulating SSE stream...`);
+
+                    res.writeHead(200, {
+                      'Content-Type': 'text/event-stream',
+                      'Cache-Control': 'no-cache',
+                      'Connection': 'keep-alive',
+                    });
+
+                    res.write(`data: ${JSON.stringify({
+                      id,
+                      object: 'chat.completion.chunk',
+                      created,
+                      model,
+                      choices: [{
+                        index: 0,
+                        delta: { role: 'assistant', content: '' },
+                        finish_reason: null
+                      }]
+                    })}\n\n`);
+
+                    const pieces = [];
+                    let i = 0;
+                    while (i < content.length) {
+                      pieces.push(content.slice(i, i + 6));
+                      i += 6;
+                    }
+
+                    let pieceIndex = 0;
+                    function sendNext() {
+                      if (pieceIndex < pieces.length) {
+                        res.write(`data: ${JSON.stringify({
+                          id,
+                          object: 'chat.completion.chunk',
+                          created,
+                          model,
+                          choices: [{
+                            index: 0,
+                            delta: { content: pieces[pieceIndex] },
+                            finish_reason: null
+                          }]
+                        })}\n\n`);
+                        pieceIndex++;
+                        setTimeout(sendNext, 8);
+                      } else {
+                        res.write(`data: ${JSON.stringify({
+                          id,
+                          object: 'chat.completion.chunk',
+                          created,
+                          model,
+                          choices: [{
+                            index: 0,
+                            delta: {},
+                            finish_reason: 'stop'
+                          }]
+                        })}\n\n`);
+                        res.write('data: [DONE]\n\n');
+                        res.end();
+                        console.log(`[Proxy] SSE stream emulated successfully.`);
+                      }
+                    }
+                    setTimeout(sendNext, 8);
+                  } else {
+                    console.warn(`[Proxy] Unexpected format from Forwarded server, passing through...`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(resBody);
+                  }
+                } catch (e) {
+                  console.error(`[Proxy] JSON parsing error in forwarded response: ${e.message}`);
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(resBody);
+                }
+              });
+            } else {
+              console.log(`[Proxy] Streaming is false or status not 200, piping response directly.`);
+              res.writeHead(proxyRes.statusCode, proxyRes.headers);
+              proxyRes.pipe(res);
+            }
+          });
+
+          proxyReq.on('error', (err) => {
+            console.error('[Proxy] request forward error:', err);
+            res.statusCode = 502;
+            res.end(JSON.stringify({ error: { message: `Codex Proxy Error: ${err.message}` } }));
+          });
+
+          proxyReq.write(modifiedBody);
+          proxyReq.end();
+        });
+      });
+
+      req.on('error', (err) => {
+        console.error('[Proxy] Incoming Request Error:', err);
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: { message: `Incoming Request Error: ${err.message}` } }));
+      });
+    } else {
+      console.log(`[Proxy] Non-chat request, passing through directly.`);
+      req.pause();
+      checkActiveUrl().then((resolvedUrl) => {
+        const parsedTarget = new URL(resolvedUrl);
+        const targetUrl = new URL(targetPath, parsedTarget.origin);
+        console.log(`[Proxy] Routing ${req.url} -> ${targetUrl.toString()}`);
+
+        const proxyReq = http.request(targetUrl, {
+          method: req.method,
+          headers: headers,
+        }, (proxyRes) => {
+          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          proxyRes.pipe(res);
+        });
+
+        proxyReq.on('error', (err) => {
+          console.error('[Proxy] General Error:', err);
+          res.statusCode = 502;
+          res.end(JSON.stringify({ error: { message: `Codex Proxy Error: ${err.message}` } }));
+        });
+
+        req.resume();
+        req.pipe(proxyReq);
+      });
+    }
+  });
+
+  const proxyPort = 8010;
+  codexProxyServer.listen(proxyPort, '127.0.0.1');
+  codexProxyServer.unref();
+
+  return `http://127.0.0.1:${proxyPort}/v1`;
+}
+
+async function enableCodex(payload) {
+  const codexInstallState = await ensureCodexInstalled();
+
+  if (payload?.provider === 'tool') {
+    const configDir = path.join(os.homedir(), '.config', 'codex');
+    const configFilePath = path.join(configDir, 'codex.json');
+    const codexConfig = {};
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(configFilePath, JSON.stringify(codexConfig, null, 2), 'utf8');
+
+    try {
+      const codexDir = path.join(os.homedir(), '.codex');
+      const codexTomlPath = path.join(codexDir, 'config.toml');
+
+      let existingTomlContent = '';
+      if (fs.existsSync(codexTomlPath)) {
+        existingTomlContent = fs.readFileSync(codexTomlPath, 'utf8');
+      }
+
+      const lines = existingTomlContent.split(/\r?\n/);
+      const cleanLines = [];
+      let inOneInferBlock = false;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('[model_providers.oneinfer')) {
+          inOneInferBlock = true;
+          continue;
+        }
+        if (inOneInferBlock) {
+          if (trimmed.startsWith('[') && !trimmed.startsWith('[model_providers.oneinfer')) {
+            inOneInferBlock = false;
+          } else {
+            continue;
+          }
+        }
+        if (/^(model|model_provider)\s*=/i.test(trimmed)) {
+          continue;
+        }
+        cleanLines.push(line);
+      }
+
+      let newTomlContent = cleanLines.join('\n').trim() + '\n';
+
+      fs.mkdirSync(codexDir, { recursive: true });
+      fs.writeFileSync(codexTomlPath, newTomlContent, 'utf8');
+    } catch (err) {
+      console.error('Failed to write default ~/.codex/config.toml:', err);
+    }
+
+    return {
+      alreadyConfigured: false,
+      apiKeyName: null,
+      codexInstallState,
+      configPath: configFilePath,
+      model: 'Default Selection',
+      providerId: 'Default Selection',
+    };
+  }
+
+  const config = readOneInferConfig();
+  const savedApiKey = toTrimmedString(config.codexApiKey);
+  const savedApiKeyName = toTrimmedString(config.codexApiKeyName);
+
+  let baseUrlToUse = normalizeApiBaseUrl(payload?.apiBaseUrl);
+  const isLocalUrl = typeof baseUrlToUse === 'string' && (
+    baseUrlToUse.includes('127.0.0.1') ||
+    baseUrlToUse.includes('localhost') ||
+    baseUrlToUse.includes('0.0.0.0')
+  );
+
+  let keyToUse = null;
+  let keyNameToUse = savedApiKeyName;
+  let reusedExistingKey = false;
+
+  if (isLocalUrl) {
+    keyToUse = savedApiKey || 'local';
+    keyNameToUse = savedApiKeyName || 'local';
+    reusedExistingKey = true;
+  } else {
+    const apiKeyFetchResult = await fetchApiKeysWithMeta(payload);
+    
+    if (savedApiKey && savedApiKeyName) {
+      const keyExists = apiKeyFetchResult.apiKeys.some((k) =>
+        k.api_key_name === savedApiKeyName || k.id === savedApiKeyName || k.name === savedApiKeyName
+      );
+
+      if (keyExists || !apiKeyFetchResult.reachable) {
+        keyToUse = savedApiKey;
+        reusedExistingKey = true;
+      }
+    }
+
+    if (!keyToUse) {
+      const { apiKey, apiKeyName, apiBaseUrl } = await createCodexApiKey(payload);
+      keyToUse = apiKey;
+      keyNameToUse = apiKeyName;
+      baseUrlToUse = apiBaseUrl;
+
+      writeOneInferConfig({
+        ...config,
+        codexApiKey: apiKey,
+        codexApiKeyName: apiKeyName,
+        codexApiBaseUrl: apiBaseUrl,
+      });
+    }
+  }
+
+  let finalBaseUrl = baseUrlToUse;
+  if (isLocalUrl) {
+    try {
+      finalBaseUrl = startCodexProxy(baseUrlToUse);
+      writeOneInferConfig({
+        ...config,
+        codexLocalModelUrl: baseUrlToUse,
+        codexApiBaseUrl: finalBaseUrl,
+      });
+    } catch (err) {
+      console.error('Failed to start Codex Proxy:', err);
+    }
+  }
+
+  const configDir = path.join(os.homedir(), '.config', 'codex');
+  const configFilePath = path.join(configDir, 'codex.json');
+  const modelId = toTrimmedString(payload?.modelId) || 'MiniMax-M2.7';
+
+  const codexConfig = {
+    baseUrl: finalBaseUrl,
+    apiKey: keyToUse,
+    model: isLocalUrl ? modelId : `oneinfer/${modelId}`
+  };
+
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(configFilePath, JSON.stringify(codexConfig, null, 2), 'utf8');
+
+  // Also write to the official ~/.codex/config.toml
+  try {
+    const codexDir = path.join(os.homedir(), '.codex');
+    const codexTomlPath = path.join(codexDir, 'config.toml');
+
+    let existingTomlContent = '';
+    if (fs.existsSync(codexTomlPath)) {
+      existingTomlContent = fs.readFileSync(codexTomlPath, 'utf8');
+    }
+
+    const lines = existingTomlContent.split(/\r?\n/);
+    const cleanLines = [];
+    let inOneInferBlock = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('[model_providers.oneinfer')) {
+        inOneInferBlock = true;
+        continue;
+      }
+      if (inOneInferBlock) {
+        if (trimmed.startsWith('[') && !trimmed.startsWith('[model_providers.oneinfer')) {
+          inOneInferBlock = false;
+        } else {
+          continue;
+        }
+      }
+      if (/^(model|model_provider)\s*=/i.test(trimmed)) {
+        continue;
+      }
+      cleanLines.push(line);
+    }
+
+    const modelVal = isLocalUrl ? modelId : `oneinfer/${modelId}`;
+    const wireApiVal = 'responses';
+
+    let newTomlContent = `model = "${modelVal}"\nmodel_provider = "oneinfer"\n\n`;
+    newTomlContent += cleanLines.join('\n').trim() + '\n\n';
+    newTomlContent += `[model_providers.oneinfer]\n`;
+    newTomlContent += `name = "OneInfer"\n`;
+    newTomlContent += `base_url = "${finalBaseUrl}"\n`;
+    newTomlContent += `wire_api = "${wireApiVal}"\n\n`;
+    newTomlContent += `[model_providers.oneinfer.http_headers]\n`;
+    newTomlContent += `Authorization = "Bearer ${keyToUse || 'local'}"\n`;
+
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(codexTomlPath, newTomlContent.trim() + '\n', 'utf8');
+  } catch (err) {
+    console.error('Failed to write ~/.codex/config.toml:', err);
+  }
+
+  return {
+    alreadyConfigured: false,
+    apiKeyName: keyNameToUse,
+    codexInstallState,
+    configPath: configFilePath,
+    model: isLocalUrl ? modelId : `oneinfer/${modelId}`,
+    providerId: 'oneinfer',
+    ...(reusedExistingKey ? { reusedExistingKey: true } : {}),
+  };
+}
+
 function getOrCreateMachineId() {
   const filePath = getMachineIdFilePath();
 
@@ -4180,6 +5320,17 @@ app.whenReady().then(() => {
     configureAutoUpdater();
   }
 
+  // Auto-start Codex Proxy if a local model was previously configured
+  try {
+    const config = readOneInferConfig();
+    const localModelUrl = config.codexLocalModelUrl || '';
+    if (localModelUrl) {
+      startCodexProxy(localModelUrl);
+    }
+  } catch (err) {
+    console.error('Failed to auto-start Codex Proxy on boot:', err);
+  }
+
   ipcMain.handle('app:get-state', () => {
     const state = readState();
     triggerMachineSyncFromState(state);
@@ -4225,8 +5376,21 @@ app.whenReady().then(() => {
   ipcMain.handle('app:enable-opencode', async (_event, payload) => enableOpenCode(payload));
   ipcMain.handle('app:enable-kilocode', async (_event, payload) => enableKiloCode(payload));
   ipcMain.handle('app:enable-openclaw', async (_event, payload) => enableOpenClaw(payload));
+  ipcMain.handle('app:enable-codex', async (_event, payload) => enableCodex(payload));
   ipcMain.handle('app:check-library', async (_event, name) => isLibraryInstalled(name));
   ipcMain.handle('app:install-library', async (_event, name) => installLibrary(name));
+  ipcMain.handle('app:get-library-error', async (_event, name) => {
+    name = normalizeServingLibraryName(name);
+    return lastLibraryErrors[name] || null;
+  });
+  ipcMain.handle('app:install-vc-redist', async () => {
+    if (process.platform !== 'win32') {
+      throw new Error('Visual C++ Redistributable is only required on Windows systems.');
+    }
+    const psScript = "Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile 'vc_redist.x64.exe'; Start-Process 'vc_redist.x64.exe' -ArgumentList '/passive /norestart' -Wait; Remove-Item 'vc_redist.x64.exe'";
+    await runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psScript], { timeoutMs: 10 * 60 * 1000 });
+    return 'installed';
+  });
   ipcMain.handle('app:deploy-hf-model', async (_event, payload) => deployHfModel(payload));
   ipcMain.handle('app:start-local-route', async (_event, payload) => startLocalRoute(payload));
   ipcMain.handle('app:stop-local-route', async (_event, payload) => stopLocalRoute(payload));
