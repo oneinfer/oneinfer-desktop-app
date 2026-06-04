@@ -143,3 +143,34 @@ export function OpenClawSetupPanel(props: {
     </section>
   );
 }
+
+export function CodexSetupPanel(props: {
+  busy: string | null;
+  onEnable: () => void;
+}) {
+  const busyConfig = props.busy === 'configure-codex';
+
+  return (
+    <section className="content-panel glass-panel">
+      <div className="panel-header">
+        <div className="panel-title">
+          <Blocks size={18} />
+          <h3>Codex Setup</h3>
+        </div>
+      </div>
+
+      <div className="settings-list">
+        <button className="settings-list-item" type="button" onClick={props.onEnable} disabled={busyConfig}>
+          <span className="settings-list-icon">
+            {busyConfig ? <LoaderCircle className="spin" size={16} /> : <Blocks size={16} />}
+          </span>
+          <span className="settings-list-copy">
+            <strong>Enable Codex Globally</strong>
+            <span>Install Codex if needed and write a OneInfer-backed user config.</span>
+          </span>
+          <span className="settings-list-status">Enable</span>
+        </button>
+      </div>
+    </section>
+  );
+}

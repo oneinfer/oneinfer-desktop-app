@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Blocks, Bot, LoaderCircle, Orbit, Server, Sparkles, Zap } from 'lucide-react';
+import { Blocks, LoaderCircle, Orbit, Server, Zap } from 'lucide-react';
 
 import { EmptyState } from '../components/Common';
 import { HardwareWidget } from '../components/HardwareWidget';
-import { OpenCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel } from '../components/SetupPanels';
+import { OpenCodeSetupPanel, KiloCodeSetupPanel, OpenClawSetupPanel, CodexSetupPanel } from '../components/SetupPanels';
 import type { ActiveDeveloperPlanItem, DashboardState, DeveloperPlanItem, EndpointItem, LocalModelDeployment, LocalModelMetrics, SectionKey, ServingLibrary } from '../types';
 import { formatValue } from '../utils/format';
 
@@ -11,27 +11,29 @@ export function OverviewPage(props: {
   dashboard: DashboardState;
   busy: string | null;
   infraTab: 'self-hosted' | 'cloud';
-  overviewTab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw';
+  overviewTab: 'opencode' | 'kilocode' | 'openclaw' | 'codex';
   claudeCodeProvider: 'oneinfer' | 'anthropic';
   localDeployments: LocalModelDeployment[];
   localModelMetrics: Record<string, LocalModelMetrics>;
   onInfraTabChange: (tab: 'self-hosted' | 'cloud') => void;
-  onOverviewTabChange: (tab: 'claude-code' | 'opencode' | 'kilocode' | 'openclaw') => void;
+  onOverviewTabChange: (tab: 'opencode' | 'kilocode' | 'openclaw' | 'codex') => void;
   onClaudeProviderChange: (provider: 'oneinfer' | 'anthropic') => void;
   onEnableOpenCode: () => void | Promise<void>;
   onEnableKiloCode: () => void | Promise<void>;
   onEnableOpenClaw: () => void | Promise<void>;
+  onEnableCodex: (provider?: 'oneinfer' | 'tool') => void | Promise<void>;
   enabledTools: Record<string, boolean>;
   toolProviders: Record<string, 'oneinfer' | 'tool'>;
   onToolProviderChange: (tool: string, provider: 'oneinfer' | 'tool') => void;
   onSectionChange: (section: SectionKey) => void;
   onOpenRoute: (routeId: string) => void;
+  selectedModelKey: string;
+  onSelectedModelChange: (key: string) => void;
 }) {
-  const isClaudeOneInfer = props.claudeCodeProvider === 'oneinfer';
-  const isClaudeBusy = props.busy === 'configure-claude-code';
   const isOpenCodeBusy = props.busy === 'configure-opencode';
   const isKiloCodeBusy = props.busy === 'configure-kilocode';
   const isOpenClawBusy = props.busy === 'configure-openclaw';
+  const isCodexBusy = props.busy === 'configure-codex';
   const localEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'local' && !isRouterEndpoint(endpoint));
   const cloudEndpoints = props.dashboard.inferenceEndpoints.filter((endpoint) => getEndpointSource(endpoint) === 'cloud' && !isRouterEndpoint(endpoint));
   const validLocalDeployments = props.localDeployments.filter((deployment) => isVisibleLocalDeployment(deployment, props.localModelMetrics));
@@ -122,42 +124,56 @@ export function OverviewPage(props: {
 
         <main className="glass-panel overview-feature-card" style={{ padding: '20px' }}>
           <h3 className="overview-settings-heading">AI Coding Tool</h3>
+          <p className="overview-settings-description">
+            OneInfer connects this tool to your locally deployed model. The tool provider keeps its default coding-agent setup.
+          </p>
+          <div className="overview-model-select-container" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+            <span style={{ fontSize: '0.74rem', color: 'var(--muted)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Current Model</span>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              border: '1px solid rgba(144, 197, 255, 0.14)',
+              borderRadius: '6px',
+              background: 'rgba(8, 14, 22, 0.62)',
+              padding: '2px 6px',
+            }}>
+              <select
+                id="current-model-select"
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  outline: 'none',
+                  cursor: visibleLocalDeployments.length === 0 ? 'not-allowed' : 'pointer',
+                  minWidth: '160px',
+                  maxWidth: '240px',
+                  height: '24px',
+                  padding: '0 4px',
+                }}
+                value={props.selectedModelKey}
+                onChange={(e) => props.onSelectedModelChange(e.target.value)}
+                disabled={visibleLocalDeployments.length === 0}
+              >
+                {visibleLocalDeployments.length === 0 ? (
+                  <option value="" style={{ background: '#0a1017', color: 'var(--muted)' }}>No model available</option>
+                ) : (
+                  visibleLocalDeployments.map((d) => {
+                    const key = `${d.endpointUrl}||${d.modelId}`;
+                    const displayName = d.modelId.startsWith('hf.co/') ? d.modelId.slice(6) : d.modelId;
+                    return (
+                      <option key={key} value={key} style={{ background: '#0a1017', color: 'var(--text)' }}>
+                        {displayName}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+            </div>
+          </div>
           <div className="card-stack">
             <div className="settings-list overview-tab-list">
-              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'claude-code' ? 'active' : ''}`}>
-                <span className="settings-list-icon"><Bot size={16} /></span>
-                <button className="settings-list-copy" onClick={() => props.onOverviewTabChange('claude-code')} type="button">
-                  <strong>Claude Code</strong>
-                  <span>Choose the provider Claude Code should use.</span>
-                </button>
-                <div className="settings-list-actions">
-                  <button
-                    className={`settings-mini-action${isClaudeOneInfer ? ' active' : ''}`}
-                    disabled={isClaudeBusy}
-                    onClick={() => {
-                      props.onOverviewTabChange('claude-code');
-                      props.onClaudeProviderChange('oneinfer');
-                    }}
-                    type="button"
-                  >
-                    {isClaudeBusy && isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Orbit size={14} />}
-                    OneInfer
-                  </button>
-                  <button
-                    className={`settings-mini-action anthropic${!isClaudeOneInfer ? ' active' : ''}`}
-                    disabled={isClaudeBusy}
-                    onClick={() => {
-                      props.onOverviewTabChange('claude-code');
-                      props.onClaudeProviderChange('anthropic');
-                    }}
-                    type="button"
-                  >
-                    {isClaudeBusy && !isClaudeOneInfer ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                    Anthropic
-                  </button>
-                </div>
-              </div>
-
               <div className={`settings-list-item settings-list-card ${props.overviewTab === 'opencode' ? 'active' : ''}`}>
                 <span className="settings-list-icon"><Blocks size={16} /></span>
                 <button
@@ -186,6 +202,7 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('opencode');
                     props.onEnableOpenCode();
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
 
@@ -217,6 +234,7 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('kilocode');
                     props.onEnableKiloCode();
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
 
@@ -248,6 +266,39 @@ export function OverviewPage(props: {
                     props.onOverviewTabChange('openclaw');
                     props.onEnableOpenClaw();
                   }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
+                />
+              </div>
+
+              <div className={`settings-list-item settings-list-card ${props.overviewTab === 'codex' ? 'active' : ''}`}>
+                <span className="settings-list-icon"><Blocks size={16} /></span>
+                <button
+                  className="settings-list-copy"
+                  onClick={() => {
+                    props.onOverviewTabChange('codex');
+                    props.onEnableCodex(props.toolProviders.codex || 'oneinfer');
+                  }}
+                  type="button"
+                >
+                  <strong>Codex</strong>
+                  <span>Install Codex if needed and write a OneInfer-backed user config.</span>
+                </button>
+                <OneInferIntegrationAction
+                  busy={isCodexBusy}
+                  label="Codex"
+                  toolLabel="Codex"
+                  isActive={props.overviewTab === 'codex'}
+                  provider={props.toolProviders.codex || 'oneinfer'}
+                  onProviderChange={(p) => props.onToolProviderChange('codex', p)}
+                  onClick={() => {
+                    props.onOverviewTabChange('codex');
+                    props.onEnableCodex('oneinfer');
+                  }}
+                  onToolClick={() => {
+                    props.onOverviewTabChange('codex');
+                    props.onEnableCodex('tool');
+                  }}
+                  oneInferDisabled={visibleLocalDeployments.length === 0}
                 />
               </div>
             </div>
@@ -288,6 +339,7 @@ function OneInferIntegrationAction(props: {
   onProviderChange: (p: 'oneinfer' | 'tool') => void;
   onClick: () => void | Promise<void>;
   onToolClick: () => void | Promise<void>;
+  oneInferDisabled?: boolean;
 }) {
   const [clickedBtn, setClickedBtn] = useState<'oneinfer' | 'tool' | null>(null);
 
@@ -322,7 +374,7 @@ function OneInferIntegrationAction(props: {
       <button
         aria-label={`Enable ${props.label} with OneInfer`}
         className={`settings-mini-action${isLeftActive ? ' active' : ''}`}
-        disabled={props.busy}
+        disabled={props.busy || props.oneInferDisabled}
         onClick={handleLeftClick}
         type="button"
       >
