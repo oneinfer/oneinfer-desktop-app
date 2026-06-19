@@ -1,8 +1,8 @@
-# OneInfer Desktop
+# OneInfer Edge
 
-OneInfer Desktop is an Electron app for managing OneInfer developer workflows from one place: account access, GPU instances, API keys, model routing, local self-hosting, and coding-tool setup.
+OneInfer Edge is an Electron app for managing OneInfer developer workflows from one place: account access, GPU instances, API keys, model routing, local self-hosting, and coding-tool setup.
 
-OneInfer Edge provides one focused workspace for AI infrastructure. It helps developers manage GPU instances, developer keys, credits, models, and routing from a desktop edge app.
+OneInfer Edge provides one focused workspace for AI infrastructure. It helps developers manage GPU instances, developer keys, credits, models, and routing from a Edge edge app.
 
 ## What It Does
 
@@ -10,7 +10,7 @@ OneInfer Edge provides one focused workspace for AI infrastructure. It helps dev
 - Manage credits, plans, API keys, routes, and GPU instances
 - Deploy local models and expose local inference endpoints
 - Build routes across local and cloud targets
-- Configure desktop coding tools to use OneInfer models
+- Configure Edge coding tools to use OneInfer models
 
 ## Product Areas
 
@@ -23,7 +23,7 @@ OneInfer Edge provides one focused workspace for AI infrastructure. It helps dev
 
 ## Authentication
 
-The desktop app uses a developer login flow:
+The Edge app uses a developer login flow:
 
 1. Enter the developer email address.
 2. Request an OTP from OneInfer.
@@ -53,7 +53,7 @@ Useful scripts:
 npm run lint          # TypeScript checks
 npm run build         # Generate assets and build renderer
 npm run preview       # Preview Vite build
-npm run dist          # Build desktop installer/package
+npm run dist          # Build Edge installer/package
 npm run dist:win      # Windows package
 npm run dist:linux    # Linux AppImage
 npm run dist:mac      # macOS DMG
@@ -79,8 +79,8 @@ Example `.env`:
 
 ```bash
 VITE_ONEINFER_API_BASE_URL=https://api.oneinfer.ai/v1
-ONEINFER_GOOGLE_DESKTOP_CLIENT_ID=your-google-desktop-client-id
-ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET=your-google-desktop-client-secret
+ONEINFER_GOOGLE_Edge_CLIENT_ID=your-google-Edge-client-id
+ONEINFER_GOOGLE_Edge_CLIENT_SECRET=your-google-Edge-client-secret
 ```
 
 ## Structure
@@ -89,7 +89,7 @@ ONEINFER_GOOGLE_DESKTOP_CLIENT_SECRET=your-google-desktop-client-secret
 electron/              Electron main and preload processes
 src/                   React app, API client, pages, components, helpers, styles
 scripts/               Asset generation and packaging helpers
-.github/workflows/     Desktop release workflow
+.github/workflows/     Edge release workflow
 developer_*.py         API helper scripts
 get_gpus.py            GPU/provider helper script
 package.json           scripts, dependencies, Electron Builder config
