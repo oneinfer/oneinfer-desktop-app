@@ -21,6 +21,8 @@ OneInfer Edge provides one focused workspace for AI infrastructure. It helps dev
 - Training & Finetuning: prepare datasets and track model improvement runs.
 - Kernel Optimizations: tune inference paths for better hardware efficiency.
 
+For more features check with our wwebsite - https://oneinfer.ai
+
 ## Authentication
 
 The desktop app uses a developer login flow:
