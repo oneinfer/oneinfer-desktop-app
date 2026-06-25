@@ -1,9 +1,9 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -11,6 +11,7 @@ const si = require('systeminformation');
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const appId = 'com.oneinfer.desktop';
+let autoUpdater = null;
 let mainWindow = null;
 let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
@@ -133,8 +134,35 @@ function sendDeploymentProgress(progress) {
   });
 }
 
+function sendQuantizationProgress(progress) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('app:quantization-progress', {
+    level: 'info',
+    timestamp: Date.now(),
+    ...progress,
+  });
+}
+
 function configureAutoUpdater() {
   if (updaterConfigured) {
+    return;
+  }
+
+  if (isDev) {
+    return;
+  }
+
+  try {
+    autoUpdater = autoUpdater || require('electron-updater').autoUpdater;
+  } catch (error) {
+    console.error('[updater] failed to load auto-updater', error);
+    return;
+  }
+
+  if (!autoUpdater) {
     return;
   }
 
@@ -410,6 +438,9 @@ function removeLegacyKiloCodeConfig(configFilePath, legacyConfigFilePath) {
 
 function runCommand(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
+    const maxOutputBuffer = Number.isFinite(options.maxOutputBuffer)
+      ? options.maxOutputBuffer
+      : 2 * 1024 * 1024;
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -428,14 +459,14 @@ function runCommand(command, args = [], options = {}) {
 
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
-      stdout += text;
+      stdout = appendLimitedOutput(stdout, text, maxOutputBuffer);
       if (options.onStdout) {
         options.onStdout(text);
       }
     });
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
-      stderr += text;
+      stderr = appendLimitedOutput(stderr, text, maxOutputBuffer);
       if (options.onStderr) {
         options.onStderr(text);
       }
@@ -456,6 +487,24 @@ function runCommand(command, args = [], options = {}) {
       reject(error);
     });
   });
+}
+
+function appendLimitedOutput(current, next, maxLength) {
+  if (maxLength <= 0) {
+    return '';
+  }
+
+  const combinedLength = current.length + next.length;
+  if (combinedLength <= maxLength) {
+    return current + next;
+  }
+
+  const overflow = combinedLength - maxLength;
+  if (overflow >= current.length) {
+    return next.slice(-maxLength);
+  }
+
+  return current.slice(overflow) + next;
 }
 
 function stripAnsi(value) {
@@ -484,8 +533,36 @@ async function commandExists(command) {
   }
 }
 
+async function getFirstAvailableCommand(candidates) {
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+
+    try {
+      if (candidate && await commandExists(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  return null;
+}
+
 function isMacOS() {
   return process.platform === 'darwin' || os.type() === 'Darwin';
+}
+
+async function getHomebrewCommand() {
+  const candidates = [
+    '/opt/homebrew/bin/brew',
+    '/usr/local/bin/brew',
+    'brew',
+  ];
+
+  return getFirstAvailableCommand(candidates);
 }
 
 function getMacOllamaCommandPath() {
@@ -590,6 +667,24 @@ async function getPythonPipCommand() {
   }
 
   return null;
+}
+
+async function getPipCommandForPython(python) {
+  if (!python?.command) {
+    return getPythonPipCommand();
+  }
+
+  const candidate = {
+    command: python.command,
+    args: [...(python.prefixArgs || []), '-m', 'pip'],
+  };
+
+  try {
+    await runCommand(candidate.command, [...candidate.args, '--version'], { timeoutMs: 10000 });
+    return candidate;
+  } catch {
+    return getPythonPipCommand();
+  }
 }
 
 async function isWindowsManagedVllmInstalled() {
@@ -1034,10 +1129,10 @@ async function isLibraryInstalled(name) {
     }
 
     if (name === 'llama_cpp') {
+      if (await getLlamaToolCommand('quantize')) return true;
       if (await commandExists('llama-server')) return true;
       if (await commandExists('llama-cli')) return true;
-      const pyCmd = await getPythonCommandForModule('llama_cpp');
-      return !!pyCmd;
+      return false;
     }
 
     if (name === 'transformers') {
@@ -1060,6 +1155,26 @@ async function isLibraryInstalled(name) {
 
 async function installLibrary(name) {
   name = normalizeServingLibraryName(name);
+  if (name === 'llama_cpp') {
+    if (await getLlamaToolCommand('quantize')) {
+      return 'installed';
+    }
+
+    if (!isMacOS()) {
+      throw new Error('Install llama.cpp command-line tools to enable quantization. OneInfer Edge needs llama-quantize, llama-cli, and llama-perplexity on PATH.');
+    }
+
+    const brewCommand = await getHomebrewCommand();
+    if (brewCommand) {
+      await runCommand(brewCommand, ['install', 'llama.cpp'], { timeoutMs: 20 * 60 * 1000 });
+      if (await getLlamaToolCommand('quantize')) {
+        return 'installed';
+      }
+    }
+
+    throw new Error('Install llama.cpp command-line tools to enable quantization. On macOS, run "brew install llama.cpp", then restart OneInfer Edge.');
+  }
+
   if (name === 'vllm') {
     if (process.platform === 'win32') {
       return await installWindowsManagedVllm();
@@ -1135,7 +1250,6 @@ async function installLibrary(name) {
   const pipInstallPackages = {
     sglang: ['sglang'],
     tensorrt: ['tensorrt-llm'],
-    llama_cpp: ['llama-cpp-python'],
     pytorch: ['torch'],
     transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'],
     dynamo: ['ai-dynamo'],
@@ -1483,6 +1597,7 @@ function compactDeploymentLogTail(logTail, maxLines = 18) {
 }
 
 const PYTHON_CHECK_TIMEOUT_MS = 45000;
+const TRANSFORMERS_PREFLIGHT_TIMEOUT_MS = 2 * 60 * 1000;
 
 async function getPythonCommandForModule(moduleName, importScript = null) {
   const script = importScript || `import ${moduleName}`;
@@ -1566,13 +1681,19 @@ async function removeTorchvisionIfBroken(pipCommand, python, onProgress = () => 
   try {
     await runCommand(python.command, [...python.prefixArgs, '-c', 'import torchvision'], { timeoutMs: 10000 });
     return false;
-  } catch {
+  } catch (error) {
     onProgress({
       stage: 'preparing',
       message: 'Removing broken TorchVision package...',
       detail: 'TorchVision is not required for text router models, and the installed copy is incompatible with PyTorch.',
     });
-    await runCommand(pipCommand.command, [...pipCommand.args, 'uninstall', '-y', 'torchvision'], { timeoutMs: 5 * 60 * 1000 }).catch(() => undefined);
+    await runCommand(pipCommand.command, [...pipCommand.args, 'uninstall', '-y', 'torchvision'], { timeoutMs: 10 * 60 * 1000 }).catch((uninstallError) => {
+      onProgress({
+        stage: 'preparing',
+        message: 'Continuing after TorchVision cleanup check.',
+        detail: formatCommandError(uninstallError) || formatCommandError(error),
+      });
+    });
     return true;
   }
 }
@@ -2251,9 +2372,9 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
 
   const transformersPreflight = 'import torch; import transformers; import numpy; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__; from transformers import AutoTokenizer; from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM';
   try {
-    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: TRANSFORMERS_PREFLIGHT_TIMEOUT_MS });
   } catch {
-    const pipCommand = await getPythonPipCommand();
+    const pipCommand = await getPipCommandForPython(python);
     if (!pipCommand) {
       throw new Error('PyTorch and Transformers are required, but pip is not available to repair the Python environment.');
     }
@@ -2264,9 +2385,14 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
       detail: 'Fixing the Python runtime used by local Transformers models.',
     });
     await removeTorchvisionIfBroken(pipCommand, python, onProgress);
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 20 * 60 * 1000 });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 30 * 60 * 1000 });
     await removeTorchvisionIfBroken(pipCommand, python, onProgress);
-    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
+    onProgress({
+      stage: 'preparing',
+      message: 'Verifying repaired Transformers runtime...',
+      detail: 'First import after reinstall can take a little longer while Python rebuilds caches.',
+    });
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: TRANSFORMERS_PREFLIGHT_TIMEOUT_MS });
   }
 
   const logPath = getTransformersLogPath(repoId);
@@ -5262,6 +5388,858 @@ function triggerMachineSyncFromState(state) {
   });
 }
 
+const LLAMA_QUANTIZATION_SCHEMES = {
+  Q2_K: 'Q2_K',
+  Q3_K_S: 'Q3_K_S',
+  Q3_K_M: 'Q3_K_M',
+  Q3_K_L: 'Q3_K_L',
+  Q4_0: 'Q4_0',
+  Q4_1: 'Q4_1',
+  Q4_K_S: 'Q4_K_S',
+  Q4_K_M: 'Q4_K_M',
+  Q5_0: 'Q5_0',
+  Q5_1: 'Q5_1',
+  Q5_K_S: 'Q5_K_S',
+  Q5_K_M: 'Q5_K_M',
+  Q6_K: 'Q6_K',
+  Q8_0: 'Q8_0',
+  INT8: 'Q8_0',
+};
+
+const DEFAULT_QUANT_EVAL_TEXT = [
+  'Gradient descent is an optimization algorithm that updates model parameters to reduce a loss function.',
+  'Quantization reduces model weight precision to improve memory use and inference speed on edge hardware.',
+  'A good edge deployment keeps output quality close to the baseline while reducing model size and latency.',
+].join('\n');
+
+const DEFAULT_QUANT_PROMPTS = [
+  'Explain gradient descent in one paragraph.',
+  'Summarize why quantization matters for edge inference.',
+  'Write a short Python function that returns the square of a number.',
+  'Answer briefly: what is the tradeoff between latency and accuracy?',
+  'List three practical checks before deploying a model to production.',
+];
+
+const HF_SNAPSHOT_DOWNLOAD_SCRIPT = `
+import os
+import sys
+from huggingface_hub import snapshot_download
+
+repo_id = sys.argv[1]
+destination = sys.argv[2]
+snapshot_download(
+    repo_id=repo_id,
+    local_dir=destination,
+    local_dir_use_symlinks=False,
+    token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
+    allow_patterns=[
+        "*.json",
+        "*.safetensors",
+        "*.model",
+        "*.tiktoken",
+        "*.txt",
+        "tokenizer.*",
+        "generation_config.*",
+        "special_tokens_map.*",
+        "tokenizer_config.*",
+    ],
+)
+`;
+
+async function runQuantizationEval(payload = {}) {
+  const jobId = String(payload.jobId || `quant-${Date.now()}`);
+  const progress = (patch) => sendQuantizationProgress({ id: jobId, ...patch });
+  const target = String(payload.target || '').trim();
+  const modelSource = String(payload.modelSource || '').trim();
+  let modelPath = String(payload.localPath || payload.modelPath || '').trim();
+  const scheme = String(payload.scheme || 'Q4_K_M').trim();
+  const prompt = String(payload.prompt || 'Explain gradient descent in one paragraph.').trim();
+  const benchmarks = normalizeQuantBenchmarks(payload.benchmarks);
+
+  progress({ stage: 'preparing', message: 'Preparing quantization evaluation job.' });
+
+  if (target && target !== 'local') {
+    throw new Error('Cloud quantization jobs need a OneInfer backend job endpoint. Local GGUF evaluation is available now.');
+  }
+
+  const outputDirectory = path.join(app.getPath('userData'), 'quantization-runs', jobId);
+  fs.mkdirSync(outputDirectory, { recursive: true });
+
+  if (modelSource === 'huggingface') {
+    modelPath = await resolveHuggingFaceGgufModel({
+      repoInput: payload.hfRepo || payload.modelId,
+      outputDirectory,
+      progress,
+      scheme,
+    });
+  } else if (modelSource !== 'local') {
+    throw new Error('Catalog quantization needs a model artifact mapping. Use Hugging Face GGUF or Local file for local quantization.');
+  }
+
+  if (!modelPath) {
+    throw new Error('Select a local GGUF model file or enter a Hugging Face GGUF repository before running evaluation.');
+  }
+
+  if (!fs.existsSync(modelPath)) {
+    throw new Error(`Local model file does not exist: ${modelPath}`);
+  }
+
+  if (!/\.gguf$/i.test(modelPath)) {
+    throw new Error('Local quantization currently supports GGUF files through llama.cpp tools.');
+  }
+
+  progress({ stage: 'calibration', message: `Loaded ${payload.dataset || 'built-in'} calibration/evaluation text.`, detail: `${payload.calibrationSamples || 512} requested samples` });
+
+  const schemes = scheme === 'Compare all'
+    ? ['Q8_0', 'Q6_K', 'Q5_K_M', 'Q5_K_S', 'Q4_K_M', 'Q4_K_S', 'Q3_K_M', 'Q2_K']
+    : [scheme];
+  const runs = [];
+  for (const currentScheme of schemes) {
+    runs.push(await runSingleQuantizationEval({
+      modelPath,
+      scheme: currentScheme,
+      outputDirectory,
+      progress,
+      prompt,
+      benchmarks,
+    }));
+  }
+
+  const unsupportedBenchmarks = getUnsupportedQuantBenchmarks(benchmarks);
+  unsupportedBenchmarks.forEach((item) => progress({ stage: 'benchmark', message: `${item.name} skipped.`, detail: item.reason, level: 'warning' }));
+
+  const recommendedScheme = chooseRecommendedQuantRun(runs)?.scheme || runs[0]?.scheme || scheme;
+  const primary = runs.find((run) => run.scheme === recommendedScheme) || runs[0];
+
+  const result = {
+    ...primary,
+    jobId,
+    modelPath,
+    scheme,
+    recommendedScheme,
+    runs,
+    unsupportedBenchmarks,
+    createdAt: new Date().toISOString(),
+  };
+
+  const reportPath = path.join(outputDirectory, 'report.json');
+  fs.writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf8');
+
+  progress({ stage: 'complete', message: 'Quantization evaluation complete.', detail: reportPath, level: 'success' });
+  return { ...result, reportPath };
+}
+
+async function runSingleQuantizationEval({ modelPath, scheme, outputDirectory, progress, prompt, benchmarks }) {
+  const timings = {};
+  const baselineSizeBytes = fs.statSync(modelPath).size;
+  const qtype = LLAMA_QUANTIZATION_SCHEMES[scheme];
+  const sourceQtype = getGgufQuantizationFromPath(modelPath);
+  const reuseExistingQuantizedFile = scheme !== 'FP16 baseline' && sourceQtype && qtype && sourceQtype === qtype;
+  if (!qtype && scheme !== 'FP16 baseline') {
+    throw new Error(`${scheme} is not supported by the local llama.cpp quantization runner yet.`);
+  }
+
+  if (sourceQtype && scheme !== 'FP16 baseline' && !reuseExistingQuantizedFile) {
+    throw new Error(`The selected GGUF file is already ${sourceQtype}. llama.cpp cannot requantize an already-quantized GGUF into ${qtype}. Choose an F16/FP16 GGUF artifact, or select ${sourceQtype} to evaluate this file as-is.`);
+  }
+
+  const quantizeCommand = await getLlamaToolCommand('quantize');
+  const perplexityCommand = await getLlamaToolCommand('perplexity');
+  const cliCommand = await getLlamaToolCommand('cli');
+
+  if (!quantizeCommand && scheme !== 'FP16 baseline') {
+    throw new Error('llama-quantize was not found. Install llama.cpp tools, then restart OneInfer Edge.');
+  }
+
+  const schemeDirectory = path.join(outputDirectory, scheme.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+  fs.mkdirSync(schemeDirectory, { recursive: true });
+  const quantizedPath = scheme === 'FP16 baseline' || reuseExistingQuantizedFile
+    ? modelPath
+    : path.join(schemeDirectory, `${path.basename(modelPath, path.extname(modelPath))}-${qtype.toLowerCase()}.gguf`);
+
+  if (reuseExistingQuantizedFile) {
+    timings.quantizeMs = 0;
+    progress({ stage: 'quantize', message: `${scheme} source is already quantized. Reusing GGUF file for evaluation.`, detail: modelPath });
+  } else if (scheme !== 'FP16 baseline') {
+    timings.quantizeMs = await timeAsync(async () => {
+      progress({ stage: 'quantize', message: `Quantizing ${scheme} with ${qtype}.`, detail: quantizedPath });
+      try {
+        await runCommand(quantizeCommand, [modelPath, quantizedPath, qtype], {
+          timeoutMs: 60 * 60 * 1000,
+          maxOutputBuffer: 256 * 1024,
+          onStdout: (text) => progress({ stage: 'quantize', message: `Quantizing ${scheme}...`, detail: stripAnsi(text).slice(-300) }),
+          onStderr: (text) => progress({ stage: 'quantize', message: `Quantizing ${scheme}...`, detail: stripAnsi(text).slice(-300) }),
+        });
+      } catch (error) {
+        const message = formatCommandError(error);
+        if (message.includes('requantizing from type') && sourceQtype === qtype) {
+          progress({ stage: 'quantize', message: `${scheme} source is already quantized. Reusing GGUF file after llama.cpp rejected requantization.`, detail: modelPath, level: 'warning' });
+          return;
+        }
+        throw error;
+      }
+    });
+  } else {
+    timings.quantizeMs = 0;
+  }
+
+  const finalQuantizedPath = fs.existsSync(quantizedPath) ? quantizedPath : modelPath;
+  const quantizedSizeBytes = fs.statSync(finalQuantizedPath).size;
+  const compressionRatio = baselineSizeBytes > 0 ? quantizedSizeBytes / baselineSizeBytes : null;
+
+  let perplexity = null;
+  if (benchmarks.perplexity && perplexityCommand) {
+    progress({ stage: 'perplexity', message: `Running perplexity for ${scheme}.` });
+    let value;
+    timings.perplexityMs = await timeAsync(async () => {
+      value = await runPerplexityEval(perplexityCommand, finalQuantizedPath, schemeDirectory, progress);
+    });
+    perplexity = value;
+  } else if (benchmarks.perplexity) {
+    progress({ stage: 'perplexity', message: 'Skipping perplexity: llama-perplexity was not found.', level: 'warning' });
+  }
+
+  let generation = null;
+  if ((benchmarks.tokenAccuracy || benchmarks.rouge || benchmarks.latencyMemory) && cliCommand) {
+    progress({ stage: 'generation', message: `Running prompt comparison for ${scheme}.` });
+    timings.generationMs = await timeAsync(async () => {
+      generation = await runGenerationEval(cliCommand, modelPath, finalQuantizedPath, prompt, progress, scheme === 'FP16 baseline' || finalQuantizedPath === modelPath);
+    });
+  } else if (benchmarks.tokenAccuracy || benchmarks.rouge || benchmarks.latencyMemory) {
+    progress({ stage: 'generation', message: 'Skipping generation check: llama-cli was not found.', level: 'warning' });
+  }
+
+  return {
+    scheme,
+    qtype: qtype || null,
+    quantizedPath: finalQuantizedPath,
+    baselineSizeBytes,
+    quantizedSizeBytes,
+    compressionRatio,
+    perplexity,
+    generation,
+    timings,
+  };
+}
+
+async function resolveHuggingFaceGgufModel({ repoInput, outputDirectory, progress, scheme }) {
+  const parsed = parseHuggingFaceInput(repoInput);
+  if (!parsed.repoId) {
+    throw new Error('Enter a valid Hugging Face repo id or URL, for example TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF.');
+  }
+
+  progress({ stage: 'download', message: `Checking Hugging Face repo ${parsed.repoId}.` });
+
+  const filePath = parsed.filePath && parsed.filePath.toLowerCase().endsWith('.gguf')
+    ? parsed.filePath
+    : await findHuggingFaceGgufFile(parsed.repoId, progress, scheme);
+
+  if (!filePath) {
+    return convertHuggingFaceRepoToGguf({
+      repoId: parsed.repoId,
+      outputDirectory,
+      progress,
+    });
+  }
+
+  const destinationDirectory = path.join(outputDirectory, 'hf-download');
+  fs.mkdirSync(destinationDirectory, { recursive: true });
+  const destinationPath = path.join(destinationDirectory, path.basename(filePath));
+
+  if (fs.existsSync(destinationPath) && fs.statSync(destinationPath).size > 0) {
+    progress({ stage: 'download', message: 'Using cached Hugging Face GGUF file.', detail: destinationPath });
+    return destinationPath;
+  }
+
+  const downloadUrl = `https://huggingface.co/${parsed.repoId}/resolve/main/${filePath.split('/').map(encodeURIComponent).join('/')}`;
+  progress({ stage: 'download', message: `Downloading ${path.basename(filePath)} from Hugging Face.`, detail: downloadUrl });
+  await downloadFile(downloadUrl, destinationPath, progress);
+  if (!fs.existsSync(destinationPath) || fs.statSync(destinationPath).size === 0) {
+    throw new Error(`Hugging Face download finished, but the model file was not saved: ${destinationPath}`);
+  }
+  return destinationPath;
+}
+
+async function convertHuggingFaceRepoToGguf({ repoId, outputDirectory, progress }) {
+  progress({
+    stage: 'download',
+    message: 'No GGUF artifact found. Downloading Transformers model for GGUF conversion.',
+    detail: repoId,
+  });
+
+  const python = await getQuantizationPythonCommand(progress);
+  const snapshotDirectory = path.join(outputDirectory, 'hf-snapshot');
+  const convertedDirectory = path.join(outputDirectory, 'converted');
+  const outfile = path.join(convertedDirectory, `${repoId.replace(/[^a-zA-Z0-9._-]+/g, '_')}-f16.gguf`);
+  fs.mkdirSync(snapshotDirectory, { recursive: true });
+  fs.mkdirSync(convertedDirectory, { recursive: true });
+
+  if (!fs.existsSync(outfile) || fs.statSync(outfile).size === 0) {
+    await ensurePythonPackages(python, ['huggingface_hub'], progress);
+    progress({
+      stage: 'download',
+      message: `Downloading ${repoId} from Hugging Face.`,
+      detail: 'This can take several minutes and may require HF_TOKEN for gated models.',
+    });
+    await runCommand(python.command, [...python.prefixArgs, '-u', '-c', HF_SNAPSHOT_DOWNLOAD_SCRIPT, repoId, snapshotDirectory], {
+      timeoutMs: 3 * 60 * 60 * 1000,
+      env: {
+        ...process.env,
+        HF_TOKEN: process.env.HF_TOKEN || readEnvFileValue('HF_TOKEN') || '',
+        HUGGINGFACE_TOKEN: process.env.HUGGINGFACE_TOKEN || readEnvFileValue('HUGGINGFACE_TOKEN') || '',
+      },
+      onStdout: (text) => progress({ stage: 'download', message: 'Downloading Hugging Face snapshot...', detail: stripAnsi(text).slice(-500) }),
+      onStderr: (text) => progress({ stage: 'download', message: 'Downloading Hugging Face snapshot...', detail: stripAnsi(text).slice(-500) }),
+    });
+
+    await ensurePythonPackages(python, ['numpy', 'sentencepiece', 'pyyaml', 'safetensors', 'transformers'], progress);
+    const converter = await getLlamaCppConverter(progress);
+    const converterDirectory = path.dirname(converter);
+    const ggufPythonPath = getLlamaCppGgufPythonPath(converterDirectory);
+    const pythonPath = [ggufPythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
+
+    progress({
+      stage: 'convert',
+      message: 'Converting Hugging Face model to F16 GGUF.',
+      detail: outfile,
+    });
+    await runCommand(python.command, [...python.prefixArgs, converter, snapshotDirectory, '--outfile', outfile, '--outtype', 'f16'], {
+      timeoutMs: 3 * 60 * 60 * 1000,
+      env: {
+        ...process.env,
+        PYTHONPATH: pythonPath,
+      },
+      onStdout: (text) => progress({ stage: 'convert', message: 'Converting to GGUF...', detail: stripAnsi(text).slice(-500) }),
+      onStderr: (text) => progress({ stage: 'convert', message: 'Converting to GGUF...', detail: stripAnsi(text).slice(-500) }),
+    });
+  }
+
+  if (!fs.existsSync(outfile) || fs.statSync(outfile).size === 0) {
+    throw new Error('Hugging Face conversion finished, but the converted GGUF file was not created.');
+  }
+
+  progress({ stage: 'convert', message: 'Hugging Face model converted to GGUF.', detail: outfile });
+  return outfile;
+}
+
+async function getQuantizationPythonCommand(progress) {
+  const candidates = process.platform === 'win32'
+    ? [
+        { command: 'python', prefixArgs: [] },
+        { command: 'py', prefixArgs: ['-3'] },
+      ]
+    : [
+        { command: 'python3', prefixArgs: [] },
+        { command: 'python', prefixArgs: [] },
+        { command: '/opt/homebrew/bin/python3', prefixArgs: [] },
+        { command: '/usr/local/bin/python3', prefixArgs: [] },
+      ];
+
+  for (const candidate of candidates) {
+    try {
+      await runCommand(candidate.command, [...candidate.prefixArgs, '--version'], { timeoutMs: 10000 });
+      return candidate;
+    } catch {
+      // Try the next Python.
+    }
+  }
+
+  progress({ stage: 'convert', message: 'Python was not found for HF-to-GGUF conversion.', level: 'error' });
+  throw new Error('Python is required to convert Hugging Face safetensors models to GGUF.');
+}
+
+async function ensurePythonPackages(python, packages, progress) {
+  const missing = [];
+  for (const packageName of packages) {
+    const importName = packageName === 'pyyaml' ? 'yaml' : packageName;
+    try {
+      await runCommand(python.command, [...python.prefixArgs, '-c', `import ${importName}`], { timeoutMs: 30000 });
+    } catch {
+      missing.push(packageName);
+    }
+  }
+
+  if (missing.length === 0) {
+    return;
+  }
+
+  const pipCommand = await getPipCommandForPython(python);
+  if (!pipCommand) {
+    throw new Error(`Missing Python packages for GGUF conversion: ${missing.join(', ')}. Install them with pip and try again.`);
+  }
+
+  progress({
+    stage: 'convert',
+    message: 'Installing Python packages for GGUF conversion.',
+    detail: missing.join(', '),
+  });
+  await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...missing], {
+    timeoutMs: 20 * 60 * 1000,
+    onStdout: (text) => progress({ stage: 'convert', message: 'Installing conversion dependencies...', detail: stripAnsi(text).slice(-500) }),
+    onStderr: (text) => progress({ stage: 'convert', message: 'Installing conversion dependencies...', detail: stripAnsi(text).slice(-500) }),
+  });
+}
+
+async function getLlamaCppConverter(progress) {
+  const directCandidates = [
+    '/opt/homebrew/opt/llama.cpp/share/llama.cpp/convert_hf_to_gguf.py',
+    '/usr/local/opt/llama.cpp/share/llama.cpp/convert_hf_to_gguf.py',
+    '/opt/homebrew/share/llama.cpp/convert_hf_to_gguf.py',
+    '/usr/local/share/llama.cpp/convert_hf_to_gguf.py',
+  ];
+
+  for (const candidate of directCandidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  for (const root of ['/opt/homebrew/Cellar/llama.cpp', '/usr/local/Cellar/llama.cpp']) {
+    const found = findFirstExistingFile(root, 'convert_hf_to_gguf.py');
+    if (found) {
+      return found;
+    }
+  }
+
+  const sourceDirectory = path.join(app.getPath('userData'), 'tools', 'llama.cpp');
+  const converter = path.join(sourceDirectory, 'convert_hf_to_gguf.py');
+  if (fs.existsSync(converter)) {
+    return converter;
+  }
+
+  if (!await commandExists('git')) {
+    throw new Error('llama.cpp converter was not found. Install llama.cpp with Homebrew or install git so OneInfer Edge can fetch the converter source.');
+  }
+
+  fs.mkdirSync(path.dirname(sourceDirectory), { recursive: true });
+  progress({ stage: 'convert', message: 'Fetching llama.cpp converter source.', detail: sourceDirectory });
+  await runCommand('git', ['clone', '--depth', '1', 'https://github.com/ggerganov/llama.cpp.git', sourceDirectory], {
+    timeoutMs: 10 * 60 * 1000,
+    onStdout: (text) => progress({ stage: 'convert', message: 'Fetching llama.cpp converter...', detail: stripAnsi(text).slice(-500) }),
+    onStderr: (text) => progress({ stage: 'convert', message: 'Fetching llama.cpp converter...', detail: stripAnsi(text).slice(-500) }),
+  });
+
+  if (!fs.existsSync(converter)) {
+    throw new Error('Fetched llama.cpp source, but convert_hf_to_gguf.py was not found.');
+  }
+
+  return converter;
+}
+
+function getLlamaCppGgufPythonPath(converterDirectory) {
+  const candidates = [
+    path.join(converterDirectory, 'gguf-py'),
+    path.join(path.dirname(converterDirectory), 'gguf-py'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function findFirstExistingFile(root, filename, depth = 4) {
+  if (!root || depth < 0 || !fs.existsSync(root)) {
+    return '';
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return '';
+  }
+
+  for (const entry of entries) {
+    const current = path.join(root, entry.name);
+    if (entry.isFile() && entry.name === filename) {
+      return current;
+    }
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const found = findFirstExistingFile(path.join(root, entry.name), filename, depth - 1);
+    if (found) {
+      return found;
+    }
+  }
+
+  return '';
+}
+
+function parseHuggingFaceInput(value) {
+  const raw = String(value || '').trim().replace(/^hf\.co\//, '');
+  if (!raw) {
+    return { repoId: '', filePath: '' };
+  }
+
+  try {
+    const url = new URL(raw.startsWith('http') ? raw : `https://huggingface.co/${raw}`);
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return { repoId: '', filePath: '' };
+    }
+
+    const repoId = `${parts[0]}/${parts[1]}`;
+    const blobIndex = parts.findIndex((part) => part === 'blob' || part === 'resolve');
+    const filePath = blobIndex >= 0 ? parts.slice(blobIndex + 2).join('/') : '';
+    return { repoId, filePath };
+  } catch {
+    const parts = raw.split('/').filter(Boolean);
+    return {
+      repoId: parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '',
+      filePath: parts.length > 2 ? parts.slice(2).join('/') : '',
+    };
+  }
+}
+
+async function findHuggingFaceGgufFile(repoId, progress, scheme = '') {
+  const modelInfo = await fetchJson(`https://huggingface.co/api/models/${repoId}`);
+  const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+  const ggufFiles = siblings
+    .map((item) => String(item.rfilename || '').trim())
+    .filter((filename) => filename.toLowerCase().endsWith('.gguf'));
+
+  if (ggufFiles.length === 0) {
+    progress({ stage: 'download', message: 'No GGUF artifact found in Hugging Face repo.', level: 'warning' });
+    return '';
+  }
+
+  const qtype = LLAMA_QUANTIZATION_SCHEMES[scheme];
+  const preferred = ggufFiles.find((filename) => isFullPrecisionGgufFilename(filename))
+    || (qtype ? ggufFiles.find((filename) => getGgufQuantizationFromPath(filename) === qtype) : '')
+    || ggufFiles.find((filename) => /q8_0/i.test(filename))
+    || ggufFiles.find((filename) => /q6_k/i.test(filename))
+    || ggufFiles.find((filename) => /q5_k_m/i.test(filename))
+    || ggufFiles.find((filename) => /q4_k_m/i.test(filename))
+    || ggufFiles[0];
+  progress({ stage: 'download', message: `Selected Hugging Face GGUF artifact ${path.basename(preferred)}.` });
+  return preferred;
+}
+
+function isFullPrecisionGgufFilename(filename) {
+  return /(?:^|[._-])(f16|fp16|float16|f32|fp32|float32)(?:[._-]|$)/i.test(path.basename(filename));
+}
+
+function getGgufQuantizationFromPath(filePath) {
+  const name = path.basename(String(filePath || '')).toUpperCase();
+  const qtypes = [
+    'Q2_K',
+    'Q3_K_S',
+    'Q3_K_M',
+    'Q3_K_L',
+    'Q4_K_S',
+    'Q4_K_M',
+    'Q4_0',
+    'Q4_1',
+    'Q5_K_S',
+    'Q5_K_M',
+    'Q5_0',
+    'Q5_1',
+    'Q6_K',
+    'Q8_0',
+  ];
+
+  return qtypes.find((qtype) => name.includes(qtype)) || '';
+}
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: getHuggingFaceHeaders(),
+    }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        fetchJson(response.headers.location).then(resolve, reject);
+        return;
+      }
+
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`Hugging Face API returned HTTP ${response.statusCode}: ${body.slice(0, 300)}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('error', reject);
+    request.setTimeout(30000, () => {
+      request.destroy(new Error('Hugging Face API request timed out.'));
+    });
+  });
+}
+
+function downloadFile(url, destinationPath, progress, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) {
+      reject(new Error('Too many redirects while downloading Hugging Face model.'));
+      return;
+    }
+
+    const request = https.get(url, { headers: getHuggingFaceHeaders() }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        const nextUrl = new URL(response.headers.location, url).toString();
+        response.resume();
+        downloadFile(nextUrl, destinationPath, progress, redirects + 1).then(resolve, reject);
+        return;
+      }
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.resume();
+        reject(new Error(`Hugging Face download returned HTTP ${response.statusCode}.`));
+        return;
+      }
+
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+      const tempPath = `${destinationPath}.download`;
+      const file = fs.createWriteStream(tempPath);
+      const totalBytes = Number(response.headers['content-length'] || 0);
+      let downloadedBytes = 0;
+      response.on('data', (chunk) => {
+        downloadedBytes += chunk.length;
+        if (totalBytes > 0) {
+          const percent = Math.round((downloadedBytes / totalBytes) * 100);
+          progress({ stage: 'download', message: `Downloading Hugging Face model... ${percent}%`, detail: destinationPath });
+        }
+      });
+      response.pipe(file);
+      file.on('error', (error) => {
+        fs.rm(tempPath, { force: true }, () => {});
+        reject(error);
+      });
+      file.on('finish', () => {
+        file.close(() => {
+          try {
+            fs.renameSync(tempPath, destinationPath);
+            resolve();
+          } catch (error) {
+            fs.rm(tempPath, { force: true }, () => {});
+            reject(error);
+          }
+        });
+      });
+    });
+
+    request.on('error', (error) => {
+      reject(error);
+    });
+    request.setTimeout(60 * 60 * 1000, () => {
+      request.destroy(new Error('Hugging Face model download timed out.'));
+    });
+  });
+}
+
+function getHuggingFaceHeaders() {
+  const token = process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN || readEnvFileValue('HF_TOKEN') || readEnvFileValue('HUGGINGFACE_TOKEN');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function getLlamaToolCommand(tool) {
+  const names = {
+    quantize: ['llama-quantize', 'quantize'],
+    perplexity: ['llama-perplexity', 'perplexity'],
+    cli: ['llama-cli', 'main'],
+  }[tool] || [];
+
+  const pathCandidates = isMacOS()
+    ? names.flatMap((name) => [`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, name])
+    : names;
+
+  return getFirstAvailableCommand(pathCandidates);
+}
+
+async function getQuantizationTools() {
+  const [quantize, cli, perplexity] = await Promise.all([
+    getLlamaToolCommand('quantize'),
+    getLlamaToolCommand('cli'),
+    getLlamaToolCommand('perplexity'),
+  ]);
+
+  return {
+    quantize: Boolean(quantize),
+    cli: Boolean(cli),
+    perplexity: Boolean(perplexity),
+    paths: {
+      quantize,
+      cli,
+      perplexity,
+    },
+  };
+}
+
+async function runPerplexityEval(command, modelPath, outputDirectory, progress) {
+  const evalPath = path.join(outputDirectory, 'eval.txt');
+  fs.writeFileSync(evalPath, DEFAULT_QUANT_EVAL_TEXT, 'utf8');
+
+  try {
+    const { stdout, stderr } = await runCommand(command, ['-m', modelPath, '-f', evalPath, '-c', '512'], {
+      timeoutMs: 20 * 60 * 1000,
+      maxOutputBuffer: 512 * 1024,
+      onStdout: (text) => progress({ stage: 'perplexity', message: 'Running perplexity evaluation...', detail: stripAnsi(text).slice(-300) }),
+      onStderr: (text) => progress({ stage: 'perplexity', message: 'Running perplexity evaluation...', detail: stripAnsi(text).slice(-300) }),
+    });
+    const text = `${stdout}\n${stderr}`;
+    const match = text.match(/(?:Final estimate:\s*)?PPL\s*=\s*([0-9.]+)/i) || text.match(/perplexity[^0-9]*([0-9.]+)/i);
+    return {
+      value: match ? Number(match[1]) : null,
+      raw: stripAnsi(text).slice(-4000),
+    };
+  } catch (error) {
+    progress({ stage: 'perplexity', message: 'Perplexity evaluation failed.', detail: formatCommandError(error), level: 'warning' });
+    return {
+      value: null,
+      error: formatCommandError(error),
+    };
+  }
+}
+
+async function runGenerationEval(command, baselinePath, quantizedPath, prompt, progress, baselineOnly) {
+  const baseline = await runLlamaPrompt(command, baselinePath, prompt, progress, 'baseline');
+  const quantized = baselineOnly ? baseline : await runLlamaPrompt(command, quantizedPath, prompt, progress, 'quantized');
+  return {
+    baseline,
+    quantized,
+    tokenAgreement: estimateTokenAgreement(baseline.output, quantized.output),
+    latencyDeltaPercent: baseline.tokensPerSecond && quantized.tokensPerSecond
+      ? ((quantized.tokensPerSecond - baseline.tokensPerSecond) / baseline.tokensPerSecond) * 100
+      : null,
+  };
+}
+
+async function runLlamaPrompt(command, modelPath, prompt, progress, label) {
+  const startedAt = Date.now();
+  try {
+    const { stdout, stderr } = await runCommand(command, ['-m', modelPath, '-p', prompt, '-n', '64', '--temp', '0'], {
+      timeoutMs: 20 * 60 * 1000,
+      maxOutputBuffer: 512 * 1024,
+      onStdout: (text) => progress({ stage: 'generation', message: `Generating ${label} output...`, detail: stripAnsi(text).slice(-300) }),
+      onStderr: (text) => progress({ stage: 'generation', message: `Generating ${label} output...`, detail: stripAnsi(text).slice(-300) }),
+    });
+    const raw = stripAnsi(`${stdout}\n${stderr}`);
+    const timingMatch = raw.match(/([0-9.]+)\s*tokens per second/i) || raw.match(/([0-9.]+)\s*tok\/s/i);
+    return {
+      output: stripLlamaTimings(stdout).trim(),
+      raw: raw.slice(-4000),
+      durationMs: Date.now() - startedAt,
+      tokensPerSecond: timingMatch ? Number(timingMatch[1]) : null,
+    };
+  } catch (error) {
+    progress({ stage: 'generation', message: `${label} generation failed.`, detail: formatCommandError(error), level: 'warning' });
+    return {
+      output: '',
+      error: formatCommandError(error),
+      durationMs: Date.now() - startedAt,
+      tokensPerSecond: null,
+    };
+  }
+}
+
+function stripLlamaTimings(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .filter((line) => !/llama_|load time|sample time|prompt eval time|eval time|total time/i.test(line))
+    .join('\n');
+}
+
+function estimateTokenAgreement(left, right) {
+  const leftTokens = String(left || '').trim().split(/\s+/).filter(Boolean);
+  const rightTokens = String(right || '').trim().split(/\s+/).filter(Boolean);
+  const total = Math.max(leftTokens.length, rightTokens.length);
+  if (total === 0) {
+    return null;
+  }
+
+  let matches = 0;
+  for (let index = 0; index < total; index += 1) {
+    if (leftTokens[index] && leftTokens[index] === rightTokens[index]) {
+      matches += 1;
+    }
+  }
+
+  return (matches / total) * 100;
+}
+
+function normalizeQuantBenchmarks(value = {}) {
+  return {
+    tokenAccuracy: value.tokenAccuracy !== false,
+    perplexity: value.perplexity !== false,
+    mmlu: Boolean(value.mmlu),
+    hellaswag: Boolean(value.hellaswag),
+    truthfulqa: Boolean(value.truthfulqa),
+    arcChallenge: Boolean(value.arcChallenge),
+    winogrande: Boolean(value.winogrande),
+    gsm8k: Boolean(value.gsm8k),
+    humaneval: Boolean(value.humaneval),
+    rouge: value.rouge !== false,
+    bertScore: Boolean(value.bertScore),
+    latencyMemory: value.latencyMemory !== false,
+    ttft: value.ttft !== false,
+    peakMemory: value.peakMemory !== false,
+  };
+}
+
+function getUnsupportedQuantBenchmarks(benchmarks) {
+  const unsupported = [];
+  const benchmarkNames = [
+    ['mmlu', 'MMLU'],
+    ['hellaswag', 'HellaSwag'],
+    ['truthfulqa', 'TruthfulQA'],
+    ['arcChallenge', 'ARC-Challenge'],
+    ['winogrande', 'WinoGrande'],
+    ['gsm8k', 'GSM8K'],
+    ['humaneval', 'HumanEval'],
+  ];
+
+  for (const [key, name] of benchmarkNames) {
+    if (benchmarks[key]) {
+      unsupported.push({ name, reason: `Requires a benchmark dataset/scoring backend. The local llama.cpp runner does not score ${name} yet.` });
+    }
+  }
+
+  if (benchmarks.bertScore) {
+    unsupported.push({ name: 'BERTScore', reason: 'Requires a sentence embedding/scoring dependency or backend service. The local llama.cpp runner does not compute BERTScore yet.' });
+  }
+  if (benchmarks.ttft) {
+    unsupported.push({ name: 'TTFT', reason: 'llama.cpp CLI output exposes token throughput, but precise time-to-first-token instrumentation is not wired yet.' });
+  }
+  if (benchmarks.peakMemory) {
+    unsupported.push({ name: 'Peak memory', reason: 'Peak RAM/VRAM tracking needs platform-specific process sampling during generation.' });
+  }
+  return unsupported;
+}
+
+async function timeAsync(fn) {
+  const startedAt = Date.now();
+  await fn();
+  return Date.now() - startedAt;
+}
+
+function chooseRecommendedQuantRun(runs) {
+  if (!Array.isArray(runs) || runs.length === 0) {
+    return null;
+  }
+
+  return [...runs].sort((left, right) => {
+    const leftAgreement = left.generation?.tokenAgreement ?? 0;
+    const rightAgreement = right.generation?.tokenAgreement ?? 0;
+    const leftCompression = left.compressionRatio ?? 1;
+    const rightCompression = right.compressionRatio ?? 1;
+    const leftSpeed = left.generation?.quantized?.tokensPerSecond ?? 0;
+    const rightSpeed = right.generation?.quantized?.tokensPerSecond ?? 0;
+    const leftScore = leftAgreement * 0.62 + (1 - leftCompression) * 100 * 0.25 + leftSpeed * 0.13;
+    const rightScore = rightAgreement * 0.62 + (1 - rightCompression) * 100 * 0.25 + rightSpeed * 0.13;
+    return rightScore - leftScore;
+  })[0];
+}
+
 function createWindow() {
   const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
   const iconPath = path.join(__dirname, '..', 'build', iconFile);
@@ -5355,6 +6333,15 @@ app.whenReady().then(() => {
     }
 
     configureAutoUpdater();
+    if (!autoUpdater) {
+      setUpdateState({
+        phase: 'error',
+        version: app.getVersion(),
+        message: 'Auto-update is not available in this app session.',
+        progressPercent: null,
+      });
+      return { ...updateState };
+    }
     await autoUpdater.checkForUpdates();
     return { ...updateState };
   });
@@ -5364,7 +6351,9 @@ app.whenReady().then(() => {
     }
 
     setImmediate(() => {
-      autoUpdater.quitAndInstall(false, true);
+      if (autoUpdater) {
+        autoUpdater.quitAndInstall(false, true);
+      }
     });
 
     return { ...updateState };
@@ -5383,6 +6372,7 @@ app.whenReady().then(() => {
     name = normalizeServingLibraryName(name);
     return lastLibraryErrors[name] || null;
   });
+  ipcMain.handle('app:get-quantization-tools', async () => getQuantizationTools());
   ipcMain.handle('app:install-vc-redist', async () => {
     if (process.platform !== 'win32') {
       throw new Error('Visual C++ Redistributable is only required on Windows systems.');
@@ -5397,6 +6387,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
   ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
+  ipcMain.handle('app:run-quantization-eval', async (_event, payload) => runQuantizationEval(payload));
   ipcMain.handle('app:git-pull', async () => {
     try {
       const projectRoot = path.join(__dirname, '..');
@@ -5415,9 +6406,12 @@ app.whenReady().then(() => {
 
   if (!isDev) {
     setTimeout(() => {
-      autoUpdater.checkForUpdates().catch((error) => {
-        console.error('[updater] startup check failed', error);
-      });
+      configureAutoUpdater();
+      if (autoUpdater) {
+        autoUpdater.checkForUpdates().catch((error) => {
+          console.error('[updater] startup check failed', error);
+        });
+      }
     }, 4000);
   }
 

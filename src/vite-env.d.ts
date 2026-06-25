@@ -148,6 +148,7 @@ interface Window {
     openExternalUrl: (payload: { url: string }) => Promise<{ opened: boolean; url: string }>;
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
     onDeploymentProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
+    onQuantizationProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
     syncMachineDetails: (payload: { baseUrl: string; session: DesktopSession }) => Promise<DesktopMachineDetails>;
     enableClaudeCode: (payload: {
@@ -180,6 +181,16 @@ interface Window {
     installLibrary: (name: DesktopServingLibrary) => Promise<void>;
     onLibraryInstallLog: (listener: (log: { name: string; text: string; isError?: boolean }) => void) => () => void;
     getLibraryError: (name: DesktopServingLibrary) => Promise<string | null>;
+    getQuantizationTools: () => Promise<{
+      quantize: boolean;
+      cli: boolean;
+      perplexity: boolean;
+      paths: {
+        quantize?: string | null;
+        cli?: string | null;
+        perplexity?: string | null;
+      };
+    }>;
     installVcRedist: () => Promise<string>;
     deployHfModel: (payload: {
       repoId: string;
@@ -215,6 +226,35 @@ interface Window {
     getLocalModelMetrics: (payload: {
       endpointUrl: string;
     }) => Promise<DesktopLocalModelMetrics>;
+    runQuantizationEval: (payload: {
+      jobId?: string;
+      target: string;
+      modelSource: 'huggingface' | 'catalog' | 'local';
+      modelId?: string;
+      hfRepo?: string;
+      localPath?: string;
+      format?: string;
+      scheme: string;
+      dataset?: string;
+      calibrationSamples?: number;
+      benchmarks?: {
+        tokenAccuracy?: boolean;
+        perplexity?: boolean;
+        mmlu?: boolean;
+        hellaswag?: boolean;
+        truthfulqa?: boolean;
+        arcChallenge?: boolean;
+        winogrande?: boolean;
+        gsm8k?: boolean;
+        humaneval?: boolean;
+        rouge?: boolean;
+        bertScore?: boolean;
+        latencyMemory?: boolean;
+        ttft?: boolean;
+        peakMemory?: boolean;
+      };
+      prompt?: string;
+    }) => Promise<Record<string, unknown>>;
     gitPull: () => Promise<{ success: boolean; message?: string; error?: string }>;
   };
 }

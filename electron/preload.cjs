@@ -18,6 +18,11 @@ contextBridge.exposeInMainWorld('desktopBridge', {
     ipcRenderer.on('app:deployment-progress', handler);
     return () => ipcRenderer.removeListener('app:deployment-progress', handler);
   },
+  onQuantizationProgress: (listener) => {
+    const handler = (_event, progress) => listener(progress);
+    ipcRenderer.on('app:quantization-progress', handler);
+    return () => ipcRenderer.removeListener('app:quantization-progress', handler);
+  },
   getMachineDetails: () => ipcRenderer.invoke('app:get-machine-details'),
   syncMachineDetails: (payload) => ipcRenderer.invoke('app:sync-machine-details', payload),
   enableClaudeCode: (payload) => ipcRenderer.invoke('app:enable-claude-code', payload),
@@ -33,6 +38,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
     return () => ipcRenderer.removeListener('app:library-install-log', handler);
   },
   getLibraryError: (name) => ipcRenderer.invoke('app:get-library-error', name),
+  getQuantizationTools: () => ipcRenderer.invoke('app:get-quantization-tools'),
   installVcRedist: () => ipcRenderer.invoke('app:install-vc-redist'),
   deployHfModel: (payload) => ipcRenderer.invoke('app:deploy-hf-model', payload),
   startLocalRoute: (payload) => ipcRenderer.invoke('app:start-local-route', payload),
@@ -40,5 +46,6 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   cancelHfDeployment: (payload) => ipcRenderer.invoke('app:cancel-hf-deployment', payload),
   deleteLocalModel: (payload) => ipcRenderer.invoke('app:delete-local-model', payload),
   getLocalModelMetrics: (payload) => ipcRenderer.invoke('app:get-local-model-metrics', payload),
+  runQuantizationEval: (payload) => ipcRenderer.invoke('app:run-quantization-eval', payload),
   gitPull: () => ipcRenderer.invoke('app:git-pull'),
 });

@@ -1,5 +1,6 @@
 import {
   KeyRound,
+  Gauge,
   Orbit,
   Server,
   Sparkles,
@@ -70,6 +71,7 @@ export const defaultInferenceForm: CreateInferenceFormState = {
 export const sections: Array<{ key: SectionKey; label: string; icon: typeof Sparkles }> = [
   { key: 'overview', label: 'Overview', icon: Sparkles },
   { key: 'selfHosting', label: 'Self Hosting', icon: Server },
+  { key: 'quantization', label: 'Quantization', icon: Gauge },
   { key: 'instances', label: 'Cloud Hosting', icon: Server },
   { key: 'apiKeys', label: 'API Keys', icon: KeyRound },
   { key: 'routing', label: 'Routing', icon: Orbit },
@@ -80,6 +82,7 @@ export function createLoadedSections() {
   return {
     overview: false,
     selfHosting: false,
+    quantization: true,
     instances: false,
     apiKeys: false,
     routing: false,
