@@ -255,6 +255,14 @@ interface Window {
       };
       prompt?: string;
     }) => Promise<Record<string, unknown>>;
+    clearQuantizationCache: (payload?: {
+      includeRuns?: boolean;
+    }) => Promise<{
+      cleared: boolean;
+      removed: string[];
+      missing: string[];
+      message: string;
+    }>;
     gitPull: () => Promise<{ success: boolean; message?: string; error?: string }>;
   };
 }

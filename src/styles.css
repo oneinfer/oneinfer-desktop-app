@@ -407,6 +407,21 @@ label span,
   white-space: nowrap;
 }
 
+.data-row span,
+.data-row strong {
+  min-width: 0;
+}
+
+.data-row strong {
+  max-width: 62%;
+  text-align: right;
+}
+
+.data-row strong.path-value {
+  direction: rtl;
+  unicode-bidi: plaintext;
+}
+
 .nav-stack,
 .sidebar-footer,
 .card-stack,
@@ -856,6 +871,7 @@ label span,
 .data-row {
   padding: 12px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  min-width: 0;
 }
 
 .data-row:last-child {
@@ -4463,6 +4479,29 @@ input:checked + .slider:before {
   font-weight: 800;
 }
 
+.quant-cache-actions {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.quant-cache-actions .secondary-button {
+  justify-self: start;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.quant-cache-actions span,
+.quant-cache-message {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.quant-cache-message {
+  color: var(--accent);
+}
+
 .quant-source-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4669,6 +4708,31 @@ input:checked + .slider:before {
   gap: 18px;
   padding: 22px;
   border-radius: 22px;
+}
+
+.quant-recommendation.failed {
+  border-color: rgba(255, 124, 120, 0.24);
+  background: linear-gradient(180deg, rgba(255, 124, 120, 0.08), rgba(255, 255, 255, 0.025));
+}
+
+.quant-recommendation.failed .eyebrow,
+.quant-recommendation.failed h3 {
+  color: #ffd0cc;
+}
+
+.quant-recommendation.incomplete {
+  border-color: rgba(255, 198, 109, 0.26);
+  background: linear-gradient(180deg, rgba(255, 198, 109, 0.08), rgba(255, 255, 255, 0.025));
+}
+
+.quant-recommendation.incomplete .eyebrow,
+.quant-recommendation.incomplete h3 {
+  color: #ffe2a8;
+}
+
+.quant-recommendation .primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .quant-metrics-grid {

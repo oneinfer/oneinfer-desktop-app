@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  Trash2,
 } from 'lucide-react';
 
 import { Panel } from '../components/Common';
@@ -42,12 +43,14 @@ interface QuantizationResult {
   baselineSizeBytes?: number;
   quantizedSizeBytes?: number;
   compressionRatio?: number | null;
-  perplexity?: { value?: number | null; error?: string } | null;
+  perplexity?: { value?: number | null; raw?: string; error?: string } | null;
   generation?: {
-    baseline?: { output?: string; tokensPerSecond?: number | null };
-    quantized?: { output?: string; tokensPerSecond?: number | null };
+    baseline?: { output?: string; tokensPerSecond?: number | null; durationMs?: number | null };
+    quantized?: { output?: string; tokensPerSecond?: number | null; durationMs?: number | null };
     tokenAgreement?: number | null;
     latencyDeltaPercent?: number | null;
+    status?: 'success' | 'failed';
+    error?: string;
   } | null;
 }
 
@@ -258,6 +261,8 @@ export function QuantizationPage(props: {
   const [evalError, setEvalError] = useState<string | null>(null);
   const [evalResult, setEvalResult] = useState<QuantizationResult | null>(null);
   const [tools, setTools] = useState<QuantizationTools | null>(null);
+  const [cacheClearStatus, setCacheClearStatus] = useState<string | null>(null);
+  const [cacheClearing, setCacheClearing] = useState(false);
 
   const runStages = useMemo(() => getRunStages(form), [form]);
   const runStepIndex = status === 'complete' ? runStages.length : Math.min(runStages.length - 1, Math.floor(progress / Math.max(1, 100 / runStages.length)));
@@ -303,6 +308,19 @@ export function QuantizationPage(props: {
   const installingLlamaCpp = props.busy === 'install-llama_cpp';
   const analyzedMetrics = useMemo(() => getAnalyzedMetrics(evalResult), [evalResult]);
   const analyzedTokenMetrics = useMemo(() => getAnalyzedTokenMetrics(evalResult), [evalResult]);
+  const primaryRun = useMemo(() => evalResult ? getPrimaryRun(evalResult) : null, [evalResult]);
+  const analysisFailed = Boolean(primaryRun && hasQuantizationRunFailed(primaryRun));
+  const analysisFailureMessage = getQuantizationRunFailureMessage(primaryRun);
+  const analysisMissingMetrics = getMissingQuantizationMetrics(primaryRun, form);
+  const analysisIncomplete = Boolean(!analysisFailed && primaryRun && analysisMissingMetrics.length > 0);
+  const recommendationState = analysisFailed ? 'failed' : analysisIncomplete ? 'incomplete' : 'ready';
+  const recommendationMessage = analysisFailed
+    ? analysisFailureMessage
+    : analysisIncomplete
+      ? `Need ${analysisMissingMetrics.join(', ')} before this profile is deployment-ready.`
+      : 'Passes token agreement, speed, and size thresholds with measured quality signals.';
+  const baselineDiffText = getDiffOutputText(primaryRun?.generation?.baseline?.output, primaryRun, 'baseline');
+  const quantizedDiffText = getDiffOutputText(primaryRun?.generation?.quantized?.output, primaryRun, 'quantized');
 
   useEffect(() => {
     if (!window.desktopBridge?.onQuantizationProgress) {
@@ -369,6 +387,34 @@ export function QuantizationPage(props: {
     } catch (error) {
       setStatus('idle');
       setEvalError(error instanceof Error ? error.message : 'Quantization evaluation failed.');
+    }
+  }
+
+  async function clearDownloadedModels() {
+    if (!window.desktopBridge?.clearQuantizationCache) {
+      setCacheClearStatus('Cache cleanup is not available in this app build. Restart Electron after updating the app.');
+      return;
+    }
+
+    const confirmed = window.confirm('Delete downloaded Hugging Face models, converted GGUF files, quantized artifacts, and quantization reports? The next eval will download models again.');
+    if (!confirmed) {
+      return;
+    }
+
+    setCacheClearing(true);
+    setCacheClearStatus(null);
+    try {
+      const result = await window.desktopBridge.clearQuantizationCache({ includeRuns: true });
+      setEvalResult(null);
+      setProgressEvents([]);
+      setProgress(0);
+      setStatus('idle');
+      setStep('configure');
+      setCacheClearStatus(result.message);
+    } catch (error) {
+      setCacheClearStatus(error instanceof Error ? error.message : 'Failed to delete downloaded models.');
+    } finally {
+      setCacheClearing(false);
     }
   }
 
@@ -496,7 +542,7 @@ export function QuantizationPage(props: {
                   <div className="quant-install-card">
                     <div>
                       <strong>llama.cpp tools required</strong>
-                      <span>Install llama.cpp to enable local GGUF quantization with llama-quantize. Perplexity and prompt checks use llama-perplexity and llama-cli when available.</span>
+                      <span>Install llama.cpp to enable local GGUF quantization with llama-quantize. Perplexity and prompt checks use llama-perplexity and llama-completion when available.</span>
                     </div>
                     {props.onInstallLibrary ? (
                       <button
@@ -513,10 +559,18 @@ export function QuantizationPage(props: {
                 {localQuantizationTarget && quantizeInstalled ? (
                   <div className="quant-tool-status">
                     <span>llama-quantize ready</span>
-                    <span>{tools?.cli ? 'llama-cli ready' : 'llama-cli missing'}</span>
+                    <span>{tools?.cli ? 'llama-completion ready' : 'llama-completion missing'}</span>
                     <span>{tools?.perplexity ? 'llama-perplexity ready' : 'llama-perplexity missing'}</span>
                   </div>
                 ) : null}
+                <div className="quant-cache-actions">
+                  <button className="secondary-button" type="button" onClick={clearDownloadedModels} disabled={cacheClearing || status === 'running'}>
+                    <Trash2 size={15} />
+                    {cacheClearing ? 'Deleting...' : 'Delete downloaded models'}
+                  </button>
+                  <span>Clears Hugging Face cache, converted GGUF files, quantized artifacts, and run reports.</span>
+                </div>
+                {cacheClearStatus ? <div className="quant-cache-message">{cacheClearStatus}</div> : null}
               </div>
             </Panel>
 
@@ -635,13 +689,13 @@ export function QuantizationPage(props: {
 
       {step === 'analyze' ? (
         <>
-          <div className="quant-recommendation glass-panel">
+          <div className={`quant-recommendation glass-panel ${recommendationState}`}>
             <div>
-              <span className="eyebrow">Recommendation</span>
-              <h3>Use {form.scheme} for {selectedTarget.label}</h3>
-              <p>Passes token agreement, speed, and size thresholds with only a small perplexity delta from FP16.</p>
+              <span className="eyebrow">{analysisFailed ? 'Evaluation failed' : analysisIncomplete ? 'Evaluation incomplete' : 'Recommendation'}</span>
+              <h3>{analysisFailed ? 'Fix the evaluation before deploy' : analysisIncomplete ? 'Measure missing metrics before deploy' : `Use ${form.scheme} for ${selectedTarget.label}`}</h3>
+              <p>{recommendationMessage}</p>
             </div>
-            <button className="primary-button" type="button" onClick={() => setStep('deploy')}>
+            <button className="primary-button" type="button" onClick={() => setStep('deploy')} disabled={analysisFailed || analysisIncomplete}>
               <Rocket size={16} />
               Prepare deploy
             </button>
@@ -660,21 +714,21 @@ export function QuantizationPage(props: {
           <Panel title="Output diff" icon={Layers3} description="Compare baseline and quantized responses on prompts that matter to your workload.">
             <div className="quant-prompt-row">
               <input value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-              <button className="secondary-button" type="button">Run</button>
+              <button className="secondary-button" type="button" onClick={runEvaluation} disabled={!canRunEval || status === 'running'}>Run</button>
             </div>
             <div className="quant-diff-grid">
-              <DiffCard title="Baseline" tag="reference" text={evalResult?.generation?.baseline?.output || 'Run a local GGUF evaluation to capture baseline output.'} />
-              <DiffCard title={`${form.scheme} quantized`} tag={formatBytes(evalResult?.quantizedSizeBytes) || 'pending'} text={evalResult?.generation?.quantized?.output || 'Run a local GGUF evaluation to capture quantized output.'} highlight />
+              <DiffCard title="Baseline" tag="reference" text={baselineDiffText} />
+              <DiffCard title={`${form.scheme} quantized`} tag={formatBytes(primaryRun?.quantizedSizeBytes) || 'pending'} text={quantizedDiffText} compareText={baselineDiffText} />
             </div>
           </Panel>
 
           <div className="section-grid two-col">
             <Panel title="Token accuracy" icon={Gauge}>
               <div className="data-list">
-                {analyzedTokenMetrics.map(([label, value]) => (
+                {analyzedTokenMetrics.map(([label, value, title]) => (
                   <div className="data-row" key={label}>
                     <span>{label}</span>
-                    <strong>{value}</strong>
+                    <strong className={title ? 'path-value' : undefined} title={title || value}>{value}</strong>
                   </div>
                 ))}
               </div>
@@ -759,8 +813,9 @@ export function QuantizationPage(props: {
   );
 }
 
-function DiffCard(props: { title: string; tag: string; text: string; highlight?: boolean }) {
-  const words = props.text.split(' ');
+function DiffCard(props: { title: string; tag: string; text: string; compareText?: string }) {
+  const words = tokenizeDisplayText(props.text);
+  const compareWords = tokenizeDisplayText(props.compareText || '');
   return (
     <div className="quant-diff-card">
       <div className="quant-diff-title">
@@ -769,7 +824,7 @@ function DiffCard(props: { title: string; tag: string; text: string; highlight?:
       </div>
       <p>
         {words.map((word, index) => {
-          const shouldHighlight = props.highlight && ['iteratively', 'updates', 'guided', 'by'].includes(word.replace(/[.,]/g, ''));
+          const shouldHighlight = Boolean(props.compareText) && normalizeDiffToken(word) !== normalizeDiffToken(compareWords[index] || '');
           return (
             <span className={shouldHighlight ? 'diff-token' : ''} key={`${word}-${index}`}>
               {word}{' '}
@@ -779,6 +834,14 @@ function DiffCard(props: { title: string; tag: string; text: string; highlight?:
       </p>
     </div>
   );
+}
+
+function tokenizeDisplayText(value: string) {
+  return String(value || '').trim().split(/\s+/).filter(Boolean);
+}
+
+function normalizeDiffToken(value: string) {
+  return String(value || '').trim();
 }
 
 function isStepComplete(current: PlaygroundStep, candidate: PlaygroundStep) {
@@ -869,24 +932,28 @@ function getAnalyzedMetrics(result: QuantizationResult | null) {
     return headlineMetrics;
   }
   const primary = getPrimaryRun(result);
+  const failed = hasQuantizationRunFailed(primary);
 
   const sizeDelta = primary.compressionRatio === null || primary.compressionRatio === undefined
     ? 'size measured'
     : `${Math.round((1 - primary.compressionRatio) * 100)}% smaller`;
-  const speed = primary.generation?.quantized?.tokensPerSecond;
-  const speedDelta = primary.generation?.latencyDeltaPercent;
+  const baselineSpeed = getEffectiveTokensPerSecond(primary.generation?.baseline);
+  const speed = getEffectiveTokensPerSecond(primary.generation?.quantized);
+  const speedDelta = baselineSpeed && speed
+    ? ((speed - baselineSpeed) / baselineSpeed) * 100
+    : primary.generation?.latencyDeltaPercent;
 
   return [
     {
       label: 'Token agreement',
-      value: formatPercent(primary.generation?.tokenAgreement),
-      delta: 'estimated from baseline prompt output',
-      tone: 'sea',
+      value: failed ? 'Failed' : formatPercent(primary.generation?.tokenAgreement),
+      delta: failed ? 'generation check failed' : 'estimated from baseline prompt output',
+      tone: failed ? 'rose' : 'sea',
     },
     {
       label: 'Perplexity',
-      value: formatNumber(primary.perplexity?.value),
-      delta: primary.perplexity?.error ? 'perplexity failed' : 'measured with llama-perplexity',
+      value: formatMetricNumber(getEffectivePerplexity(primary)),
+      delta: getPerplexityDeltaText(primary),
       tone: primary.perplexity?.error ? 'rose' : 'gold',
     },
     {
@@ -897,9 +964,9 @@ function getAnalyzedMetrics(result: QuantizationResult | null) {
     },
     {
       label: 'Tokens/sec',
-      value: formatNumber(speed),
-      delta: speedDelta === null || speedDelta === undefined ? 'latency unavailable' : `${speedDelta >= 0 ? '+' : ''}${speedDelta.toFixed(1)}% vs baseline`,
-      tone: 'sea',
+      value: failed ? 'Failed' : formatMetricNumber(speed),
+      delta: failed ? 'latency check failed' : speedDelta === null || speedDelta === undefined ? 'latency unavailable' : `${speedDelta >= 0 ? '+' : ''}${speedDelta.toFixed(1)}% vs baseline`,
+      tone: failed ? 'rose' : 'sea',
     },
   ];
 }
@@ -909,14 +976,117 @@ function getAnalyzedTokenMetrics(result: QuantizationResult | null) {
     return tokenMetrics;
   }
   const primary = getPrimaryRun(result);
+  const artifactPath = primary.quantizedPath || '-';
+  const reportPath = result.reportPath || '-';
 
   return [
+    ['Status', hasQuantizationRunFailed(primary) ? 'Failed' : 'Succeeded'],
     ['Prompt token agreement', formatPercent(primary.generation?.tokenAgreement)],
-    ['Baseline speed', `${formatNumber(primary.generation?.baseline?.tokensPerSecond)} tok/s`],
-    ['Quantized speed', `${formatNumber(primary.generation?.quantized?.tokensPerSecond)} tok/s`],
-    ['Quantized artifact', primary.quantizedPath || '-'],
-    ['Report', result.reportPath || '-'],
+    ['Baseline speed', formatSpeed(getEffectiveTokensPerSecond(primary.generation?.baseline))],
+    ['Quantized speed', formatSpeed(getEffectiveTokensPerSecond(primary.generation?.quantized))],
+    ['Quantized artifact', formatPathForDisplay(artifactPath), artifactPath],
+    ['Report', formatPathForDisplay(reportPath), reportPath],
   ];
+}
+
+function getMissingQuantizationMetrics(run: QuantizationResult | null | undefined, form: QuantizationForm) {
+  if (!run) {
+    return [];
+  }
+
+  const missing = [];
+  const tokenAgreement = run.generation?.tokenAgreement;
+  const perplexity = getEffectivePerplexity(run);
+  const tokensPerSecond = getEffectiveTokensPerSecond(run.generation?.quantized);
+
+  if (form.benchmarks.tokenAccuracy && !isMeasuredNumber(tokenAgreement)) {
+    missing.push('token agreement');
+  }
+  if (form.benchmarks.perplexity && !isMeasuredNumber(perplexity)) {
+    missing.push('perplexity');
+  }
+  if (form.benchmarks.latencyMemory && !isMeasuredNumber(tokensPerSecond)) {
+    missing.push('tokens/sec');
+  }
+
+  return missing;
+}
+
+function isMeasuredNumber(value: number | null | undefined) {
+  return value !== null && value !== undefined && Number.isFinite(value);
+}
+
+function hasQuantizationRunFailed(run: QuantizationResult | null | undefined) {
+  return Boolean(
+    run?.generation?.status === 'failed'
+    || run?.generation?.error
+    || isLlamaErrorOutput(run?.generation?.baseline?.output)
+    || isLlamaErrorOutput(run?.generation?.quantized?.output)
+  );
+}
+
+function getQuantizationRunFailureMessage(run: QuantizationResult | null | undefined) {
+  if (run?.generation?.error) {
+    return run.generation.error;
+  }
+
+  const baselineIssue = getLlamaOutputErrorMessage(run?.generation?.baseline?.output);
+  const quantizedIssue = getLlamaOutputErrorMessage(run?.generation?.quantized?.output);
+  if (baselineIssue || quantizedIssue) {
+    return baselineIssue || quantizedIssue;
+  }
+
+  if (run?.perplexity?.error) {
+    return run.perplexity.error;
+  }
+
+  return 'The local evaluation did not complete successfully. Re-run after fixing the tool or model issue.';
+}
+
+function getDiffOutputText(output: string | undefined, run: QuantizationResult | null | undefined, label: 'baseline' | 'quantized') {
+  const issue = getLlamaOutputErrorMessage(output) || getQuantizationRunFailureMessage(hasQuantizationRunFailed(run) ? run : null);
+  if (issue && isLlamaErrorOutput(output)) {
+    return `Evaluation failed: ${issue}`;
+  }
+
+  return output || `Run a local GGUF evaluation to capture ${label} output.`;
+}
+
+function isLlamaErrorOutput(output: string | undefined) {
+  return Boolean(getLlamaOutputErrorMessage(output));
+}
+
+function getLlamaOutputErrorMessage(output: string | undefined) {
+  const text = String(output || '');
+  if (!text.trim()) {
+    return '';
+  }
+
+  const patterns = [
+    /--no-conversation\s+is\s+not\s+supported\s+by\s+llama-cli[^\n]*/i,
+    /please use llama-completion instead[^\n]*/i,
+    /failed to create command queue[^\n]*/i,
+    /failed to initialize\s+backend[^\n]*/i,
+    /unable to create context[^\n]*/i,
+  ];
+  const match = patterns.map((pattern) => text.match(pattern)?.[0]).find(Boolean);
+  return match ? match.trim() : '';
+}
+
+function formatPathForDisplay(value: string) {
+  if (!value || value === '-') {
+    return '-';
+  }
+
+  const normalized = value.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 2) {
+    return value;
+  }
+
+  const fileName = parts[parts.length - 1];
+  const parent = parts[parts.length - 2];
+  return `${parent}/${fileName}`;
 }
 
 function getBenchmarkRows(result: QuantizationResult | null) {
@@ -929,8 +1099,8 @@ function getBenchmarkRows(result: QuantizationResult | null) {
     {
       name: 'Perplexity',
       baseline: '-',
-      quantized: formatNumber(primary.perplexity?.value),
-      delta: primary.perplexity?.error ? 'failed' : 'measured',
+      quantized: formatMetricNumber(getEffectivePerplexity(primary)),
+      delta: getPerplexityDeltaText(primary),
     },
     {
       name: 'Prompt agreement',
@@ -940,11 +1110,11 @@ function getBenchmarkRows(result: QuantizationResult | null) {
     },
     {
       name: 'Tokens/sec',
-      baseline: formatNumber(primary.generation?.baseline?.tokensPerSecond),
-      quantized: formatNumber(primary.generation?.quantized?.tokensPerSecond),
-      delta: primary.generation?.latencyDeltaPercent === null || primary.generation?.latencyDeltaPercent === undefined
+      baseline: formatMetricNumber(getEffectiveTokensPerSecond(primary.generation?.baseline)),
+      quantized: formatMetricNumber(getEffectiveTokensPerSecond(primary.generation?.quantized)),
+      delta: getEffectiveLatencyDeltaPercent(primary) === null
         ? '-'
-        : `${primary.generation.latencyDeltaPercent >= 0 ? '+' : ''}${primary.generation.latencyDeltaPercent.toFixed(1)}%`,
+        : `${getEffectiveLatencyDeltaPercent(primary)! >= 0 ? '+' : ''}${getEffectiveLatencyDeltaPercent(primary)!.toFixed(1)}%`,
     },
     {
       name: 'Model size',
@@ -964,8 +1134,54 @@ function getParetoPoints(result: QuantizationResult | null, fallbackScheme: stri
     label: run.scheme || 'scheme',
     quality: formatPercent(run.generation?.tokenAgreement),
     size: formatBytes(run.quantizedSizeBytes) || '-',
-    speed: `${formatNumber(run.generation?.quantized?.tokensPerSecond)} tok/s`,
+    speed: formatSpeed(getEffectiveTokensPerSecond(run.generation?.quantized)),
   }));
+}
+
+function getEffectiveLatencyDeltaPercent(run: QuantizationResult | null | undefined) {
+  const baselineSpeed = getEffectiveTokensPerSecond(run?.generation?.baseline);
+  const quantizedSpeed = getEffectiveTokensPerSecond(run?.generation?.quantized);
+  if (baselineSpeed && quantizedSpeed) {
+    return ((quantizedSpeed - baselineSpeed) / baselineSpeed) * 100;
+  }
+
+  return run?.generation?.latencyDeltaPercent ?? null;
+}
+
+function getEffectivePerplexity(run: QuantizationResult | null | undefined) {
+  const value = run?.perplexity?.value;
+  if (value !== null && value !== undefined && Number.isFinite(value)) {
+    return value;
+  }
+
+  return parsePerplexityFromRaw(run?.perplexity?.raw);
+}
+
+function parsePerplexityFromRaw(value: string | undefined) {
+  const text = String(value || '');
+  const directMatch = text.match(/(?:Final estimate:\s*)?PPL\s*=\s*([0-9]+(?:\.[0-9]+)?)/i)
+    || text.match(/perplexity[^0-9]*([0-9]+(?:\.[0-9]+)?)/i);
+  if (directMatch) {
+    return Number(directMatch[1]);
+  }
+
+  const indexedMatches = [...text.matchAll(/\[\d+\]\s*([0-9]+(?:\.[0-9]+)?)/g)];
+  const lastIndexed = indexedMatches[indexedMatches.length - 1]?.[1];
+  return lastIndexed ? Number(lastIndexed) : null;
+}
+
+function getEffectiveTokensPerSecond(sample: { output?: string; tokensPerSecond?: number | null; durationMs?: number | null } | undefined) {
+  if (sample?.tokensPerSecond !== null && sample?.tokensPerSecond !== undefined && Number.isFinite(sample.tokensPerSecond)) {
+    return sample.tokensPerSecond;
+  }
+
+  const tokenCount = tokenizeDisplayText(sample?.output || '').length;
+  const durationMs = sample?.durationMs;
+  if (!tokenCount || !durationMs || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return null;
+  }
+
+  return tokenCount / (durationMs / 1000);
 }
 
 function getPrimaryRun(result: QuantizationResult) {
@@ -995,4 +1211,22 @@ function formatPercent(value?: number | null) {
 
 function formatNumber(value?: number | null) {
   return value === null || value === undefined || !Number.isFinite(value) ? '-' : value.toFixed(2);
+}
+
+function formatMetricNumber(value?: number | null) {
+  return value === null || value === undefined || !Number.isFinite(value) ? 'Not measured' : value.toFixed(2);
+}
+
+function formatSpeed(value?: number | null) {
+  return value === null || value === undefined || !Number.isFinite(value) ? 'Not measured' : `${value.toFixed(2)} tok/s`;
+}
+
+function getPerplexityDeltaText(run: QuantizationResult | null | undefined) {
+  if (run?.perplexity?.error) {
+    return 'perplexity failed';
+  }
+
+  return getEffectivePerplexity(run) === null || getEffectivePerplexity(run) === undefined
+    ? 'not measured'
+    : 'measured with llama-perplexity';
 }
