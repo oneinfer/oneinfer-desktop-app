@@ -5451,6 +5451,59 @@ snapshot_download(
 )
 `;
 
+const ONNX_GRAPH_INSPECT_SCRIPT = `
+import json
+import sys
+from collections import Counter
+
+import onnx
+
+model_path = sys.argv[1]
+model = onnx.load(model_path, load_external_data=False)
+graph = model.graph
+
+def dims(value_info):
+    result = []
+    tensor_type = value_info.type.tensor_type
+    if not tensor_type.HasField("shape"):
+        return result
+    for dim in tensor_type.shape.dim:
+        if dim.dim_value:
+            result.append(dim.dim_value)
+        elif dim.dim_param:
+            result.append(dim.dim_param)
+        else:
+            result.append("?")
+    return result
+
+nodes = []
+for index, node in enumerate(graph.node):
+    nodes.append({
+        "id": node.name or f"{node.op_type}_{index}",
+        "name": node.name or f"{node.op_type} {index + 1}",
+        "opType": node.op_type,
+        "inputs": list(node.input),
+        "outputs": list(node.output),
+        "attributeCount": len(node.attribute),
+    })
+
+op_counts = Counter(node["opType"] for node in nodes)
+inputs = [{"name": item.name, "dims": dims(item)} for item in graph.input]
+outputs = [{"name": item.name, "dims": dims(item)} for item in graph.output]
+initializers = {item.name for item in graph.initializer}
+
+print(json.dumps({
+    "name": graph.name or "ONNX model",
+    "nodeCount": len(nodes),
+    "opTypeCount": len(op_counts),
+    "opCounts": dict(op_counts.most_common()),
+    "inputs": inputs,
+    "outputs": outputs,
+    "initializerCount": len(initializers),
+    "nodes": nodes[:1000],
+}))
+`;
+
 async function runQuantizationEval(payload = {}) {
   const jobId = String(payload.jobId || `quant-${Date.now()}`);
   const progress = (patch) => sendQuantizationProgress({ id: jobId, ...patch });
@@ -5682,16 +5735,21 @@ async function resolveHuggingFaceGgufModelSpec({ repoInput, progress, scheme }) 
 }
 
 async function downloadHuggingFaceGgufFile(repoId, filePath, progress, label = '') {
-  const destinationPath = getHuggingFaceCachedGgufPath(repoId, filePath);
+  return downloadHuggingFaceArtifactFile(repoId, filePath, progress, label || 'GGUF');
+}
+
+async function downloadHuggingFaceArtifactFile(repoId, filePath, progress, label = '') {
+  const destinationPath = getHuggingFaceCachedArtifactPath(repoId, filePath);
+  const sendProgress = typeof progress === 'function' ? progress : () => {};
 
   if (fs.existsSync(destinationPath) && fs.statSync(destinationPath).size > 0) {
-    progress({ stage: 'download', message: `Using cached Hugging Face ${label ? `${label} ` : ''}GGUF file.`, detail: destinationPath });
+    sendProgress({ stage: 'download', message: `Using cached Hugging Face ${label ? `${label} ` : ''}artifact.`, detail: destinationPath });
     return destinationPath;
   }
 
   const downloadUrl = `https://huggingface.co/${repoId}/resolve/main/${filePath.split('/').map(encodeURIComponent).join('/')}`;
-  progress({ stage: 'download', message: `Downloading ${path.basename(filePath)} from Hugging Face.`, detail: downloadUrl });
-  await downloadFile(downloadUrl, destinationPath, progress);
+  sendProgress({ stage: 'download', message: `Downloading ${path.basename(filePath)} from Hugging Face.`, detail: downloadUrl });
+  await downloadFile(downloadUrl, destinationPath, sendProgress);
   if (!fs.existsSync(destinationPath) || fs.statSync(destinationPath).size === 0) {
     throw new Error(`Hugging Face download finished, but the model file was not saved: ${destinationPath}`);
   }
@@ -5776,9 +5834,14 @@ function getHuggingFaceRepoCacheDirectory(repoId) {
 }
 
 function getHuggingFaceCachedGgufPath(repoId, filePath) {
-  const filename = path.basename(String(filePath || 'model.gguf'));
+  return getHuggingFaceCachedArtifactPath(repoId, filePath);
+}
+
+function getHuggingFaceCachedArtifactPath(repoId, filePath) {
+  const filename = path.basename(String(filePath || 'model'));
   const fileHash = crypto.createHash('sha1').update(`${repoId}:${filePath}`).digest('hex').slice(0, 12);
-  return path.join(getHuggingFaceRepoCacheDirectory(repoId), 'gguf', `${fileHash}-${filename}`);
+  const extension = path.extname(filename).replace('.', '').toLowerCase() || 'artifact';
+  return path.join(getHuggingFaceRepoCacheDirectory(repoId), extension, `${fileHash}-${filename}`);
 }
 
 function sanitizeCacheSegment(value) {
@@ -5997,6 +6060,248 @@ async function listHuggingFaceGgufFiles(repoId, progress) {
   }
 
   return ggufFiles;
+}
+
+async function inspectHuggingFaceModel(payload = {}) {
+  const parsed = parseHuggingFaceInput(payload.repo || payload.hfRepo || payload.modelId);
+  if (!parsed.repoId) {
+    throw new Error('Enter a valid Hugging Face repo id or URL, for example TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF.');
+  }
+
+  const modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+  const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+  const files = siblings
+    .map((item) => {
+      const name = String(item.rfilename || '').trim();
+      return {
+        name,
+        size: Number.isFinite(item.size) ? item.size : null,
+        format: detectHuggingFaceFileFormat(name),
+        role: detectHuggingFaceFileRole(name),
+        quantization: getGgufQuantizationFromPath(name) || null,
+      };
+    })
+    .filter((file) => file.name);
+  const ggufFiles = files.filter((file) => file.format === 'GGUF');
+  const safetensorsFiles = files.filter((file) => file.format === 'safetensors');
+  const onnxFiles = files.filter((file) => file.format === 'ONNX');
+  const pytorchFiles = files.filter((file) => file.format === 'PyTorch');
+  const tags = Array.isArray(modelInfo?.tags) ? modelInfo.tags.map((tag) => String(tag)) : [];
+  const pipelineTag = String(modelInfo?.pipeline_tag || '').trim();
+  const libraryName = String(modelInfo?.library_name || '').trim();
+  const license = tags.find((tag) => tag.toLowerCase().startsWith('license:'))?.split(':').slice(1).join(':')
+    || String(modelInfo?.cardData?.license || '').trim()
+    || '';
+  const availableSchemes = [...new Set(ggufFiles.map((file) => file.quantization).filter(Boolean))];
+  const formats = [...new Set(files.map((file) => file.format).filter(Boolean))];
+  const likelyTextModel = isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files });
+  const hasTokenizer = files.some((file) => file.role === 'tokenizer');
+  const localQuantizationStatus = ggufFiles.length > 0
+    ? 'supported'
+    : safetensorsFiles.length > 0 && (likelyTextModel || hasTokenizer)
+      ? 'conversion-required'
+      : 'unsupported';
+  const baselineFile = ggufFiles.length > 0
+    ? selectHuggingFaceBaselineGgufFile(ggufFiles.map((file) => file.name), '')
+    : '';
+  const warnings = [];
+
+  if (localQuantizationStatus === 'unsupported') {
+    warnings.push(getUnsupportedHuggingFaceReason({ pipelineTag, formats }));
+  } else if (localQuantizationStatus === 'conversion-required') {
+    warnings.push('No GGUF artifact was found. Local quantization will need to download and convert safetensors/Transformers weights to GGUF first.');
+  } else if (!baselineFile || getGgufQuantizationFromPath(baselineFile)) {
+    warnings.push('No F16/FP16 GGUF baseline was found. The app will use the strongest available GGUF artifact as the baseline.');
+  }
+
+  const graphFile = selectHuggingFaceOnnxGraphFile(onnxFiles.map((file) => file.name), parsed.filePath);
+  const graph = graphFile
+    ? await inspectHuggingFaceOnnxGraph({
+        repoId: parsed.repoId,
+        filePath: graphFile,
+        progressLabel: parsed.repoId,
+      }).catch((error) => ({
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    : null;
+
+  return {
+    repoId: parsed.repoId,
+    requestedFilePath: parsed.filePath || '',
+    name: String(modelInfo?.modelId || parsed.repoId),
+    author: String(modelInfo?.author || ''),
+    pipelineTag,
+    libraryName,
+    license,
+    tags,
+    likes: Number.isFinite(modelInfo?.likes) ? modelInfo.likes : null,
+    downloads: Number.isFinite(modelInfo?.downloads) ? modelInfo.downloads : null,
+    formats,
+    availableSchemes,
+    baselineFile,
+    localQuantizationStatus,
+    localQuantizationSupported: localQuantizationStatus !== 'unsupported',
+    fileSummary: {
+      total: files.length,
+      gguf: ggufFiles.length,
+      safetensors: safetensorsFiles.length,
+      onnx: onnxFiles.length,
+      pytorch: pytorchFiles.length,
+    },
+    files: files.slice(0, 24),
+    graph,
+    warnings,
+  };
+}
+
+async function inspectHuggingFaceOnnxGraph({ repoId, filePath }) {
+  const modelPath = await downloadHuggingFaceArtifactFile(repoId, filePath, null, 'ONNX graph');
+  const python = await getQuantizationPythonCommand(() => {});
+  await ensurePythonPackages(python, ['onnx'], () => {});
+  const { stdout } = await runCommand(python.command, [...python.prefixArgs, '-u', '-c', ONNX_GRAPH_INSPECT_SCRIPT, modelPath], {
+    timeoutMs: 5 * 60 * 1000,
+    maxOutputBuffer: 2 * 1024 * 1024,
+  });
+  const parsed = JSON.parse(stdout);
+  return {
+    status: 'ready',
+    file: filePath,
+    ...parsed,
+    blockGraph: buildOnnxBlockGraph(parsed),
+  };
+}
+
+function buildOnnxBlockGraph(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const opCounts = graph?.opCounts && typeof graph.opCounts === 'object' ? graph.opCounts : {};
+  const blocks = [];
+  const addBlock = (id, label, description, opTypes = []) => {
+    blocks.push({
+      id,
+      label,
+      description,
+      opTypes,
+      count: opTypes.reduce((sum, opType) => sum + Number(opCounts[opType] || 0), 0),
+    });
+  };
+
+  addBlock('input', 'Input', formatOnnxValueList(graph?.inputs) || 'Model input tensors', []);
+  if (opCounts.Resize || opCounts.Reshape || opCounts.Transpose) {
+    addBlock('preprocess', 'Resize / reshape', 'Input shape and layout preparation', ['Resize', 'Reshape', 'Transpose']);
+  }
+  addBlock('features', inferOnnxFeatureBlockLabel(nodes), 'Feature extraction layers', ['Conv', 'BatchNormalization', 'Relu', 'Sigmoid', 'Mul']);
+  if (opCounts.Concat || opCounts.Add || opCounts.Upsample) {
+    addBlock('fusion', 'Feature fusion', 'Multi-scale feature merge / neck operations', ['Concat', 'Add', 'Upsample']);
+  }
+  addBlock('head', inferOnnxHeadBlockLabel(nodes), 'Prediction head and output projection', ['Gemm', 'MatMul', 'Softmax', 'Conv']);
+  if (opCounts.NonMaxSuppression) {
+    addBlock('nms', 'NMS', 'Non-maximum suppression', ['NonMaxSuppression']);
+  }
+  addBlock('output', 'Output', formatOnnxValueList(graph?.outputs) || 'Model output tensors', []);
+
+  return {
+    blocks: blocks.filter((block, index) => index === 0 || index === blocks.length - 1 || block.count > 0),
+  };
+}
+
+function selectHuggingFaceOnnxGraphFile(onnxFiles, requestedFilePath = '') {
+  if (!Array.isArray(onnxFiles) || onnxFiles.length === 0) {
+    return '';
+  }
+
+  if (requestedFilePath && requestedFilePath.toLowerCase().endsWith('.onnx') && onnxFiles.includes(requestedFilePath)) {
+    return requestedFilePath;
+  }
+
+  const sorted = [...onnxFiles].sort((left, right) => scoreOnnxGraphFile(right) - scoreOnnxGraphFile(left));
+  return sorted[0] || '';
+}
+
+function scoreOnnxGraphFile(filePath) {
+  const lower = String(filePath || '').toLowerCase();
+  let score = 0;
+  if (/(^|\/)model\.onnx$/.test(lower)) score += 100;
+  if (/(^|\/)decoder_model_merged\.onnx$/.test(lower)) score += 70;
+  if (/(^|\/)encoder_model\.onnx$/.test(lower)) score += 60;
+  if (lower.includes('/onnx/')) score += 20;
+  if (lower.includes('quant')) score -= 30;
+  if (lower.includes('external')) score -= 20;
+  return score;
+}
+
+function inferOnnxFeatureBlockLabel(nodes) {
+  const names = nodes.map((node) => `${node.name} ${node.opType}`.toLowerCase()).join(' ');
+  if (names.includes('yolo')) return 'YOLO backbone';
+  if (names.includes('bert') || names.includes('attention')) return 'Transformer encoder';
+  return 'Feature extractor';
+}
+
+function inferOnnxHeadBlockLabel(nodes) {
+  const names = nodes.map((node) => `${node.name} ${node.opType}`.toLowerCase()).join(' ');
+  if (names.includes('pose')) return 'Pose detection head';
+  if (names.includes('detect')) return 'Detection head';
+  if (names.includes('class')) return 'Classification head';
+  return 'Prediction head';
+}
+
+function formatOnnxValueList(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return '';
+  }
+
+  return values.slice(0, 3).map((value) => {
+    const shape = Array.isArray(value.dims) && value.dims.length > 0 ? ` [${value.dims.join(' x ')}]` : '';
+    return `${value.name}${shape}`;
+  }).join(', ');
+}
+
+function detectHuggingFaceFileFormat(filename) {
+  const lower = String(filename || '').toLowerCase();
+  if (lower.endsWith('.gguf')) return 'GGUF';
+  if (lower.endsWith('.safetensors')) return 'safetensors';
+  if (lower.endsWith('.onnx')) return 'ONNX';
+  if (lower.endsWith('.bin')) return 'PyTorch';
+  if (lower.endsWith('.pt') || lower.endsWith('.pth')) return 'PyTorch';
+  if (lower.endsWith('.json')) return 'JSON';
+  if (lower.endsWith('.model')) return 'SentencePiece';
+  if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text';
+  return path.extname(lower).replace('.', '').toUpperCase() || 'file';
+}
+
+function detectHuggingFaceFileRole(filename) {
+  const base = path.basename(String(filename || '').toLowerCase());
+  if (base.endsWith('.gguf') || base.endsWith('.safetensors') || base.endsWith('.onnx') || base === 'pytorch_model.bin') {
+    return 'model weights';
+  }
+  if (base.includes('tokenizer') || base === 'vocab.json' || base === 'merges.txt' || base.endsWith('.model')) {
+    return 'tokenizer';
+  }
+  if (base === 'config.json' || base === 'generation_config.json') {
+    return 'config';
+  }
+  if (base === 'readme.md') {
+    return 'model card';
+  }
+  return 'support file';
+}
+
+function isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files }) {
+  const combined = [pipelineTag, libraryName, ...tags].join(' ').toLowerCase();
+  if (/text-generation|text2text-generation|conversational|sentence-generation|llama|mistral|qwen|gemma|phi|transformers/.test(combined)) {
+    return true;
+  }
+
+  return files.some((file) => /tokenizer|generation_config|special_tokens_map|sentencepiece/i.test(file.name));
+}
+
+function getUnsupportedHuggingFaceReason({ pipelineTag, formats }) {
+  const formatText = formats.length > 0 ? formats.join(', ') : 'no supported model artifact';
+  if (pipelineTag) {
+    return `This repo appears to be a ${pipelineTag} model with ${formatText} files. Local quantization currently supports GGUF language models.`;
+  }
+
+  return `This repo exposes ${formatText} files. Local quantization currently supports GGUF language models.`;
 }
 
 function selectHuggingFaceGgufFile(ggufFiles, scheme = '') {
@@ -6647,6 +6952,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
   ipcMain.handle('app:run-quantization-eval', async (_event, payload) => runQuantizationEval(payload));
   ipcMain.handle('app:clear-quantization-cache', async (_event, payload) => clearQuantizationCache(payload));
+  ipcMain.handle('app:inspect-hf-model', async (_event, payload) => inspectHuggingFaceModel(payload));
   ipcMain.handle('app:git-pull', async () => {
     try {
       const projectRoot = path.join(__dirname, '..');

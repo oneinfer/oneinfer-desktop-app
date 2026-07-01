@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   BarChart3,
   CheckCircle2,
   Cpu,
@@ -7,6 +8,7 @@ import {
   FileJson,
   Gauge,
   Layers3,
+  Maximize2,
   Play,
   Rocket,
   SlidersHorizontal,
@@ -15,7 +17,7 @@ import {
   Trash2,
 } from 'lucide-react';
 
-import { Panel } from '../components/Common';
+import { Modal, Panel } from '../components/Common';
 import type { DashboardState, ServingLibrary } from '../types';
 
 type PlaygroundStep = 'configure' | 'evaluate' | 'analyze' | 'deploy';
@@ -63,6 +65,78 @@ interface QuantizationTools {
     cli?: string | null;
     perplexity?: string | null;
   };
+}
+
+interface HuggingFaceInspection {
+  repoId: string;
+  requestedFilePath?: string;
+  name: string;
+  author?: string;
+  pipelineTag?: string;
+  libraryName?: string;
+  license?: string;
+  tags: string[];
+  likes?: number | null;
+  downloads?: number | null;
+  formats: string[];
+  availableSchemes: string[];
+  baselineFile?: string;
+  localQuantizationStatus: 'supported' | 'conversion-required' | 'unsupported';
+  localQuantizationSupported: boolean;
+  fileSummary: {
+    total: number;
+    gguf: number;
+    safetensors: number;
+    onnx: number;
+    pytorch: number;
+  };
+  files: Array<{
+    name: string;
+    size?: number | null;
+    format: string;
+    role: string;
+    quantization?: string | null;
+  }>;
+  graph?: HfModelGraph | null;
+  warnings: string[];
+}
+
+interface HfModelGraph {
+  status: 'ready' | 'error';
+  error?: string;
+  file?: string;
+  name?: string;
+  nodeCount?: number;
+  opTypeCount?: number;
+  opCounts?: Record<string, number>;
+  inputs?: Array<{ name: string; dims: Array<string | number> }>;
+  outputs?: Array<{ name: string; dims: Array<string | number> }>;
+  nodes?: Array<{
+    id: string;
+    name: string;
+    opType: string;
+    inputs: string[];
+    outputs: string[];
+    attributeCount: number;
+  }>;
+  blockGraph?: {
+    blocks: Array<{
+      id: string;
+      label: string;
+      description: string;
+      opTypes: string[];
+      count: number;
+    }>;
+  };
+}
+
+interface HfGraphSelection {
+  id: string;
+  label: string;
+  kind: 'section' | 'layer' | 'block';
+  opType: string;
+  count: number;
+  description?: string;
 }
 
 interface QuantizationForm {
@@ -263,6 +337,10 @@ export function QuantizationPage(props: {
   const [tools, setTools] = useState<QuantizationTools | null>(null);
   const [cacheClearStatus, setCacheClearStatus] = useState<string | null>(null);
   const [cacheClearing, setCacheClearing] = useState(false);
+  const [hfInspection, setHfInspection] = useState<HuggingFaceInspection | null>(null);
+  const [hfInspectionStatus, setHfInspectionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [hfInspectionError, setHfInspectionError] = useState<string | null>(null);
+  const [hfGraphGranularity, setHfGraphGranularity] = useState<'block' | 'node'>('block');
 
   const runStages = useMemo(() => getRunStages(form), [form]);
   const runStepIndex = status === 'complete' ? runStages.length : Math.min(runStages.length - 1, Math.floor(progress / Math.max(1, 100 / runStages.length)));
@@ -301,8 +379,11 @@ export function QuantizationPage(props: {
   const targetNeedsInstance = Boolean(selectedTarget.requiresInstance);
   const catalogModels = useMemo(() => getCatalogModelOptions(props.dashboard.models), [props.dashboard.models]);
   const selectedModelName = getSelectedModelName(form);
-  const canRunEval = !targetNeedsInstance && selectedModelName.trim().length > 0;
-  const needsLocalGguf = form.modelSource !== 'local' && selectedTarget.value === 'local';
+  const hfUnsupportedForLocal = form.modelSource === 'huggingface'
+    && selectedTarget.value === 'local'
+    && hfInspection?.localQuantizationStatus === 'unsupported';
+  const canRunEval = !targetNeedsInstance && !hfUnsupportedForLocal && selectedModelName.trim().length > 0;
+  const needsLocalGguf = form.modelSource === 'catalog' && selectedTarget.value === 'local';
   const localQuantizationTarget = selectedTarget.value === 'local';
   const quantizeInstalled = Boolean(tools?.quantize);
   const installingLlamaCpp = props.busy === 'install-llama_cpp';
@@ -342,6 +423,58 @@ export function QuantizationPage(props: {
       .then(setTools)
       .catch(() => setTools(null));
   }, [props.busy]);
+
+  useEffect(() => {
+    if (form.modelSource !== 'huggingface') {
+      setHfInspection(null);
+      setHfInspectionStatus('idle');
+      setHfInspectionError(null);
+      return undefined;
+    }
+
+    const repo = form.hfRepo.trim();
+    if (!repo || repo.split('/').filter(Boolean).length < 2) {
+      setHfInspection(null);
+      setHfInspectionStatus('idle');
+      setHfInspectionError(null);
+      return undefined;
+    }
+
+    if (!window.desktopBridge?.inspectHfModel) {
+      setHfInspection(null);
+      setHfInspectionStatus('error');
+      setHfInspectionError('Hugging Face inspection is not available in this app build. Restart Electron after updating the app.');
+      return undefined;
+    }
+
+    let cancelled = false;
+    setHfInspectionStatus('loading');
+    setHfInspectionError(null);
+
+    const timeoutId = window.setTimeout(() => {
+      window.desktopBridge.inspectHfModel({ repo })
+        .then((inspection) => {
+          if (cancelled) {
+            return;
+          }
+          setHfInspection(inspection as HuggingFaceInspection);
+          setHfInspectionStatus('ready');
+        })
+        .catch((error) => {
+          if (cancelled) {
+            return;
+          }
+          setHfInspection(null);
+          setHfInspectionStatus('error');
+          setHfInspectionError(error instanceof Error ? error.message : 'Unable to inspect Hugging Face model.');
+        });
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [form.hfRepo, form.modelSource]);
 
   function updateForm(next: Partial<QuantizationForm>) {
     setForm((current) => ({ ...current, ...next }));
@@ -482,14 +615,23 @@ export function QuantizationPage(props: {
                 </div>
 
                 {form.modelSource === 'huggingface' ? (
-                  <label>
-                    <span>Hugging Face repo</span>
-                    <input
-                      placeholder="owner/model-name"
-                      value={form.hfRepo}
-                      onChange={(event) => updateForm({ hfRepo: event.target.value })}
+                  <>
+                    <label>
+                      <span>Hugging Face repo</span>
+                      <input
+                        placeholder="owner/model-name"
+                        value={form.hfRepo}
+                        onChange={(event) => updateForm({ hfRepo: event.target.value })}
+                      />
+                    </label>
+                    <HuggingFacePreview
+                      error={hfInspectionError}
+                      graphGranularity={hfGraphGranularity}
+                      inspection={hfInspection}
+                      onGraphGranularityChange={setHfGraphGranularity}
+                      status={hfInspectionStatus}
                     />
-                  </label>
+                  </>
                 ) : null}
 
                 {form.modelSource === 'catalog' ? (
@@ -536,6 +678,11 @@ export function QuantizationPage(props: {
                 {needsLocalGguf ? (
                   <div className="quant-target-warning">
                     <span>Local Hugging Face quantization works when the repo contains a GGUF artifact. Transformers/safetensors repos still need conversion to GGUF before local quantization can run.</span>
+                  </div>
+                ) : null}
+                {hfUnsupportedForLocal ? (
+                  <div className="quant-target-warning">
+                    <span>{hfInspection?.warnings[0] || 'This Hugging Face repo is not supported by the local GGUF quantization runner.'}</span>
                   </div>
                 ) : null}
                 {localQuantizationTarget && !quantizeInstalled ? (
@@ -834,6 +981,637 @@ function DiffCard(props: { title: string; tag: string; text: string; compareText
       </p>
     </div>
   );
+}
+
+function HuggingFacePreview(props: {
+  inspection: HuggingFaceInspection | null;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  error: string | null;
+  graphGranularity: 'block' | 'node';
+  onGraphGranularityChange: (value: 'block' | 'node') => void;
+}) {
+  const [graphExpanded, setGraphExpanded] = useState(false);
+
+  useEffect(() => {
+    setGraphExpanded(false);
+  }, [props.inspection?.repoId, props.status]);
+
+  if (props.status === 'loading') {
+    return (
+      <div className="quant-hf-status-row">
+        <span className="quant-hf-status-dot loading" />
+        <span>Checking Hugging Face repo...</span>
+      </div>
+    );
+  }
+
+  if (props.status === 'error') {
+    return (
+      <div className="quant-hf-status-row warning">
+        <AlertTriangle size={15} />
+        <span>{props.error || 'Could not inspect Hugging Face repo.'}</span>
+      </div>
+    );
+  }
+
+  const inspection = props.inspection;
+  if (!inspection) {
+    return null;
+  }
+
+  const graph = getHfViewerGraph(inspection);
+
+  return (
+    <>
+      <HfInteractiveGraph
+        graph={graph}
+        granularity={props.graphGranularity}
+        onGranularityChange={props.onGraphGranularityChange}
+        onViewGraph={() => {
+          props.onGraphGranularityChange('node');
+          setGraphExpanded(true);
+        }}
+        repoId={inspection.repoId}
+      />
+      <Modal title={`${inspection.repoId} Graph`} isOpen={graphExpanded} onClose={() => setGraphExpanded(false)}>
+        <div className="quant-hf-graph-modal">
+          {graphExpanded ? (
+            <HfInteractiveGraph
+              graph={graph}
+              granularity={props.graphGranularity}
+              onGranularityChange={props.onGraphGranularityChange}
+              repoId={inspection.repoId}
+              size="large"
+            />
+          ) : null}
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+function getHfViewerGraph(inspection: HuggingFaceInspection) {
+  if (isYoloHfModel(inspection)) {
+    return buildHfOnnxArchitectureGraph(inspection, inspection.graph?.status === 'error' ? inspection.graph.error : undefined);
+  }
+
+  if (inspection.graph?.status === 'ready') {
+    return inspection.graph;
+  }
+
+  if (inspection.formats.includes('ONNX')) {
+    return buildHfOnnxArchitectureGraph(inspection, inspection.graph?.error);
+  }
+
+  return buildHfArtifactGraph(inspection, inspection.graph?.error);
+}
+
+function buildHfOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphError?: string): HfModelGraph {
+  if (!isYoloHfModel(inspection)) {
+    return buildGenericOnnxArchitectureGraph(inspection, graphError);
+  }
+
+  const layerPlan = [
+    ['input', 'input', 'image tensor'],
+    ['resize/rescale', 'Resize', 'preprocess'],
+    ['YOLOv8 CSP backbone', 'Group', 'backbone'],
+    ['Conv', 'Conv', 'backbone'],
+    ['Conv', 'Conv', 'backbone'],
+    ['C2f', 'C2f', 'backbone'],
+    ['Conv', 'Conv', 'backbone'],
+    ['C2f x2', 'C2f', 'backbone'],
+    ['Conv', 'Conv', 'backbone'],
+    ['C2f x2', 'C2f', 'backbone'],
+    ['Conv', 'Conv', 'backbone'],
+    ['C2f', 'C2f', 'backbone'],
+    ['SPPF', 'SPPF', 'backbone'],
+    ['YOLOv8 PAN-FPN neck', 'Group', 'neck'],
+    ['Upsample', 'Resize', 'neck'],
+    ['Concat', 'Concat', 'neck'],
+    ['C2f', 'C2f', 'neck'],
+    ['Upsample', 'Resize', 'neck'],
+    ['Concat', 'Concat', 'neck'],
+    ['C2f', 'C2f', 'neck'],
+    ['Conv', 'Conv', 'neck'],
+    ['Concat', 'Concat', 'neck'],
+    ['C2f', 'C2f', 'neck'],
+    ['Conv', 'Conv', 'neck'],
+    ['Concat', 'Concat', 'neck'],
+    ['C2f', 'C2f', 'neck'],
+    ['YOLOv8 pose detection head', 'Group', 'head'],
+    ['Detect Conv', 'Conv', 'head'],
+    ['Pose Conv', 'Conv', 'head'],
+    ['DFL', 'DFL', 'head'],
+    ['NMS', 'NonMaxSuppression', 'postprocess'],
+    ['person poses', 'output', 'output'],
+  ];
+  const nodes = layerPlan.map(([name, opType, section], index) => ({
+    id: `${section}-${index}`,
+    name,
+    opType,
+    inputs: index === 0 ? [] : [`layer_${index - 1}`],
+    outputs: [`layer_${index}`],
+    attributeCount: section === 'input' || section === 'output' ? 0 : 1,
+  }));
+  const opCounts = nodes.reduce<Record<string, number>>((accumulator, node) => {
+    accumulator[node.opType] = (accumulator[node.opType] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  return {
+    status: 'ready',
+    file: inspection.files.find((file) => file.format === 'ONNX')?.name || 'onnx/model.onnx',
+    name: graphError ? 'YOLO architecture view' : inspection.name,
+    nodeCount: nodes.length,
+    opTypeCount: Object.keys(opCounts).length,
+    opCounts,
+    inputs: [{ name: 'input', dims: [1, 3, 640, 640] }],
+    outputs: [{ name: 'person poses', dims: ['boxes', 'keypoints', 'scores'] }],
+    nodes,
+    blockGraph: {
+      blocks: [
+        { id: 'input', label: 'image', description: 'RGB image input', opTypes: ['input'], count: 1 },
+        { id: 'preprocess', label: 'resize / rescale', description: 'Input normalization', opTypes: ['Resize'], count: 1 },
+        { id: 'backbone', label: 'YOLOv8 CSP backbone', description: 'Feature extraction', opTypes: ['Conv', 'C2f', 'SPPF'], count: 11 },
+        { id: 'neck', label: 'YOLOv8 PAN-FPN neck', description: 'Feature fusion', opTypes: ['Resize', 'Concat', 'C2f', 'Conv'], count: 12 },
+        { id: 'head', label: 'YOLOv8 pose detection head', description: 'Pose prediction', opTypes: ['Conv', 'DFL'], count: 3 },
+        { id: 'nms', label: 'NMS', description: 'Non-maximum suppression', opTypes: ['NonMaxSuppression'], count: 1 },
+        { id: 'output', label: 'person poses', description: 'Detected poses', opTypes: ['output'], count: 1 },
+      ],
+    },
+    error: graphError,
+  };
+}
+
+function isYoloHfModel(inspection: HuggingFaceInspection) {
+  return /yolo/i.test(`${inspection.repoId} ${inspection.name} ${inspection.pipelineTag || ''} ${inspection.libraryName || ''} ${inspection.tags.join(' ')}`);
+}
+
+function buildGenericOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphError?: string): HfModelGraph {
+  const onnxFiles = inspection.files.filter((file) => file.format === 'ONNX');
+  const nodes = [
+    { id: 'input', name: 'input', opType: 'input', inputs: [], outputs: ['input'], attributeCount: 0 },
+    { id: 'onnx-model', name: 'ONNX model graph', opType: 'ONNX', inputs: ['input'], outputs: ['features'], attributeCount: onnxFiles.length },
+    { id: 'output', name: 'output', opType: 'output', inputs: ['features'], outputs: [], attributeCount: 0 },
+  ];
+
+  return {
+    status: 'ready',
+    file: onnxFiles[0]?.name || '',
+    name: graphError ? 'ONNX architecture view' : inspection.name,
+    nodeCount: nodes.length,
+    opTypeCount: 3,
+    opCounts: { input: 1, ONNX: 1, output: 1 },
+    inputs: [{ name: inspection.repoId, dims: [inspection.pipelineTag || 'unknown task'] }],
+    outputs: [{ name: 'model output', dims: ['ONNX'] }],
+    nodes,
+    blockGraph: {
+      blocks: [
+        { id: 'input', label: 'Input', description: 'Model inputs', opTypes: ['input'], count: 1 },
+        { id: 'graph', label: 'ONNX graph', description: graphError ? 'Parser unavailable; showing architecture placeholder' : 'Model graph', opTypes: ['ONNX'], count: 1 },
+        { id: 'output', label: 'Output', description: 'Model outputs', opTypes: ['output'], count: 1 },
+      ],
+    },
+    error: graphError,
+  };
+}
+
+function buildHfArtifactGraph(inspection: HuggingFaceInspection, graphError?: string): HfModelGraph {
+  const statusText = getHfCompactStatus(inspection);
+  const files = inspection.files.slice(0, 28);
+  const formatCounts = files.reduce<Record<string, number>>((accumulator, file) => {
+    accumulator[file.format] = (accumulator[file.format] || 0) + 1;
+    return accumulator;
+  }, {});
+  const supported = inspection.localQuantizationStatus === 'supported';
+  const conversionRequired = inspection.localQuantizationStatus === 'conversion-required';
+  const blocks = [
+    {
+      id: 'repo',
+      label: 'Hugging Face repo',
+      description: inspection.repoId,
+      opTypes: [],
+      count: 0,
+    },
+    {
+      id: 'artifacts',
+      label: supported ? 'GGUF artifacts' : conversionRequired ? 'Transformers weights' : 'Model artifacts',
+      description: `${inspection.fileSummary.total} files`,
+      opTypes: Object.keys(formatCounts),
+      count: inspection.fileSummary.total,
+    },
+    {
+      id: 'quantization',
+      label: supported ? 'Quantization ready' : conversionRequired ? 'Conversion needed' : 'Unsupported locally',
+      description: statusText,
+      opTypes: [],
+      count: inspection.availableSchemes.length,
+    },
+    {
+      id: 'evaluation',
+      label: supported ? 'Run eval' : 'Review target',
+      description: supported ? 'Download/cache, then measure quality and speed' : 'Local runner currently expects GGUF language models',
+      opTypes: [],
+      count: 0,
+    },
+  ];
+
+  return {
+    status: 'ready',
+    file: inspection.baselineFile || inspection.files[0]?.name || '',
+    name: graphError ? 'Repository artifact view' : inspection.name,
+    nodeCount: files.length,
+    opTypeCount: Object.keys(formatCounts).length,
+    opCounts: formatCounts,
+    inputs: [{ name: inspection.repoId, dims: [inspection.pipelineTag || 'unknown task'] }],
+    outputs: [{ name: supported ? 'local GGUF evaluation' : 'inspection result', dims: [inspection.localQuantizationStatus] }],
+    nodes: files.map((file, index) => ({
+      id: `${file.name}-${index}`,
+      name: formatHfFileName(file.name),
+      opType: file.format,
+      inputs: [],
+      outputs: [],
+      attributeCount: file.quantization ? 1 : 0,
+    })),
+    blockGraph: { blocks },
+    error: graphError,
+  };
+}
+
+function getHfCompactStatus(inspection: HuggingFaceInspection) {
+  if (inspection.localQuantizationStatus === 'supported') {
+    const schemeText = inspection.availableSchemes.length > 0
+      ? `${inspection.availableSchemes.slice(0, 4).join(', ')}${inspection.availableSchemes.length > 4 ? '...' : ''}`
+      : 'GGUF';
+    return `GGUF repo ready. Available schemes: ${schemeText}. Click Run quick eval to download/cache and evaluate.`;
+  }
+
+  if (inspection.localQuantizationStatus === 'conversion-required') {
+    return 'Repo inspected. No GGUF artifact found; local eval will need HF download and GGUF conversion first.';
+  }
+
+  return inspection.warnings[0] || `Repo inspected. Found ${inspection.formats.join(', ') || 'no supported'} files, but local quantization supports GGUF language models.`;
+}
+
+function HfInteractiveGraph(props: {
+  graph: HfModelGraph;
+  granularity: 'block' | 'node';
+  onGranularityChange: (value: 'block' | 'node') => void;
+  onViewGraph?: () => void;
+  repoId: string;
+  size?: 'embedded' | 'large';
+}) {
+  const [selection, setSelection] = useState<HfGraphSelection | null>(null);
+  const [selectionAction, setSelectionAction] = useState<string | null>(null);
+  const nodes = props.graph.status === 'ready' ? props.graph.nodes || [] : [];
+  const blocks = props.graph.status === 'ready' ? props.graph.blockGraph?.blocks || [] : [];
+  const size = props.size || 'embedded';
+  const isFineMode = props.granularity === 'node';
+
+  useEffect(() => {
+    setSelection(null);
+    setSelectionAction(null);
+  }, [props.graph.name, props.repoId]);
+
+  if (props.graph.status === 'error') {
+    return (
+      <div className="quant-hf-graph-error">
+        <AlertTriangle size={15} />
+        <span>Graph inspection failed: {props.graph.error || 'Unable to read ONNX graph.'}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`quant-hf-graph ${size}`}>
+      <div className="quant-hf-graph-title">
+        <div>
+          <span className="eyebrow">Interactive model view</span>
+          <strong>{props.repoId}</strong>
+          <small>{formatHfFileName(props.graph.file || '') || props.graph.name || 'ONNX graph'}</small>
+        </div>
+        <div className="quant-hf-graph-toggle" role="group" aria-label="Model graph granularity">
+          {(['block', 'node'] as const).map((value) => (
+            <button
+              className={props.granularity === value ? 'active' : ''}
+              key={value}
+              type="button"
+              onClick={() => props.onGranularityChange(value)}
+            >
+              {value === 'block' ? 'Block' : 'Fine'}
+            </button>
+          ))}
+        </div>
+        {props.onViewGraph ? (
+          <button className="secondary-button quant-hf-view-graph" type="button" onClick={props.onViewGraph}>
+            <Maximize2 size={15} />
+            View graph
+          </button>
+        ) : null}
+      </div>
+
+      <div className="quant-hf-graph-shell">
+        <div className="quant-hf-graph-canvas">
+          <div className="quant-hf-window-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          {isFineMode ? (
+            <HfLayerFlow nodes={nodes} onSelect={setSelection} selectedId={selection?.id || ''} size={size} />
+          ) : (
+            <HfBlockGraph blocks={blocks} onSelect={setSelection} selectedId={selection?.id || ''} />
+          )}
+        </div>
+        <HfGraphSidebar
+          graph={props.graph}
+          onQuantizeSelection={() => {
+            if (!selection) {
+              return;
+            }
+            setSelectionAction(`Prepared ${selection.label} (${selection.count} ${selection.count === 1 ? 'layer' : 'layers'}) for selective quantization.`);
+          }}
+          selection={selection}
+          selectionAction={selectionAction}
+        />
+      </div>
+    </div>
+  );
+}
+
+function HfBlockGraph(props: {
+  blocks: NonNullable<HfModelGraph['blockGraph']>['blocks'];
+  onSelect: (selection: HfGraphSelection) => void;
+  selectedId: string;
+}) {
+  const blocks = props.blocks.length > 0 ? props.blocks : [
+    { id: 'input', label: 'Input', description: 'Model inputs', opTypes: [], count: 0 },
+    { id: 'graph', label: 'ONNX graph', description: 'Operations extracted from model file', opTypes: [], count: 0 },
+    { id: 'output', label: 'Output', description: 'Model outputs', opTypes: [], count: 0 },
+  ];
+
+  return (
+    <div className="quant-hf-block-stack">
+      {blocks.map((block, index) => (
+        <button
+          className={`quant-hf-block-node tone-${index % 6} ${props.selectedId === block.id ? 'selected' : ''}`}
+          key={block.id}
+          type="button"
+          onClick={() => props.onSelect({
+            id: block.id,
+            label: block.label,
+            kind: 'block',
+            opType: block.opTypes.join(', ') || 'block',
+            count: block.count,
+            description: block.description,
+          })}
+        >
+          <strong>{block.label}</strong>
+          <span>{block.count > 0 ? `${block.count} ops` : block.description}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function HfLayerFlow(props: {
+  nodes: HfModelGraph['nodes'];
+  onSelect: (selection: HfGraphSelection) => void;
+  selectedId: string;
+  size: 'embedded' | 'large';
+}) {
+  const nodes = props.nodes || [];
+  const visibleNodes = props.size === 'large' ? nodes : nodes.slice(0, 18);
+
+  if (visibleNodes.length === 0) {
+    return <div className="quant-hf-empty-graph">No graph nodes were returned by the ONNX inspector.</div>;
+  }
+
+  if (visibleNodes.some((node) => node.opType === 'Group')) {
+    return (
+      <HfGroupedLayerFlow
+        nodes={visibleNodes}
+        onSelect={props.onSelect}
+        selectedId={props.selectedId}
+        size={props.size}
+        totalNodes={nodes.length}
+      />
+    );
+  }
+
+  return (
+    <div className="quant-hf-layer-flow">
+      {visibleNodes.map((node, index) => (
+        <LayerNode
+          key={`${node.id}-${index}`}
+          node={node}
+          onSelect={props.onSelect}
+          selectedId={props.selectedId}
+        />
+      ))}
+      {props.size !== 'large' && nodes.length > visibleNodes.length ? (
+        <div className="quant-hf-layer-more">{nodes.length - visibleNodes.length} more layers in full graph</div>
+      ) : null}
+    </div>
+  );
+}
+
+function HfGroupedLayerFlow(props: {
+  nodes: NonNullable<HfModelGraph['nodes']>;
+  onSelect: (selection: HfGraphSelection) => void;
+  selectedId: string;
+  totalNodes: number;
+  size: 'embedded' | 'large';
+}) {
+  const sections: Array<{ group?: NonNullable<HfModelGraph['nodes']>[number]; nodes: NonNullable<HfModelGraph['nodes']> }> = [];
+
+  for (const node of props.nodes) {
+    if (node.opType === 'Group') {
+      sections.push({ group: node, nodes: [] });
+      continue;
+    }
+    if (sections.length === 0 || !sections[sections.length - 1].group) {
+      sections.push({ nodes: [node] });
+      continue;
+    }
+    sections[sections.length - 1].nodes.push(node);
+  }
+
+  return (
+    <div className="quant-hf-layer-flow grouped">
+      {sections.map((section, sectionIndex) => {
+        if (!section.group) {
+          return section.nodes.map((node, nodeIndex) => (
+            <LayerNode
+              key={`${node.id}-${sectionIndex}-${nodeIndex}`}
+              node={node}
+              onSelect={props.onSelect}
+              selectedId={props.selectedId}
+            />
+          ));
+        }
+        return (
+          <div className={`quant-hf-layer-section tone-${sectionIndex % 6} ${props.selectedId === section.group.id ? 'selected' : ''}`} key={section.group.id}>
+            <button
+              className="quant-hf-layer-section-title"
+              type="button"
+              onClick={() => props.onSelect({
+                id: section.group?.id || '',
+                label: section.group?.name || '',
+                kind: 'section',
+                opType: section.nodes.map((node) => node.opType).filter((value, index, array) => array.indexOf(value) === index).join(', ') || 'section',
+                count: section.nodes.length,
+                description: `Contains ${section.nodes.length} layers`,
+              })}
+            >
+              {section.group.name}
+            </button>
+            <div className="quant-hf-layer-section-body">
+              {section.nodes.map((node, nodeIndex) => (
+                <LayerNode
+                  compact
+                  key={`${node.id}-${nodeIndex}`}
+                  node={node}
+                  onSelect={props.onSelect}
+                  selectedId={props.selectedId}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {props.size !== 'large' && props.totalNodes > props.nodes.length ? (
+        <div className="quant-hf-layer-more">{props.totalNodes - props.nodes.length} more layers in full graph</div>
+      ) : null}
+    </div>
+  );
+}
+
+function LayerNode(props: {
+  compact?: boolean;
+  node: NonNullable<HfModelGraph['nodes']>[number];
+  onSelect: (selection: HfGraphSelection) => void;
+  selectedId: string;
+}) {
+  return (
+    <button
+      className={`quant-hf-layer-node tone-${getLayerTone(props.node.opType)} ${props.compact ? 'compact' : ''} ${props.selectedId === props.node.id ? 'selected' : ''}`}
+      type="button"
+      onClick={() => props.onSelect({
+        id: props.node.id,
+        label: props.node.name,
+        kind: 'layer',
+        opType: props.node.opType,
+        count: 1,
+        description: formatLayerPorts(props.node),
+      })}
+    >
+      <span>{props.node.opType}</span>
+      <strong>{props.node.name}</strong>
+      <small>{formatLayerPorts(props.node)}</small>
+    </button>
+  );
+}
+
+function getLayerTone(opType: string) {
+  const lower = String(opType || '').toLowerCase();
+  if (/conv|gemm|matmul/.test(lower)) return 0;
+  if (/concat|add|mul|div|sub/.test(lower)) return 4;
+  if (/resize|reshape|transpose|flatten/.test(lower)) return 1;
+  if (/relu|sigmoid|softmax|activation/.test(lower)) return 5;
+  if (/input|output|onnx|gguf|json|text|file/.test(lower)) return 3;
+  return 2;
+}
+
+function formatLayerPorts(node: NonNullable<HfModelGraph['nodes']>[number]) {
+  const inputCount = node.inputs?.length || 0;
+  const outputCount = node.outputs?.length || 0;
+  return `${inputCount} in -> ${outputCount} out`;
+}
+
+function HfGraphSidebar(props: {
+  graph: HfModelGraph;
+  onQuantizeSelection: () => void;
+  selection: HfGraphSelection | null;
+  selectionAction: string | null;
+}) {
+  const topOps = getTopOpTypes(props.graph.opCounts);
+  const totalOps = topOps.reduce((sum, item) => sum + item.count, 0);
+
+  return (
+    <aside className="quant-hf-graph-side">
+      {props.selection ? (
+        <div className="quant-hf-selection-panel">
+          <span className="eyebrow">Selection</span>
+          <strong>{props.selection.label}</strong>
+          <div className="quant-hf-selection-meta">
+            <span>{props.selection.kind}</span>
+            <span>{props.selection.opType}</span>
+            <span>{props.selection.count} {props.selection.count === 1 ? 'layer' : 'layers'}</span>
+          </div>
+          {props.selection.description ? <p>{props.selection.description}</p> : null}
+          <button className="primary-button" type="button" onClick={props.onQuantizeSelection}>
+            Quantize selected part
+          </button>
+          <small>
+            Selective quantization will target this graph region and preserve the rest of the model at the current baseline precision.
+          </small>
+          {props.selectionAction ? <div className="quant-hf-selection-status">{props.selectionAction}</div> : null}
+        </div>
+      ) : null}
+
+      <div>
+        <strong>{props.graph.name || 'ONNX model'}</strong>
+        <span>{props.graph.nodeCount || 0} nodes · {props.graph.opTypeCount || 0} op types</span>
+        <span>{formatGraphIo('Inputs', props.graph.inputs)} · {formatGraphIo('Outputs', props.graph.outputs)}</span>
+      </div>
+
+      <div className="quant-hf-op-list">
+        <strong>Operation types</strong>
+        {topOps.map((item, index) => {
+          const percent = totalOps > 0 ? Math.round((item.count / totalOps) * 100) : 0;
+          return (
+            <div className="quant-hf-op-row" key={item.opType}>
+              <span className={`quant-hf-op-dot tone-${index % 6}`} />
+              <span>{item.opType}</span>
+              <small>{percent}%</small>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="quant-hf-io-list">
+        <strong>Model attributes</strong>
+        {[...(props.graph.inputs || []), ...(props.graph.outputs || [])].slice(0, 4).map((item) => (
+          <div key={item.name}>
+            <span>{item.name}</span>
+            <small>{formatDims(item.dims)}</small>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function getTopOpTypes(opCounts?: Record<string, number>) {
+  return Object.entries(opCounts || {})
+    .map(([opType, count]) => ({ opType, count: Number(count) || 0 }))
+    .filter((item) => item.count > 0)
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 8);
+}
+
+function formatGraphIo(label: string, values?: Array<{ name: string; dims: Array<string | number> }>) {
+  return `${label}: ${values?.length || 0}`;
+}
+
+function formatDims(values?: Array<string | number>) {
+  return values && values.length > 0 ? values.join(' x ') : 'shape unknown';
+}
+
+function formatHfFileName(value: string) {
+  const parts = String(value || '').split('/').filter(Boolean);
+  return parts.length > 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : parts[parts.length - 1] || value;
 }
 
 function tokenizeDisplayText(value: string) {

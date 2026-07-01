@@ -263,6 +263,68 @@ interface Window {
       missing: string[];
       message: string;
     }>;
+    inspectHfModel: (payload: {
+      repo: string;
+    }) => Promise<{
+      repoId: string;
+      requestedFilePath?: string;
+      name: string;
+      author?: string;
+      pipelineTag?: string;
+      libraryName?: string;
+      license?: string;
+      tags: string[];
+      likes?: number | null;
+      downloads?: number | null;
+      formats: string[];
+      availableSchemes: string[];
+      baselineFile?: string;
+      localQuantizationStatus: 'supported' | 'conversion-required' | 'unsupported';
+      localQuantizationSupported: boolean;
+      fileSummary: {
+        total: number;
+        gguf: number;
+        safetensors: number;
+        onnx: number;
+        pytorch: number;
+      };
+      files: Array<{
+        name: string;
+        size?: number | null;
+        format: string;
+        role: string;
+        quantization?: string | null;
+      }>;
+      graph?: {
+        status: 'ready' | 'error';
+        error?: string;
+        file?: string;
+        name?: string;
+        nodeCount?: number;
+        opTypeCount?: number;
+        opCounts?: Record<string, number>;
+        inputs?: Array<{ name: string; dims: Array<string | number> }>;
+        outputs?: Array<{ name: string; dims: Array<string | number> }>;
+        nodes?: Array<{
+          id: string;
+          name: string;
+          opType: string;
+          inputs: string[];
+          outputs: string[];
+          attributeCount: number;
+        }>;
+        blockGraph?: {
+          blocks: Array<{
+            id: string;
+            label: string;
+            description: string;
+            opTypes: string[];
+            count: number;
+          }>;
+        };
+      } | null;
+      warnings: string[];
+    }>;
     gitPull: () => Promise<{ success: boolean; message?: string; error?: string }>;
   };
 }
