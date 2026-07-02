@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { ChevronDown, GitPullRequest, LogOut, Menu, Plus, RefreshCw, Server, Settings, UserRound, X, Bell, Trash2, CheckCheck } from 'lucide-react';
+import { ChevronDown, Gauge, GitPullRequest, LogOut, Menu, Plus, RefreshCw, Server, Settings, UserRound, X, Bell, Trash2, CheckCheck } from 'lucide-react';
 
 import oneInferLogo from '../assets/oneinfer-logo.png';
 import { sections } from '../constants';
@@ -25,10 +25,14 @@ export function AppLayout(props: {
   children: React.ReactNode;
 }) {
   const hostingSectionKeys: SectionKey[] = ['selfHosting', 'instances', 'routing'];
+  const quantizationSectionKeys: SectionKey[] = ['quantization', 'quantizationCompare'];
   const hostingSections = sections.filter((section) => hostingSectionKeys.includes(section.key));
-  const topLevelSections = sections.filter((section) => !hostingSectionKeys.includes(section.key));
+  const quantizationSections = sections.filter((section) => quantizationSectionKeys.includes(section.key));
+  const topLevelSections = sections.filter((section) => !hostingSectionKeys.includes(section.key) && !quantizationSectionKeys.includes(section.key));
   const hostingActive = hostingSectionKeys.includes(props.activeSection);
+  const quantizationActive = quantizationSectionKeys.includes(props.activeSection);
   const [hostingOpen, setHostingOpen] = useState(hostingActive);
+  const [quantizationOpen, setQuantizationOpen] = useState(quantizationActive);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const accountName = getSidebarAccountName(props.dashboard);
@@ -39,6 +43,12 @@ export function AppLayout(props: {
       setHostingOpen(true);
     }
   }, [hostingActive]);
+
+  useEffect(() => {
+    if (quantizationActive) {
+      setQuantizationOpen(true);
+    }
+  }, [quantizationActive]);
 
   return (
     <div className="shell app-shell">
@@ -184,6 +194,39 @@ export function AppLayout(props: {
                               >
                                 <HostingIcon size={16} />
                                 {hostingSection.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="nav-group" key="quantization-group">
+                      <button
+                        className={`nav-button nav-group-toggle ${quantizationActive ? 'active' : ''}`}
+                        onClick={() => setQuantizationOpen((current) => !current)}
+                        type="button"
+                        aria-expanded={quantizationOpen}
+                      >
+                        <Gauge size={18} />
+                        <span>Quantization</span>
+                        <ChevronDown className={`nav-chevron${quantizationOpen ? ' open' : ''}`} size={16} />
+                      </button>
+                      {quantizationOpen ? (
+                        <div className="nav-substack">
+                          {quantizationSections.map((quantizationSection) => {
+                            const QuantizationIcon = quantizationSection.icon;
+                            return (
+                              <button
+                                key={quantizationSection.key}
+                                className={`nav-button nav-subbutton ${props.activeSection === quantizationSection.key ? 'active' : ''}`}
+                                onClick={() => {
+                                  props.onSectionChange(quantizationSection.key);
+                                  props.onSidebarOpen(false);
+                                }}
+                                type="button"
+                              >
+                                <QuantizationIcon size={16} />
+                                {quantizationSection.label}
                               </button>
                             );
                           })}

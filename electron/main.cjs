@@ -1,9 +1,9 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -11,6 +11,7 @@ const si = require('systeminformation');
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const appId = 'com.oneinfer.desktop';
+let autoUpdater = null;
 let mainWindow = null;
 let machineSyncInFlight = null;
 let lastMachineSyncAt = 0;
@@ -133,8 +134,35 @@ function sendDeploymentProgress(progress) {
   });
 }
 
+function sendQuantizationProgress(progress) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('app:quantization-progress', {
+    level: 'info',
+    timestamp: Date.now(),
+    ...progress,
+  });
+}
+
 function configureAutoUpdater() {
   if (updaterConfigured) {
+    return;
+  }
+
+  if (isDev) {
+    return;
+  }
+
+  try {
+    autoUpdater = autoUpdater || require('electron-updater').autoUpdater;
+  } catch (error) {
+    console.error('[updater] failed to load auto-updater', error);
+    return;
+  }
+
+  if (!autoUpdater) {
     return;
   }
 
@@ -410,6 +438,9 @@ function removeLegacyKiloCodeConfig(configFilePath, legacyConfigFilePath) {
 
 function runCommand(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
+    const maxOutputBuffer = Number.isFinite(options.maxOutputBuffer)
+      ? options.maxOutputBuffer
+      : 2 * 1024 * 1024;
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -428,14 +459,14 @@ function runCommand(command, args = [], options = {}) {
 
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString();
-      stdout += text;
+      stdout = appendLimitedOutput(stdout, text, maxOutputBuffer);
       if (options.onStdout) {
         options.onStdout(text);
       }
     });
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
-      stderr += text;
+      stderr = appendLimitedOutput(stderr, text, maxOutputBuffer);
       if (options.onStderr) {
         options.onStderr(text);
       }
@@ -456,6 +487,24 @@ function runCommand(command, args = [], options = {}) {
       reject(error);
     });
   });
+}
+
+function appendLimitedOutput(current, next, maxLength) {
+  if (maxLength <= 0) {
+    return '';
+  }
+
+  const combinedLength = current.length + next.length;
+  if (combinedLength <= maxLength) {
+    return current + next;
+  }
+
+  const overflow = combinedLength - maxLength;
+  if (overflow >= current.length) {
+    return next.slice(-maxLength);
+  }
+
+  return current.slice(overflow) + next;
 }
 
 function stripAnsi(value) {
@@ -484,8 +533,36 @@ async function commandExists(command) {
   }
 }
 
+async function getFirstAvailableCommand(candidates) {
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+
+    try {
+      if (candidate && await commandExists(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  return null;
+}
+
 function isMacOS() {
   return process.platform === 'darwin' || os.type() === 'Darwin';
+}
+
+async function getHomebrewCommand() {
+  const candidates = [
+    '/opt/homebrew/bin/brew',
+    '/usr/local/bin/brew',
+    'brew',
+  ];
+
+  return getFirstAvailableCommand(candidates);
 }
 
 function getMacOllamaCommandPath() {
@@ -590,6 +667,24 @@ async function getPythonPipCommand() {
   }
 
   return null;
+}
+
+async function getPipCommandForPython(python) {
+  if (!python?.command) {
+    return getPythonPipCommand();
+  }
+
+  const candidate = {
+    command: python.command,
+    args: [...(python.prefixArgs || []), '-m', 'pip'],
+  };
+
+  try {
+    await runCommand(candidate.command, [...candidate.args, '--version'], { timeoutMs: 10000 });
+    return candidate;
+  } catch {
+    return getPythonPipCommand();
+  }
 }
 
 async function isWindowsManagedVllmInstalled() {
@@ -1034,10 +1129,10 @@ async function isLibraryInstalled(name) {
     }
 
     if (name === 'llama_cpp') {
+      if (await getLlamaToolCommand('quantize')) return true;
       if (await commandExists('llama-server')) return true;
       if (await commandExists('llama-cli')) return true;
-      const pyCmd = await getPythonCommandForModule('llama_cpp');
-      return !!pyCmd;
+      return false;
     }
 
     if (name === 'transformers') {
@@ -1060,6 +1155,26 @@ async function isLibraryInstalled(name) {
 
 async function installLibrary(name) {
   name = normalizeServingLibraryName(name);
+  if (name === 'llama_cpp') {
+    if (await getLlamaToolCommand('quantize')) {
+      return 'installed';
+    }
+
+    if (!isMacOS()) {
+      throw new Error('Install llama.cpp command-line tools to enable quantization. OneInfer Edge needs llama-quantize, llama-cli, and llama-perplexity on PATH.');
+    }
+
+    const brewCommand = await getHomebrewCommand();
+    if (brewCommand) {
+      await runCommand(brewCommand, ['install', 'llama.cpp'], { timeoutMs: 20 * 60 * 1000 });
+      if (await getLlamaToolCommand('quantize')) {
+        return 'installed';
+      }
+    }
+
+    throw new Error('Install llama.cpp command-line tools to enable quantization. On macOS, run "brew install llama.cpp", then restart OneInfer Edge.');
+  }
+
   if (name === 'vllm') {
     if (process.platform === 'win32') {
       return await installWindowsManagedVllm();
@@ -1135,7 +1250,6 @@ async function installLibrary(name) {
   const pipInstallPackages = {
     sglang: ['sglang'],
     tensorrt: ['tensorrt-llm'],
-    llama_cpp: ['llama-cpp-python'],
     pytorch: ['torch'],
     transformers: ['torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'],
     dynamo: ['ai-dynamo'],
@@ -1483,6 +1597,7 @@ function compactDeploymentLogTail(logTail, maxLines = 18) {
 }
 
 const PYTHON_CHECK_TIMEOUT_MS = 45000;
+const TRANSFORMERS_PREFLIGHT_TIMEOUT_MS = 2 * 60 * 1000;
 
 async function getPythonCommandForModule(moduleName, importScript = null) {
   const script = importScript || `import ${moduleName}`;
@@ -1566,13 +1681,19 @@ async function removeTorchvisionIfBroken(pipCommand, python, onProgress = () => 
   try {
     await runCommand(python.command, [...python.prefixArgs, '-c', 'import torchvision'], { timeoutMs: 10000 });
     return false;
-  } catch {
+  } catch (error) {
     onProgress({
       stage: 'preparing',
       message: 'Removing broken TorchVision package...',
       detail: 'TorchVision is not required for text router models, and the installed copy is incompatible with PyTorch.',
     });
-    await runCommand(pipCommand.command, [...pipCommand.args, 'uninstall', '-y', 'torchvision'], { timeoutMs: 5 * 60 * 1000 }).catch(() => undefined);
+    await runCommand(pipCommand.command, [...pipCommand.args, 'uninstall', '-y', 'torchvision'], { timeoutMs: 10 * 60 * 1000 }).catch((uninstallError) => {
+      onProgress({
+        stage: 'preparing',
+        message: 'Continuing after TorchVision cleanup check.',
+        detail: formatCommandError(uninstallError) || formatCommandError(error),
+      });
+    });
     return true;
   }
 }
@@ -2251,9 +2372,9 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
 
   const transformersPreflight = 'import torch; import transformers; import numpy; from packaging.version import Version; assert Version(transformers.__version__) >= Version("4.45.0"), transformers.__version__; from transformers import AutoTokenizer; from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM';
   try {
-    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: TRANSFORMERS_PREFLIGHT_TIMEOUT_MS });
   } catch {
-    const pipCommand = await getPythonPipCommand();
+    const pipCommand = await getPipCommandForPython(python);
     if (!pipCommand) {
       throw new Error('PyTorch and Transformers are required, but pip is not available to repair the Python environment.');
     }
@@ -2264,9 +2385,14 @@ async function startTransformersServer(repoId, port, onProgress = () => {}, opti
       detail: 'Fixing the Python runtime used by local Transformers models.',
     });
     await removeTorchvisionIfBroken(pipCommand, python, onProgress);
-    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 20 * 60 * 1000 });
+    await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', '--force-reinstall', 'torch', 'transformers>=4.45.0', 'accelerate', 'safetensors', 'sentencepiece', 'protobuf', 'huggingface_hub', 'tokenizers', 'numpy<2', 'scipy>=1.10,<1.14', 'scikit-learn>=1.3,<1.5', 'pillow'], { timeoutMs: 30 * 60 * 1000 });
     await removeTorchvisionIfBroken(pipCommand, python, onProgress);
-    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: 20000 });
+    onProgress({
+      stage: 'preparing',
+      message: 'Verifying repaired Transformers runtime...',
+      detail: 'First import after reinstall can take a little longer while Python rebuilds caches.',
+    });
+    await runCommand(python.command, [...python.prefixArgs, '-c', transformersPreflight], { timeoutMs: TRANSFORMERS_PREFLIGHT_TIMEOUT_MS });
   }
 
   const logPath = getTransformersLogPath(repoId);
@@ -5262,6 +5388,2140 @@ function triggerMachineSyncFromState(state) {
   });
 }
 
+const LLAMA_QUANTIZATION_SCHEMES = {
+  Q2_K: 'Q2_K',
+  Q3_K_S: 'Q3_K_S',
+  Q3_K_M: 'Q3_K_M',
+  Q3_K_L: 'Q3_K_L',
+  Q4_0: 'Q4_0',
+  Q4_1: 'Q4_1',
+  Q4_K_S: 'Q4_K_S',
+  Q4_K_M: 'Q4_K_M',
+  Q5_0: 'Q5_0',
+  Q5_1: 'Q5_1',
+  Q5_K_S: 'Q5_K_S',
+  Q5_K_M: 'Q5_K_M',
+  Q6_K: 'Q6_K',
+  Q8_0: 'Q8_0',
+  INT8: 'Q8_0',
+};
+
+const DEFAULT_QUANT_EVAL_TEXT = [
+  'Gradient descent is an optimization algorithm that updates model parameters to reduce a loss function.',
+  'Quantization reduces model weight precision to improve memory use and inference speed on edge hardware.',
+  'A good edge deployment keeps output quality close to the baseline while reducing model size and latency.',
+  'Calibration data should be separate from evaluation data so the measured quality loss is not optimistic.',
+  'Token agreement compares generated output against a reference output and helps reveal visible behavior drift.',
+  'Perplexity measures how surprised a model is by held-out text, which is useful for comparing quantized variants.',
+  'Throughput, time to first token, peak memory, and final model size matter for edge devices with limited resources.',
+  'The best quantization choice is usually a Pareto tradeoff between quality, speed, memory, and deployment cost.',
+].join('\n').repeat(180);
+
+const DEFAULT_QUANT_PROMPTS = [
+  'Explain gradient descent in one paragraph.',
+  'Summarize why quantization matters for edge inference.',
+  'Write a short Python function that returns the square of a number.',
+  'Answer briefly: what is the tradeoff between latency and accuracy?',
+  'List three practical checks before deploying a model to production.',
+];
+
+const HF_SNAPSHOT_DOWNLOAD_SCRIPT = `
+import os
+import sys
+from huggingface_hub import snapshot_download
+
+repo_id = sys.argv[1]
+destination = sys.argv[2]
+snapshot_download(
+    repo_id=repo_id,
+    local_dir=destination,
+    local_dir_use_symlinks=False,
+    token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
+    allow_patterns=[
+        "*.json",
+        "*.safetensors",
+        "*.model",
+        "*.tiktoken",
+        "*.txt",
+        "tokenizer.*",
+        "generation_config.*",
+        "special_tokens_map.*",
+        "tokenizer_config.*",
+    ],
+)
+`;
+
+const ONNX_GRAPH_INSPECT_SCRIPT = `
+import json
+import sys
+from collections import Counter
+
+import onnx
+
+model_path = sys.argv[1]
+model = onnx.load(model_path, load_external_data=False)
+graph = model.graph
+
+def dims(value_info):
+    result = []
+    tensor_type = value_info.type.tensor_type
+    if not tensor_type.HasField("shape"):
+        return result
+    for dim in tensor_type.shape.dim:
+        if dim.dim_value:
+            result.append(dim.dim_value)
+        elif dim.dim_param:
+            result.append(dim.dim_param)
+        else:
+            result.append("?")
+    return result
+
+nodes = []
+for index, node in enumerate(graph.node):
+    nodes.append({
+        "id": node.name or f"{node.op_type}_{index}",
+        "name": node.name or f"{node.op_type} {index + 1}",
+        "opType": node.op_type,
+        "inputs": list(node.input),
+        "outputs": list(node.output),
+        "attributeCount": len(node.attribute),
+    })
+
+op_counts = Counter(node["opType"] for node in nodes)
+inputs = [{"name": item.name, "dims": dims(item)} for item in graph.input]
+outputs = [{"name": item.name, "dims": dims(item)} for item in graph.output]
+initializers = {item.name for item in graph.initializer}
+
+print(json.dumps({
+    "name": graph.name or "ONNX model",
+    "nodeCount": len(nodes),
+    "opTypeCount": len(op_counts),
+    "opCounts": dict(op_counts.most_common()),
+    "inputs": inputs,
+    "outputs": outputs,
+    "initializerCount": len(initializers),
+    "nodes": nodes[:1000],
+}))
+`;
+
+const ONNX_SELECTIVE_QUANTIZE_SCRIPT = `
+import json
+import os
+import sys
+
+import numpy as np
+import onnx
+import onnxruntime as ort
+from onnx import TensorProto
+from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantType, quantize_static
+
+model_path = sys.argv[1]
+output_path = sys.argv[2]
+bits = sys.argv[3].lower()
+selection = json.loads(sys.argv[4])
+config = json.loads(sys.argv[5]) if len(sys.argv) > 5 else {}
+dataset = str(config.get("dataset") or "").strip()
+repo_id = str(config.get("repoId") or "").strip()
+dataset_root_base = str(config.get("datasetRoot") or os.path.join(os.getcwd(), "datasets")).strip()
+
+if bits != "int8":
+    raise RuntimeError(f"{bits.upper()} selective ONNX quantization is not available in the local ONNX Runtime path yet. Choose INT8.")
+
+model = onnx.load(model_path, load_external_data=False)
+graph = model.graph
+initializers = {item.name for item in graph.initializer}
+graph_inputs = [item for item in graph.input if item.name not in initializers]
+node_names = {node.name for node in graph.node if node.name}
+supported_op_types = {"Conv", "MatMul", "Gemm"}
+
+selection_id = str(selection.get("id") or "")
+selection_label = str(selection.get("label") or "")
+selection_op_type = str(selection.get("opType") or "")
+requested_op_types = [item.strip() for item in selection_op_type.split(",") if item.strip()]
+op_types_to_quantize = [item for item in requested_op_types if item in supported_op_types]
+nodes_to_quantize = [selection_id] if selection_id in node_names else []
+
+def model_index(node_name):
+    import re
+    match = re.search(r"/model\\.(\\d+)(?:/|$)", node_name or "")
+    return int(match.group(1)) if match else None
+
+def supported_nodes_in_section(start_index, end_index):
+    result = []
+    for node in graph.node:
+        index = model_index(node.name)
+        if index is None or index < start_index or index > end_index:
+            continue
+        if node.op_type in supported_op_types and node.name:
+            result.append(node.name)
+    return result
+
+def supported_nodes_matching(fragment):
+    lowered_fragment = fragment.lower()
+    return [
+        node.name
+        for node in graph.node
+        if node.name and lowered_fragment in node.name.lower() and node.op_type in supported_op_types
+    ]
+
+if not nodes_to_quantize:
+    lowered = f"{selection_label} {selection_op_type}".lower()
+    if "backbone" in lowered:
+        nodes_to_quantize = supported_nodes_in_section(0, 9)
+    elif "neck" in lowered or "pan-fpn" in lowered:
+        nodes_to_quantize = supported_nodes_in_section(10, 21)
+    elif "head" in lowered or "pose" in lowered or "logits" in lowered or "keypoints" in lowered or "score" in lowered or "dfl" in lowered:
+        nodes_to_quantize = supported_nodes_in_section(22, 22)
+    elif "p3" in lowered:
+        nodes_to_quantize = supported_nodes_matching("/cv4.0/") + supported_nodes_matching("/cv2.0/") + supported_nodes_matching("/cv3.0/")
+    elif "p4" in lowered:
+        nodes_to_quantize = supported_nodes_matching("/cv4.1/") + supported_nodes_matching("/cv2.1/") + supported_nodes_matching("/cv3.1/")
+    elif "p5" in lowered:
+        nodes_to_quantize = supported_nodes_matching("/cv4.2/") + supported_nodes_matching("/cv2.2/") + supported_nodes_matching("/cv3.2/")
+    elif any(kw in lowered for kw in ["graph", "model", "entire", "full"]):
+        op_types_to_quantize = list(supported_op_types)
+
+if nodes_to_quantize:
+    op_types_to_quantize = []
+
+if not nodes_to_quantize and not op_types_to_quantize:
+    raise RuntimeError(f"Selection '{selection_label or selection_id}' does not map to ONNX ops supported by local INT8 quantization.")
+
+def tensor_dtype(value_info):
+    tensor_type = value_info.type.tensor_type
+    return tensor_type.elem_type if tensor_type.HasField("elem_type") else TensorProto.FLOAT
+
+def tensor_shape(value_info):
+    result = []
+    tensor_type = value_info.type.tensor_type
+    if not tensor_type.HasField("shape"):
+        return [1]
+    for dim in tensor_type.shape.dim:
+        if dim.dim_value and dim.dim_value > 0:
+            result.append(int(dim.dim_value))
+        else:
+            result.append(1)
+    return result or [1]
+
+def numpy_dtype(onnx_type):
+    if onnx_type == TensorProto.FLOAT16:
+        return np.float16
+    if onnx_type == TensorProto.DOUBLE:
+        return np.float64
+    if onnx_type in (TensorProto.INT64, TensorProto.INT32, TensorProto.INT16, TensorProto.INT8):
+        return np.int64
+    return np.float32
+
+class SingleBatchCalibrationReader(CalibrationDataReader):
+    def __init__(self):
+        self.sent = False
+        self.batch = {}
+        for item in graph_inputs:
+            dtype = numpy_dtype(tensor_dtype(item))
+            shape = tensor_shape(item)
+            self.batch[item.name] = np.zeros(shape, dtype=dtype)
+
+    def get_next(self):
+        if self.sent:
+            return None
+        self.sent = True
+        return self.batch
+
+reader = SingleBatchCalibrationReader()
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+quantize_static(
+    model_input=model_path,
+    model_output=output_path,
+    calibration_data_reader=reader,
+    quant_format=QuantFormat.QDQ,
+    activation_type=QuantType.QUInt8,
+    weight_type=QuantType.QInt8,
+    op_types_to_quantize=op_types_to_quantize or None,
+    nodes_to_quantize=nodes_to_quantize or None,
+)
+
+def session_dtype(type_name):
+    if "float16" in type_name:
+        return np.float16
+    if "double" in type_name:
+        return np.float64
+    if "int64" in type_name:
+        return np.int64
+    if "int32" in type_name:
+        return np.int32
+    if "int16" in type_name:
+        return np.int16
+    if "int8" in type_name:
+        return np.int8
+    if "uint8" in type_name:
+        return np.uint8
+    return np.float32
+
+def session_shape(shape):
+    result = []
+    for dim in shape or []:
+        if isinstance(dim, int) and dim > 0:
+            result.append(dim)
+        else:
+            result.append(1)
+    return result or [1]
+
+def make_session_inputs(session):
+    inputs = {}
+    for item in session.get_inputs():
+        dtype = session_dtype(item.type)
+        shape = session_shape(item.shape)
+        inputs[item.name] = np.zeros(shape, dtype=dtype)
+    return inputs
+
+def run_full_model(model_file):
+    session = ort.InferenceSession(model_file, providers=["CPUExecutionProvider"])
+    inputs = make_session_inputs(session)
+    session.run(None, inputs)
+    import time
+    start = time.perf_counter()
+    outputs = session.run(None, inputs)
+    duration_ms = (time.perf_counter() - start) * 1000.0
+    return duration_ms, outputs
+
+evaluation = {
+    "status": "not-run",
+    "baselineLatencyMs": None,
+    "quantizedLatencyMs": None,
+    "latencyDeltaPercent": None,
+    "meanAbsDelta": None,
+    "maxAbsDelta": None,
+    "comparableOutputs": 0,
+    "outputCount": 0,
+    "dataset": dataset,
+    "datasetStatus": "skipped",
+    "datasetError": "",
+    "task": "",
+    "map50": None,
+    "map5095": None,
+    "precision": None,
+    "recall": None,
+    "keypointMap50": None,
+    "keypointMap5095": None,
+    "imagesEvaluated": None,
+    "error": "",
+}
+
+try:
+    print("Running full ONNX model smoke evaluation...", flush=True)
+    baseline_ms, baseline_outputs = run_full_model(model_path)
+    quantized_ms, quantized_outputs = run_full_model(output_path)
+    comparable = []
+    for left, right in zip(baseline_outputs, quantized_outputs):
+        if isinstance(left, np.ndarray) and isinstance(right, np.ndarray) and left.shape == right.shape and np.issubdtype(left.dtype, np.number) and np.issubdtype(right.dtype, np.number):
+            delta = np.abs(left.astype(np.float32) - right.astype(np.float32))
+            comparable.append(delta)
+    if comparable:
+        flat = np.concatenate([item.reshape(-1) for item in comparable])
+        evaluation["meanAbsDelta"] = float(np.mean(flat))
+        evaluation["maxAbsDelta"] = float(np.max(flat))
+    evaluation["status"] = "success"
+    evaluation["baselineLatencyMs"] = float(baseline_ms)
+    evaluation["quantizedLatencyMs"] = float(quantized_ms)
+    evaluation["latencyDeltaPercent"] = float(((quantized_ms - baseline_ms) / baseline_ms) * 100.0) if baseline_ms > 0 else None
+    evaluation["comparableOutputs"] = len(comparable)
+    evaluation["outputCount"] = min(len(baseline_outputs), len(quantized_outputs))
+except Exception as exc:
+    evaluation["status"] = "failed"
+    evaluation["error"] = str(exc)
+
+def first_number(*values):
+    for value in values:
+        try:
+            if value is None:
+                continue
+            number = float(value)
+            if np.isfinite(number):
+                return number
+        except Exception:
+            continue
+    return None
+
+def nested_attr(value, path):
+    current = value
+    for part in path.split("."):
+        try:
+            current = getattr(current, part)
+        except Exception:
+            return None
+    return current
+
+def dict_number(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return None
+    lowered = {str(key).lower(): val for key, val in mapping.items()}
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+        lowered_key = str(key).lower()
+        if lowered_key in lowered:
+            return lowered[lowered_key]
+    return None
+
+def detect_ultralytics_task():
+    lowered = f"{repo_id} {selection_label} {selection_op_type} {dataset}".lower()
+    if "pose" in lowered or "keypoint" in lowered:
+        return "pose"
+    if "segment" in lowered or "mask" in lowered:
+        return "segment"
+    if "classif" in lowered or "imagenet" in lowered:
+        return "classify"
+    return "detect"
+
+COCO80_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+
+def download_file(url, destination):
+    import ssl
+    import urllib.request
+    complete_marker = destination + ".complete"
+    if os.path.exists(destination) and os.path.getsize(destination) > 0 and os.path.exists(complete_marker):
+        return
+    partial_destination = destination + ".part"
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    print(f"Downloading {url} to {destination}", flush=True)
+    if os.path.exists(partial_destination):
+        os.remove(partial_destination)
+    context = None
+    if url.lower().startswith("https://"):
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            context = ssl.create_default_context()
+    with urllib.request.urlopen(url, context=context, timeout=120) as response, open(partial_destination, "wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+    os.replace(partial_destination, destination)
+    with open(complete_marker, "w", encoding="utf-8") as handle:
+        handle.write("ok")
+
+def extract_zip(zip_path, destination):
+    import zipfile
+    marker = os.path.join(destination, ".extracted")
+    if os.path.exists(marker):
+        return
+    os.makedirs(destination, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(destination)
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write("ok")
+
+def has_files(directory, suffix):
+    if not os.path.isdir(directory):
+        return False
+    for _root, _dirs, files in os.walk(directory):
+        if any(file.lower().endswith(suffix) for file in files):
+            return True
+    return False
+
+def copy_val_labels_into_place(dataset_root, extract_root):
+    import shutil
+    target = os.path.join(dataset_root, "labels", "val2017")
+    if has_files(target, ".txt"):
+        return
+    for current_root, dirs, _files in os.walk(extract_root):
+        if os.path.basename(current_root) == "val2017" and os.path.basename(os.path.dirname(current_root)) == "labels":
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copytree(current_root, target, dirs_exist_ok=True)
+            return
+    raise RuntimeError("COCO val2017 labels were not found after extracting label archive.")
+
+def write_coco_val_yaml(dataset_root, task):
+    yaml_path = os.path.join(dataset_root, "oneinfer-coco-val.yaml")
+    names = {0: "person"} if task == "pose" else {index: name for index, name in enumerate(COCO80_NAMES)}
+    lines = [
+        f"path: {dataset_root}",
+        "val: images/val2017",
+        f"names: {names}",
+    ]
+    if task == "pose":
+        lines.extend([
+            "kpt_shape: [17, 3]",
+            "flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]",
+        ])
+    with open(yaml_path, "w", encoding="utf-8") as handle:
+        handle.write("\\n".join(lines) + "\\n")
+    return yaml_path
+
+def prepare_coco_val_dataset(task):
+    dataset_root = os.path.join(dataset_root_base, "coco-pose-val" if task == "pose" else "coco-val")
+    images_root = os.path.join(dataset_root, "images")
+    labels_extract_root = os.path.join(dataset_root, "_labels_extract")
+    labels_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/coco2017labels-pose.zip" if task == "pose" else "https://github.com/ultralytics/assets/releases/download/v0.0.0/coco2017labels.zip"
+    labels_zip = os.path.join(dataset_root, "labels.zip")
+    val_zip = os.path.join(images_root, "val2017.zip")
+
+    download_file(labels_url, labels_zip)
+    extract_zip(labels_zip, labels_extract_root)
+    copy_val_labels_into_place(dataset_root, labels_extract_root)
+
+    download_file("http://images.cocodataset.org/zips/val2017.zip", val_zip)
+    image_extract_marker = os.path.join(images_root, ".extracted")
+    if os.path.exists(image_extract_marker) and not has_files(os.path.join(images_root, "val2017"), ".jpg"):
+        os.remove(image_extract_marker)
+    extract_zip(val_zip, images_root)
+    if not has_files(os.path.join(images_root, "val2017"), ".jpg"):
+        raise RuntimeError(f"COCO val2017 images were not found after extracting {val_zip}. Delete the partial COCO cache and run again.")
+    return write_coco_val_yaml(dataset_root, task)
+
+def run_coco_validation():
+    if "coco" not in dataset.lower():
+        return
+
+    print(f"Running COCO validation for {dataset}...", flush=True)
+    from ultralytics import YOLO
+
+    task = detect_ultralytics_task()
+    data = prepare_coco_val_dataset(task)
+    model = YOLO(output_path, task=task)
+    metrics = model.val(
+        data=data,
+        split="val",
+        imgsz=640,
+        batch=1,
+        device="cpu",
+        plots=False,
+        verbose=False,
+    )
+    results_dict = getattr(metrics, "results_dict", {}) or {}
+    evaluation["datasetStatus"] = "success"
+    evaluation["task"] = task
+
+    box = getattr(metrics, "box", None)
+    pose = getattr(metrics, "pose", None)
+    evaluation["map50"] = first_number(
+        nested_attr(box, "map50"),
+        dict_number(results_dict, "metrics/mAP50(B)", "metrics/mAP50-95(B)", "map50"),
+    )
+    evaluation["map5095"] = first_number(
+        nested_attr(box, "map"),
+        dict_number(results_dict, "metrics/mAP50-95(B)", "map"),
+    )
+    evaluation["precision"] = first_number(
+        nested_attr(box, "mp"),
+        dict_number(results_dict, "metrics/precision(B)", "precision"),
+    )
+    evaluation["recall"] = first_number(
+        nested_attr(box, "mr"),
+        dict_number(results_dict, "metrics/recall(B)", "recall"),
+    )
+    evaluation["keypointMap50"] = first_number(
+        nested_attr(pose, "map50"),
+        dict_number(results_dict, "metrics/mAP50(P)", "keypoint_map50"),
+    )
+    evaluation["keypointMap5095"] = first_number(
+        nested_attr(pose, "map"),
+        dict_number(results_dict, "metrics/mAP50-95(P)", "keypoint_map"),
+    )
+
+    seen = getattr(metrics, "seen", None)
+    if seen is None:
+        try:
+            seen = int(np.sum(getattr(metrics, "nt_per_class", [])))
+        except Exception:
+            seen = None
+    evaluation["imagesEvaluated"] = int(seen) if seen is not None else None
+
+try:
+    run_coco_validation()
+except Exception as exc:
+    evaluation["datasetStatus"] = "failed" if "coco" in dataset.lower() else "skipped"
+    evaluation["datasetError"] = str(exc)
+
+print(json.dumps({
+    "outputPath": output_path,
+    "artifactKind": "full-onnx-model",
+    "bits": bits,
+    "selection": selection,
+    "opTypesQuantized": op_types_to_quantize,
+    "nodesQuantized": nodes_to_quantize,
+    "baselineSizeBytes": os.path.getsize(model_path),
+    "quantizedSizeBytes": os.path.getsize(output_path),
+    "evaluation": evaluation,
+}))
+`;
+
+async function runQuantizationEval(payload = {}) {
+  const jobId = String(payload.jobId || `quant-${Date.now()}`);
+  const progress = (patch) => sendQuantizationProgress({ id: jobId, ...patch });
+  const target = String(payload.target || '').trim();
+  const modelSource = String(payload.modelSource || '').trim();
+  let modelPath = String(payload.localPath || payload.modelPath || '').trim();
+  let modelSpec = null;
+  const scheme = String(payload.scheme || 'Q4_K_M').trim();
+  const prompt = String(payload.prompt || 'Explain gradient descent in one paragraph.').trim();
+  const benchmarks = normalizeQuantBenchmarks(payload.benchmarks);
+  const selectiveQuantization = payload.selectiveQuantization && typeof payload.selectiveQuantization === 'object'
+    ? payload.selectiveQuantization
+    : null;
+
+  progress({ stage: 'preparing', message: 'Preparing quantization evaluation job.' });
+
+  if (selectiveQuantization) {
+    const selection = selectiveQuantization.selection || {};
+    const bits = String(selectiveQuantization.bits || '').toUpperCase() || 'selected precision';
+    const label = String(selection.label || selection.id || 'selected graph region');
+    progress({
+      stage: 'preparing',
+      message: `Selective ${bits} quantization requested for ${label}.`,
+      detail: 'The current local runner uses llama.cpp whole-model GGUF quantization.',
+      level: 'warning',
+    });
+    throw new Error('Selective graph-region quantization needs an ONNX Runtime node-level backend. The current local runner can rebuild full GGUF models only by quantizing the entire model with llama.cpp.');
+  }
+
+  if (target && target !== 'local') {
+    throw new Error('Cloud quantization jobs need a OneInfer backend job endpoint. Local GGUF evaluation is available now.');
+  }
+
+  const outputDirectory = path.join(app.getPath('userData'), 'quantization-runs', jobId);
+  fs.mkdirSync(outputDirectory, { recursive: true });
+
+  if (modelSource === 'huggingface') {
+    modelSpec = await resolveHuggingFaceGgufModelSpec({
+      repoInput: payload.hfRepo || payload.modelId,
+      progress,
+      scheme,
+    });
+    modelPath = modelSpec.baselinePath;
+  } else if (modelSource !== 'local') {
+    throw new Error('Catalog quantization needs a model artifact mapping. Use Hugging Face GGUF or Local file for local quantization.');
+  }
+
+  if (!modelPath) {
+    throw new Error('Select a local GGUF model file or enter a Hugging Face GGUF repository before running evaluation.');
+  }
+
+  if (!fs.existsSync(modelPath)) {
+    throw new Error(`Local model file does not exist: ${modelPath}`);
+  }
+
+  if (!/\.gguf$/i.test(modelPath)) {
+    throw new Error('Local quantization currently supports GGUF files through llama.cpp tools.');
+  }
+
+  progress({ stage: 'calibration', message: `Loaded ${payload.dataset || 'built-in'} calibration/evaluation text.`, detail: `${payload.calibrationSamples || 512} requested samples` });
+
+  const schemes = scheme === 'Compare all'
+    ? ['Q8_0', 'Q6_K', 'Q5_K_M', 'Q5_K_S', 'Q4_K_M', 'Q4_K_S', 'Q3_K_M', 'Q2_K']
+    : [scheme];
+  const runs = [];
+  for (const currentScheme of schemes) {
+    runs.push(await runSingleQuantizationEval({
+      modelPath,
+      scheme: currentScheme,
+      prebuiltQuantizedPath: modelSpec?.quantizedPathsByScheme?.[currentScheme] || '',
+      outputDirectory,
+      progress,
+      prompt,
+      benchmarks,
+    }));
+  }
+
+  const unsupportedBenchmarks = getUnsupportedQuantBenchmarks(benchmarks);
+  unsupportedBenchmarks.forEach((item) => progress({ stage: 'benchmark', message: `${item.name} skipped.`, detail: item.reason, level: 'warning' }));
+
+  const recommendedScheme = chooseRecommendedQuantRun(runs)?.scheme || runs[0]?.scheme || scheme;
+  const primary = runs.find((run) => run.scheme === recommendedScheme) || runs[0];
+
+  const result = {
+    ...primary,
+    jobId,
+    modelPath,
+    scheme,
+    recommendedScheme,
+    runs,
+    unsupportedBenchmarks,
+    createdAt: new Date().toISOString(),
+  };
+
+  const reportPath = path.join(outputDirectory, 'report.json');
+  fs.writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf8');
+
+  progress({ stage: 'complete', message: 'Quantization evaluation complete.', detail: reportPath, level: 'success' });
+  return { ...result, reportPath };
+}
+
+async function runSelectiveOnnxQuantization(payload = {}) {
+  const jobId = String(payload.jobId || `onnx-selective-${Date.now()}`);
+  const progress = (patch) => sendQuantizationProgress({ id: jobId, ...patch });
+  const parsed = parseHuggingFaceInput(payload.repoId || payload.hfRepo || payload.modelId);
+  const selection = payload.selection && typeof payload.selection === 'object' ? payload.selection : null;
+  const bits = String(payload.bits || 'int8').toLowerCase();
+
+  if (!parsed.repoId) {
+    throw new Error('Enter a valid Hugging Face repo id for ONNX selective quantization.');
+  }
+
+  if (!selection) {
+    throw new Error('Select a graph layer or section before running selective quantization.');
+  }
+
+  if (bits !== 'int8') {
+    throw new Error(`${bits.toUpperCase()} selective ONNX quantization is not available locally yet. Choose INT8.`);
+  }
+
+  progress({ stage: 'preparing', message: `Preparing selective ${bits.toUpperCase()} ONNX quantization.`, detail: selection.label || selection.id || parsed.repoId });
+
+  let modelInfo = null;
+  let graphFile = String(payload.graphFile || parsed.filePath || '').trim();
+  if (!graphFile || !graphFile.toLowerCase().endsWith('.onnx')) {
+    modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+    const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+    const onnxFiles = siblings
+      .map((item) => String(item.rfilename || '').trim())
+      .filter((file) => detectHuggingFaceFileFormat(file) === 'ONNX');
+    graphFile = selectHuggingFaceOnnxGraphFile(onnxFiles, parsed.filePath);
+  }
+
+  if (!graphFile) {
+    throw new Error(`${parsed.repoId} does not expose an ONNX model file to quantize.`);
+  }
+
+  const modelPath = await downloadHuggingFaceArtifactFile(parsed.repoId, graphFile, progress, 'ONNX model');
+  const outputDirectory = path.join(getQuantizationRunsDirectory(), jobId);
+  const outputPath = path.join(outputDirectory, `${path.basename(graphFile, path.extname(graphFile))}-${bits}-${sanitizeCacheSegment(selection.id || selection.label || 'selection')}.onnx`);
+  const python = await getQuantizationPythonCommand(progress);
+  let dataset = String(payload.dataset || '').trim();
+  const requestedCocoEvaluation = /coco/i.test(dataset);
+  if (requestedCocoEvaluation && !modelInfo) {
+    modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+  }
+  const canRunCocoEvaluation = requestedCocoEvaluation && isCocoCompatibleHuggingFaceModel(modelInfo, parsed.repoId, graphFile);
+  if (requestedCocoEvaluation && !canRunCocoEvaluation) {
+    progress({
+      stage: 'benchmark',
+      message: 'COCO validation skipped.',
+      detail: `${parsed.repoId} does not look like a COCO-compatible vision detector, pose, or segmentation model.`,
+      level: 'warning',
+    });
+    dataset = '';
+  }
+  const needsCocoEvaluation = canRunCocoEvaluation;
+  await ensurePythonPackages(python, needsCocoEvaluation ? ['onnx', 'onnxruntime', 'ultralytics', 'pycocotools', 'certifi'] : ['onnx', 'onnxruntime'], progress);
+
+  progress({ stage: 'quantize', message: `Quantizing selected ONNX region as ${bits.toUpperCase()}.`, detail: graphFile });
+  const { stdout } = await runCommand(python.command, [
+    ...python.prefixArgs,
+    '-u',
+    '-c',
+    ONNX_SELECTIVE_QUANTIZE_SCRIPT,
+    modelPath,
+    outputPath,
+    bits,
+    JSON.stringify(selection),
+    JSON.stringify({
+      dataset,
+      datasetRoot: path.join(app.getPath('userData'), 'datasets'),
+      repoId: parsed.repoId,
+      graphFile,
+    }),
+  ], {
+    timeoutMs: needsCocoEvaluation ? 4 * 60 * 60 * 1000 : 30 * 60 * 1000,
+    maxOutputBuffer: needsCocoEvaluation ? 16 * 1024 * 1024 : 2 * 1024 * 1024,
+    onStdout: (text) => progress({ stage: 'quantize', message: 'Running ONNX Runtime quantization...', detail: stripAnsi(text).slice(-500) }),
+    onStderr: (text) => progress({ stage: 'quantize', message: 'Running ONNX Runtime quantization...', detail: stripAnsi(text).slice(-500) }),
+  });
+
+  const parsedResult = JSON.parse(stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || '{}');
+  if (parsedResult.evaluation?.status === 'success') {
+    progress({
+      stage: 'benchmark',
+      message: 'Full ONNX model smoke evaluation complete.',
+      detail: `${Math.round(Number(parsedResult.evaluation.quantizedLatencyMs || 0))} ms quantized latency`,
+      level: 'success',
+    });
+  } else if (parsedResult.evaluation?.status === 'failed') {
+    progress({
+      stage: 'benchmark',
+      message: 'Full ONNX model smoke evaluation failed.',
+      detail: parsedResult.evaluation.error || '',
+      level: 'warning',
+    });
+  }
+  if (parsedResult.evaluation?.datasetStatus === 'success') {
+    progress({
+      stage: 'benchmark',
+      message: 'COCO validation complete.',
+      detail: formatCocoValidationProgressDetail(parsedResult.evaluation),
+      level: 'success',
+    });
+  } else if (parsedResult.evaluation?.datasetStatus === 'failed') {
+    progress({
+      stage: 'benchmark',
+      message: 'COCO validation failed.',
+      detail: parsedResult.evaluation.datasetError || '',
+      level: 'warning',
+    });
+  }
+  const result = {
+    jobId,
+    runnerVersion: 2,
+    repoId: parsed.repoId,
+    graphFile,
+    modelPath,
+    ...parsedResult,
+    createdAt: new Date().toISOString(),
+  };
+  const reportPath = path.join(outputDirectory, 'selective-onnx-report.json');
+  fs.writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf8');
+  progress({ stage: 'complete', message: 'Selective ONNX quantization complete.', detail: outputPath, level: 'success' });
+  return { ...result, reportPath };
+}
+
+function formatCocoValidationProgressDetail(evaluation = {}) {
+  const parts = [];
+  if (Number.isFinite(evaluation.keypointMap5095)) {
+    parts.push(`keypoint mAP50-95 ${Number(evaluation.keypointMap5095).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.keypointMap50)) {
+    parts.push(`keypoint mAP50 ${Number(evaluation.keypointMap50).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.map5095)) {
+    parts.push(`box mAP50-95 ${Number(evaluation.map5095).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.map50)) {
+    parts.push(`box mAP50 ${Number(evaluation.map50).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.imagesEvaluated)) {
+    parts.push(`${Number(evaluation.imagesEvaluated)} images`);
+  }
+  return parts.join(' · ') || evaluation.dataset || 'COCO validation';
+}
+
+function isCocoCompatibleHuggingFaceModel(modelInfo, repoId = '', graphFile = '') {
+  const tags = Array.isArray(modelInfo?.tags) ? modelInfo.tags.map((tag) => String(tag)) : [];
+  const haystack = [
+    repoId,
+    graphFile,
+    modelInfo?.modelId,
+    modelInfo?.pipeline_tag,
+    modelInfo?.library_name,
+    ...tags,
+  ].join(' ').toLowerCase();
+
+  if (/(sentence|embedding|feature-extraction|text|token|bert|gpt|t5|minilm|clip|audio|speech|whisper)/.test(haystack)) {
+    return false;
+  }
+
+  return /(yolo|object-detection|detection|pose|keypoint|segmentation|image-segmentation|instance-segmentation|semantic-segmentation|detr|sam|resnet|mobilenet)/.test(haystack);
+}
+
+async function runSingleQuantizationEval({ modelPath, scheme, prebuiltQuantizedPath = '', outputDirectory, progress, prompt, benchmarks }) {
+  const timings = {};
+  const baselineSizeBytes = fs.statSync(modelPath).size;
+  const qtype = LLAMA_QUANTIZATION_SCHEMES[scheme];
+  const sourceQtype = getGgufQuantizationFromPath(modelPath);
+  const hasPrebuiltQuantizedFile = Boolean(prebuiltQuantizedPath && fs.existsSync(prebuiltQuantizedPath));
+  const reuseExistingQuantizedFile = scheme !== 'FP16 baseline' && sourceQtype && qtype && sourceQtype === qtype;
+  if (!qtype && scheme !== 'FP16 baseline') {
+    throw new Error(`${scheme} is not supported by the local llama.cpp quantization runner yet.`);
+  }
+
+  if (sourceQtype && scheme !== 'FP16 baseline' && !reuseExistingQuantizedFile && !hasPrebuiltQuantizedFile) {
+    throw new Error(`The selected GGUF file is already ${sourceQtype}. llama.cpp cannot requantize an already-quantized GGUF into ${qtype}. Choose an F16/FP16 GGUF artifact, or select ${sourceQtype} to evaluate this file as-is.`);
+  }
+
+  const quantizeCommand = await getLlamaToolCommand('quantize');
+  const perplexityCommand = await getLlamaToolCommand('perplexity');
+  const cliCommand = await getLlamaToolCommand('cli');
+
+  if (!quantizeCommand && scheme !== 'FP16 baseline' && !hasPrebuiltQuantizedFile) {
+    throw new Error('llama-quantize was not found. Install llama.cpp tools, then restart OneInfer Edge.');
+  }
+
+  const schemeDirectory = path.join(outputDirectory, scheme.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+  fs.mkdirSync(schemeDirectory, { recursive: true });
+  const quantizedPath = hasPrebuiltQuantizedFile
+    ? prebuiltQuantizedPath
+    : scheme === 'FP16 baseline' || reuseExistingQuantizedFile
+    ? modelPath
+    : path.join(schemeDirectory, `${path.basename(modelPath, path.extname(modelPath))}-${qtype.toLowerCase()}.gguf`);
+
+  if (hasPrebuiltQuantizedFile) {
+    timings.quantizeMs = 0;
+    progress({ stage: 'quantize', message: `Using Hugging Face ${scheme} GGUF artifact for evaluation.`, detail: prebuiltQuantizedPath });
+  } else if (reuseExistingQuantizedFile) {
+    timings.quantizeMs = 0;
+    progress({ stage: 'quantize', message: `${scheme} source is already quantized. Reusing GGUF file for evaluation.`, detail: modelPath });
+  } else if (scheme !== 'FP16 baseline') {
+    timings.quantizeMs = await timeAsync(async () => {
+      progress({ stage: 'quantize', message: `Quantizing ${scheme} with ${qtype}.`, detail: quantizedPath });
+      try {
+        await runCommand(quantizeCommand, [modelPath, quantizedPath, qtype], {
+          timeoutMs: 60 * 60 * 1000,
+          maxOutputBuffer: 256 * 1024,
+          onStdout: (text) => progress({ stage: 'quantize', message: `Quantizing ${scheme}...`, detail: stripAnsi(text).slice(-300) }),
+          onStderr: (text) => progress({ stage: 'quantize', message: `Quantizing ${scheme}...`, detail: stripAnsi(text).slice(-300) }),
+        });
+      } catch (error) {
+        const message = formatCommandError(error);
+        if (message.includes('requantizing from type') && sourceQtype === qtype) {
+          progress({ stage: 'quantize', message: `${scheme} source is already quantized. Reusing GGUF file after llama.cpp rejected requantization.`, detail: modelPath, level: 'warning' });
+          return;
+        }
+        throw error;
+      }
+    });
+  } else {
+    timings.quantizeMs = 0;
+  }
+
+  const finalQuantizedPath = fs.existsSync(quantizedPath) ? quantizedPath : modelPath;
+  const quantizedSizeBytes = fs.statSync(finalQuantizedPath).size;
+  const compressionRatio = baselineSizeBytes > 0 ? quantizedSizeBytes / baselineSizeBytes : null;
+
+  let perplexity = null;
+  if (benchmarks.perplexity && perplexityCommand) {
+    progress({ stage: 'perplexity', message: `Running perplexity for ${scheme}.` });
+    let value;
+    timings.perplexityMs = await timeAsync(async () => {
+      value = await runPerplexityEval(perplexityCommand, finalQuantizedPath, schemeDirectory, progress);
+    });
+    perplexity = value;
+  } else if (benchmarks.perplexity) {
+    progress({ stage: 'perplexity', message: 'Skipping perplexity: llama-perplexity was not found.', level: 'warning' });
+  }
+
+  let generation = null;
+  if ((benchmarks.tokenAccuracy || benchmarks.rouge || benchmarks.latencyMemory) && cliCommand) {
+    progress({ stage: 'generation', message: `Running prompt comparison for ${scheme}.` });
+    timings.generationMs = await timeAsync(async () => {
+      generation = await runGenerationEval(cliCommand, modelPath, finalQuantizedPath, prompt, progress, scheme === 'FP16 baseline' || finalQuantizedPath === modelPath);
+    });
+  } else if (benchmarks.tokenAccuracy || benchmarks.rouge || benchmarks.latencyMemory) {
+    progress({ stage: 'generation', message: 'Skipping generation check: llama-cli was not found.', level: 'warning' });
+  }
+
+  return {
+    scheme,
+    qtype: qtype || null,
+    quantizedPath: finalQuantizedPath,
+    baselineSizeBytes,
+    quantizedSizeBytes,
+    compressionRatio,
+    perplexity,
+    generation,
+    timings,
+  };
+}
+
+async function resolveHuggingFaceGgufModelSpec({ repoInput, progress, scheme }) {
+  const parsed = parseHuggingFaceInput(repoInput);
+  if (!parsed.repoId) {
+    throw new Error('Enter a valid Hugging Face repo id or URL, for example TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF.');
+  }
+
+  progress({ stage: 'download', message: `Checking Hugging Face repo ${parsed.repoId}.` });
+
+  const ggufFiles = await listHuggingFaceGgufFiles(parsed.repoId, progress);
+  const requestedFilePath = parsed.filePath && parsed.filePath.toLowerCase().endsWith('.gguf')
+    ? parsed.filePath
+    : '';
+  const schemes = scheme === 'Compare all'
+    ? ['Q8_0', 'Q6_K', 'Q5_K_M', 'Q5_K_S', 'Q4_K_M', 'Q4_K_S', 'Q3_K_M', 'Q2_K']
+    : [scheme];
+  const primaryTargetFilePath = requestedFilePath || selectHuggingFaceGgufFile(ggufFiles, scheme);
+
+  if (!primaryTargetFilePath) {
+    const conversionReadiness = await getHuggingFaceGgufConversionReadiness(parsed.repoId);
+    if (!conversionReadiness.canConvert) {
+      throw new Error(conversionReadiness.reason);
+    }
+    const convertedPath = await convertHuggingFaceRepoToGguf({
+      repoId: parsed.repoId,
+      progress,
+    });
+    return {
+      baselinePath: convertedPath,
+      quantizedPathsByScheme: {},
+    };
+  }
+
+  const baselineFilePath = selectHuggingFaceBaselineGgufFile(ggufFiles, primaryTargetFilePath);
+  const baselinePath = await downloadHuggingFaceGgufFile(parsed.repoId, baselineFilePath, progress, 'baseline');
+  const quantizedPathsByScheme = {};
+
+  for (const currentScheme of schemes) {
+    const targetFilePath = requestedFilePath || selectHuggingFaceGgufFile(ggufFiles, currentScheme);
+    if (!targetFilePath) {
+      continue;
+    }
+    quantizedPathsByScheme[currentScheme] = await downloadHuggingFaceGgufFile(parsed.repoId, targetFilePath, progress, currentScheme);
+  }
+
+  return {
+    baselinePath,
+    quantizedPathsByScheme,
+  };
+}
+
+async function getHuggingFaceGgufConversionReadiness(repoId) {
+  const modelInfo = await fetchJson(`https://huggingface.co/api/models/${repoId}`);
+  const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+  const files = siblings
+    .map((item) => {
+      const name = String(item.rfilename || '').trim();
+      return {
+        name,
+        format: detectHuggingFaceFileFormat(name),
+        role: detectHuggingFaceFileRole(name),
+      };
+    })
+    .filter((file) => file.name);
+  const tags = Array.isArray(modelInfo?.tags) ? modelInfo.tags.map((tag) => String(tag)) : [];
+  const pipelineTag = String(modelInfo?.pipeline_tag || '').trim();
+  const libraryName = String(modelInfo?.library_name || '').trim();
+  const safetensorsFiles = files.filter((file) => file.format === 'safetensors');
+  const likelyTextModel = isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files });
+  const hasTokenizer = files.some((file) => file.role === 'tokenizer');
+
+  if (safetensorsFiles.length > 0 && (likelyTextModel || hasTokenizer)) {
+    return { canConvert: true, reason: '' };
+  }
+
+  const formats = [...new Set(files.map((file) => file.format).filter(Boolean))];
+  return {
+    canConvert: false,
+    reason: `${repoId} does not contain a GGUF artifact and is not a supported text-generation Transformers model for GGUF conversion. ${getUnsupportedHuggingFaceReason({ pipelineTag, formats })} Use the ONNX selective quantization flow for graph models such as YOLO.`,
+  };
+}
+
+async function downloadHuggingFaceGgufFile(repoId, filePath, progress, label = '') {
+  return downloadHuggingFaceArtifactFile(repoId, filePath, progress, label || 'GGUF');
+}
+
+async function downloadHuggingFaceArtifactFile(repoId, filePath, progress, label = '') {
+  const destinationPath = getHuggingFaceCachedArtifactPath(repoId, filePath);
+  const sendProgress = typeof progress === 'function' ? progress : () => {};
+
+  if (fs.existsSync(destinationPath) && fs.statSync(destinationPath).size > 0) {
+    sendProgress({ stage: 'download', message: `Using cached Hugging Face ${label ? `${label} ` : ''}artifact.`, detail: destinationPath });
+    return destinationPath;
+  }
+
+  const downloadUrl = `https://huggingface.co/${repoId}/resolve/main/${filePath.split('/').map(encodeURIComponent).join('/')}`;
+  sendProgress({ stage: 'download', message: `Downloading ${path.basename(filePath)} from Hugging Face.`, detail: downloadUrl });
+  await downloadFile(downloadUrl, destinationPath, sendProgress);
+  if (!fs.existsSync(destinationPath) || fs.statSync(destinationPath).size === 0) {
+    throw new Error(`Hugging Face download finished, but the model file was not saved: ${destinationPath}`);
+  }
+  return destinationPath;
+}
+
+async function convertHuggingFaceRepoToGguf({ repoId, progress }) {
+  progress({
+    stage: 'download',
+    message: 'No GGUF artifact found. Downloading Transformers model for GGUF conversion.',
+    detail: repoId,
+  });
+
+  const python = await getQuantizationPythonCommand(progress);
+  const cacheDirectory = getHuggingFaceRepoCacheDirectory(repoId);
+  const snapshotDirectory = path.join(cacheDirectory, 'snapshot');
+  const convertedDirectory = path.join(cacheDirectory, 'converted');
+  const outfile = path.join(convertedDirectory, `${sanitizeCacheSegment(repoId)}-f16.gguf`);
+  fs.mkdirSync(snapshotDirectory, { recursive: true });
+  fs.mkdirSync(convertedDirectory, { recursive: true });
+
+  if (fs.existsSync(outfile) && fs.statSync(outfile).size > 0) {
+    progress({ stage: 'convert', message: 'Using cached converted Hugging Face GGUF file.', detail: outfile });
+  } else {
+    await ensurePythonPackages(python, ['huggingface_hub'], progress);
+    progress({
+      stage: 'download',
+      message: `Downloading ${repoId} from Hugging Face.`,
+      detail: `${snapshotDirectory} - this can take several minutes and may require HF_TOKEN for gated models.`,
+    });
+    await runCommand(python.command, [...python.prefixArgs, '-u', '-c', HF_SNAPSHOT_DOWNLOAD_SCRIPT, repoId, snapshotDirectory], {
+      timeoutMs: 3 * 60 * 60 * 1000,
+      env: {
+        ...process.env,
+        HF_TOKEN: process.env.HF_TOKEN || readEnvFileValue('HF_TOKEN') || '',
+        HUGGINGFACE_TOKEN: process.env.HUGGINGFACE_TOKEN || readEnvFileValue('HUGGINGFACE_TOKEN') || '',
+      },
+      onStdout: (text) => progress({ stage: 'download', message: 'Downloading Hugging Face snapshot...', detail: stripAnsi(text).slice(-500) }),
+      onStderr: (text) => progress({ stage: 'download', message: 'Downloading Hugging Face snapshot...', detail: stripAnsi(text).slice(-500) }),
+    });
+
+    await ensurePythonPackages(python, ['numpy', 'sentencepiece', 'pyyaml', 'safetensors', 'transformers'], progress);
+    const converter = await getLlamaCppConverter(progress);
+    const converterDirectory = path.dirname(converter);
+    const ggufPythonPath = getLlamaCppGgufPythonPath(converterDirectory);
+    const pythonPath = [ggufPythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
+
+    progress({
+      stage: 'convert',
+      message: 'Converting Hugging Face model to F16 GGUF.',
+      detail: outfile,
+    });
+    await runCommand(python.command, [...python.prefixArgs, converter, snapshotDirectory, '--outfile', outfile, '--outtype', 'f16'], {
+      timeoutMs: 3 * 60 * 60 * 1000,
+      env: {
+        ...process.env,
+        PYTHONPATH: pythonPath,
+      },
+      onStdout: (text) => progress({ stage: 'convert', message: 'Converting to GGUF...', detail: stripAnsi(text).slice(-500) }),
+      onStderr: (text) => progress({ stage: 'convert', message: 'Converting to GGUF...', detail: stripAnsi(text).slice(-500) }),
+    });
+  }
+
+  if (!fs.existsSync(outfile) || fs.statSync(outfile).size === 0) {
+    throw new Error('Hugging Face conversion finished, but the converted GGUF file was not created.');
+  }
+
+  progress({ stage: 'convert', message: 'Hugging Face model converted to GGUF.', detail: outfile });
+  return outfile;
+}
+
+function getModelCacheDirectory() {
+  return path.join(app.getPath('userData'), 'model-cache');
+}
+
+function getQuantizationRunsDirectory() {
+  return path.join(app.getPath('userData'), 'quantization-runs');
+}
+
+function getHuggingFaceRepoCacheDirectory(repoId) {
+  return path.join(getModelCacheDirectory(), 'huggingface', sanitizeCacheSegment(repoId));
+}
+
+function getHuggingFaceCachedGgufPath(repoId, filePath) {
+  return getHuggingFaceCachedArtifactPath(repoId, filePath);
+}
+
+function getHuggingFaceCachedArtifactPath(repoId, filePath) {
+  const filename = path.basename(String(filePath || 'model'));
+  const fileHash = crypto.createHash('sha1').update(`${repoId}:${filePath}`).digest('hex').slice(0, 12);
+  const extension = path.extname(filename).replace('.', '').toLowerCase() || 'artifact';
+  return path.join(getHuggingFaceRepoCacheDirectory(repoId), extension, `${fileHash}-${filename}`);
+}
+
+function sanitizeCacheSegment(value) {
+  return String(value || 'model').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'model';
+}
+
+async function clearQuantizationCache(payload = {}) {
+  const includeRuns = payload.includeRuns !== false;
+  const targets = [
+    { name: 'model cache', path: getModelCacheDirectory() },
+    ...(includeRuns ? [{ name: 'quantization runs', path: getQuantizationRunsDirectory() }] : []),
+  ];
+  const removed = [];
+  const missing = [];
+
+  for (const target of targets) {
+    if (!fs.existsSync(target.path)) {
+      missing.push(target.name);
+      continue;
+    }
+
+    await fs.promises.rm(target.path, { recursive: true, force: true });
+    removed.push(target.name);
+  }
+
+  return {
+    cleared: removed.length > 0,
+    removed,
+    missing,
+    message: removed.length > 0
+      ? `Deleted ${removed.join(' and ')}.`
+      : 'No quantization cache files were found.',
+  };
+}
+
+async function getQuantizationPythonCommand(progress) {
+  const candidates = process.platform === 'win32'
+    ? [
+        { command: 'python', prefixArgs: [] },
+        { command: 'py', prefixArgs: ['-3'] },
+      ]
+    : [
+        { command: 'python3', prefixArgs: [] },
+        { command: 'python', prefixArgs: [] },
+        { command: '/opt/homebrew/bin/python3', prefixArgs: [] },
+        { command: '/usr/local/bin/python3', prefixArgs: [] },
+      ];
+
+  for (const candidate of candidates) {
+    try {
+      await runCommand(candidate.command, [...candidate.prefixArgs, '--version'], { timeoutMs: 10000 });
+      return candidate;
+    } catch {
+      // Try the next Python.
+    }
+  }
+
+  progress({ stage: 'convert', message: 'Python was not found for HF-to-GGUF conversion.', level: 'error' });
+  throw new Error('Python is required to convert Hugging Face safetensors models to GGUF.');
+}
+
+async function ensurePythonPackages(python, packages, progress) {
+  const missing = [];
+  for (const packageName of packages) {
+    const importName = packageName === 'pyyaml' ? 'yaml' : packageName;
+    try {
+      await runCommand(python.command, [...python.prefixArgs, '-c', `import ${importName}`], { timeoutMs: 30000 });
+    } catch {
+      missing.push(packageName);
+    }
+  }
+
+  if (missing.length === 0) {
+    return;
+  }
+
+  const pipCommand = await getPipCommandForPython(python);
+  if (!pipCommand) {
+    throw new Error(`Missing Python packages for GGUF conversion: ${missing.join(', ')}. Install them with pip and try again.`);
+  }
+
+  progress({
+    stage: 'convert',
+    message: 'Installing Python packages for GGUF conversion.',
+    detail: missing.join(', '),
+  });
+  await runCommand(pipCommand.command, [...pipCommand.args, 'install', '--upgrade', ...missing], {
+    timeoutMs: 20 * 60 * 1000,
+    onStdout: (text) => progress({ stage: 'convert', message: 'Installing conversion dependencies...', detail: stripAnsi(text).slice(-500) }),
+    onStderr: (text) => progress({ stage: 'convert', message: 'Installing conversion dependencies...', detail: stripAnsi(text).slice(-500) }),
+  });
+}
+
+async function getLlamaCppConverter(progress) {
+  const directCandidates = [
+    '/opt/homebrew/opt/llama.cpp/share/llama.cpp/convert_hf_to_gguf.py',
+    '/usr/local/opt/llama.cpp/share/llama.cpp/convert_hf_to_gguf.py',
+    '/opt/homebrew/share/llama.cpp/convert_hf_to_gguf.py',
+    '/usr/local/share/llama.cpp/convert_hf_to_gguf.py',
+  ];
+
+  for (const candidate of directCandidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  for (const root of ['/opt/homebrew/Cellar/llama.cpp', '/usr/local/Cellar/llama.cpp']) {
+    const found = findFirstExistingFile(root, 'convert_hf_to_gguf.py');
+    if (found) {
+      return found;
+    }
+  }
+
+  const sourceDirectory = path.join(app.getPath('userData'), 'tools', 'llama.cpp');
+  const converter = path.join(sourceDirectory, 'convert_hf_to_gguf.py');
+  if (fs.existsSync(converter)) {
+    return converter;
+  }
+
+  if (!await commandExists('git')) {
+    throw new Error('llama.cpp converter was not found. Install llama.cpp with Homebrew or install git so OneInfer Edge can fetch the converter source.');
+  }
+
+  fs.mkdirSync(path.dirname(sourceDirectory), { recursive: true });
+  progress({ stage: 'convert', message: 'Fetching llama.cpp converter source.', detail: sourceDirectory });
+  await runCommand('git', ['clone', '--depth', '1', 'https://github.com/ggerganov/llama.cpp.git', sourceDirectory], {
+    timeoutMs: 10 * 60 * 1000,
+    onStdout: (text) => progress({ stage: 'convert', message: 'Fetching llama.cpp converter...', detail: stripAnsi(text).slice(-500) }),
+    onStderr: (text) => progress({ stage: 'convert', message: 'Fetching llama.cpp converter...', detail: stripAnsi(text).slice(-500) }),
+  });
+
+  if (!fs.existsSync(converter)) {
+    throw new Error('Fetched llama.cpp source, but convert_hf_to_gguf.py was not found.');
+  }
+
+  return converter;
+}
+
+function getLlamaCppGgufPythonPath(converterDirectory) {
+  const candidates = [
+    path.join(converterDirectory, 'gguf-py'),
+    path.join(path.dirname(converterDirectory), 'gguf-py'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function findFirstExistingFile(root, filename, depth = 4) {
+  if (!root || depth < 0 || !fs.existsSync(root)) {
+    return '';
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return '';
+  }
+
+  for (const entry of entries) {
+    const current = path.join(root, entry.name);
+    if (entry.isFile() && entry.name === filename) {
+      return current;
+    }
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const found = findFirstExistingFile(path.join(root, entry.name), filename, depth - 1);
+    if (found) {
+      return found;
+    }
+  }
+
+  return '';
+}
+
+function parseHuggingFaceInput(value) {
+  const raw = String(value || '').trim().replace(/^hf\.co\//, '');
+  if (!raw) {
+    return { repoId: '', filePath: '' };
+  }
+
+  try {
+    const url = new URL(raw.startsWith('http') ? raw : `https://huggingface.co/${raw}`);
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return { repoId: '', filePath: '' };
+    }
+
+    const repoId = `${parts[0]}/${parts[1]}`;
+    const blobIndex = parts.findIndex((part) => part === 'blob' || part === 'resolve');
+    const filePath = blobIndex >= 0 ? parts.slice(blobIndex + 2).join('/') : '';
+    return { repoId, filePath };
+  } catch {
+    const parts = raw.split('/').filter(Boolean);
+    return {
+      repoId: parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '',
+      filePath: parts.length > 2 ? parts.slice(2).join('/') : '',
+    };
+  }
+}
+
+async function listHuggingFaceGgufFiles(repoId, progress) {
+  const modelInfo = await fetchJson(`https://huggingface.co/api/models/${repoId}`);
+  const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+  const ggufFiles = siblings
+    .map((item) => String(item.rfilename || '').trim())
+    .filter((filename) => filename.toLowerCase().endsWith('.gguf'));
+
+  if (ggufFiles.length === 0) {
+    progress({ stage: 'download', message: 'No GGUF artifact found in Hugging Face repo.', level: 'warning' });
+  }
+
+  return ggufFiles;
+}
+
+async function inspectHuggingFaceModel(payload = {}) {
+  const parsed = parseHuggingFaceInput(payload.repo || payload.hfRepo || payload.modelId);
+  if (!parsed.repoId) {
+    throw new Error('Enter a valid Hugging Face repo id or URL, for example TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF.');
+  }
+
+  const modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+  const gated = Boolean(modelInfo?.gated) && String(modelInfo.gated).toLowerCase() !== 'false';
+  const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+  const files = siblings
+    .map((item) => {
+      const name = String(item.rfilename || '').trim();
+      return {
+        name,
+        size: Number.isFinite(item.size) ? item.size : null,
+        format: detectHuggingFaceFileFormat(name),
+        role: detectHuggingFaceFileRole(name),
+        quantization: getGgufQuantizationFromPath(name) || null,
+      };
+    })
+    .filter((file) => file.name);
+  const ggufFiles = files.filter((file) => file.format === 'GGUF');
+  const safetensorsFiles = files.filter((file) => file.format === 'safetensors');
+  const onnxFiles = files.filter((file) => file.format === 'ONNX');
+  const pytorchFiles = files.filter((file) => file.format === 'PyTorch');
+  const tags = Array.isArray(modelInfo?.tags) ? modelInfo.tags.map((tag) => String(tag)) : [];
+  const pipelineTag = String(modelInfo?.pipeline_tag || '').trim();
+  const libraryName = String(modelInfo?.library_name || '').trim();
+  const license = tags.find((tag) => tag.toLowerCase().startsWith('license:'))?.split(':').slice(1).join(':')
+    || String(modelInfo?.cardData?.license || '').trim()
+    || '';
+  const availableSchemes = [...new Set(ggufFiles.map((file) => file.quantization).filter(Boolean))];
+  const formats = [...new Set(files.map((file) => file.format).filter(Boolean))];
+  const likelyTextModel = isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files });
+  const hasTokenizer = files.some((file) => file.role === 'tokenizer');
+  const localQuantizationStatus = ggufFiles.length > 0
+    ? 'supported'
+    : safetensorsFiles.length > 0 && (likelyTextModel || hasTokenizer)
+      ? 'conversion-required'
+      : 'unsupported';
+  const baselineFile = ggufFiles.length > 0
+    ? selectHuggingFaceBaselineGgufFile(ggufFiles.map((file) => file.name), '')
+    : '';
+  const warnings = [];
+
+  if (localQuantizationStatus === 'unsupported') {
+    warnings.push(getUnsupportedHuggingFaceReason({ pipelineTag, formats }));
+  } else if (localQuantizationStatus === 'conversion-required') {
+    warnings.push('No GGUF artifact was found. Local quantization will need to download and convert safetensors/Transformers weights to GGUF first.');
+  } else if (!baselineFile || getGgufQuantizationFromPath(baselineFile)) {
+    warnings.push('No F16/FP16 GGUF baseline was found. The app will use the strongest available GGUF artifact as the baseline.');
+  }
+
+  if (gated) {
+    warnings.unshift(formatHuggingFaceAccessError(parsed.repoId));
+  }
+
+  const graphFile = selectHuggingFaceOnnxGraphFile(onnxFiles.map((file) => file.name), parsed.filePath);
+  const graph = graphFile
+    ? await inspectHuggingFaceOnnxGraph({
+        repoId: parsed.repoId,
+        filePath: graphFile,
+        progressLabel: parsed.repoId,
+      }).catch((error) => ({
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    : null;
+
+  return {
+    repoId: parsed.repoId,
+    requestedFilePath: parsed.filePath || '',
+    access: gated ? 'gated' : 'public',
+    gated,
+    accessError: gated ? formatHuggingFaceAccessError(parsed.repoId) : '',
+    name: String(modelInfo?.modelId || parsed.repoId),
+    author: String(modelInfo?.author || ''),
+    pipelineTag,
+    libraryName,
+    license,
+    tags,
+    likes: Number.isFinite(modelInfo?.likes) ? modelInfo.likes : null,
+    downloads: Number.isFinite(modelInfo?.downloads) ? modelInfo.downloads : null,
+    formats,
+    availableSchemes,
+    baselineFile,
+    localQuantizationStatus,
+    localQuantizationSupported: localQuantizationStatus !== 'unsupported',
+    fileSummary: {
+      total: files.length,
+      gguf: ggufFiles.length,
+      safetensors: safetensorsFiles.length,
+      onnx: onnxFiles.length,
+      pytorch: pytorchFiles.length,
+    },
+    files: files.slice(0, 24),
+    graph,
+    warnings,
+  };
+}
+
+async function inspectHuggingFaceOnnxGraph({ repoId, filePath }) {
+  const modelPath = await downloadHuggingFaceArtifactFile(repoId, filePath, null, 'ONNX graph');
+  const python = await getQuantizationPythonCommand(() => {});
+  await ensurePythonPackages(python, ['onnx'], () => {});
+  const { stdout } = await runCommand(python.command, [...python.prefixArgs, '-u', '-c', ONNX_GRAPH_INSPECT_SCRIPT, modelPath], {
+    timeoutMs: 5 * 60 * 1000,
+    maxOutputBuffer: 2 * 1024 * 1024,
+  });
+  const parsed = JSON.parse(stdout);
+  return {
+    status: 'ready',
+    file: filePath,
+    ...parsed,
+    blockGraph: buildOnnxBlockGraph(parsed),
+  };
+}
+
+function buildOnnxBlockGraph(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const opCounts = graph?.opCounts && typeof graph.opCounts === 'object' ? graph.opCounts : {};
+  const blocks = [];
+  const addBlock = (id, label, description, opTypes = []) => {
+    blocks.push({
+      id,
+      label,
+      description,
+      opTypes,
+      count: opTypes.reduce((sum, opType) => sum + Number(opCounts[opType] || 0), 0),
+    });
+  };
+
+  addBlock('input', 'Input', formatOnnxValueList(graph?.inputs) || 'Model input tensors', []);
+  if (opCounts.Resize || opCounts.Reshape || opCounts.Transpose) {
+    addBlock('preprocess', 'Resize / reshape', 'Input shape and layout preparation', ['Resize', 'Reshape', 'Transpose']);
+  }
+  addBlock('features', inferOnnxFeatureBlockLabel(nodes), 'Feature extraction layers', ['Conv', 'BatchNormalization', 'Relu', 'Sigmoid', 'Mul']);
+  if (opCounts.Concat || opCounts.Add || opCounts.Upsample) {
+    addBlock('fusion', 'Feature fusion', 'Multi-scale feature merge / neck operations', ['Concat', 'Add', 'Upsample']);
+  }
+  addBlock('head', inferOnnxHeadBlockLabel(nodes), 'Prediction head and output projection', ['Gemm', 'MatMul', 'Softmax', 'Conv']);
+  if (opCounts.NonMaxSuppression) {
+    addBlock('nms', 'NMS', 'Non-maximum suppression', ['NonMaxSuppression']);
+  }
+  addBlock('output', 'Output', formatOnnxValueList(graph?.outputs) || 'Model output tensors', []);
+
+  return {
+    blocks: blocks.filter((block, index) => index === 0 || index === blocks.length - 1 || block.count > 0),
+  };
+}
+
+function selectHuggingFaceOnnxGraphFile(onnxFiles, requestedFilePath = '') {
+  if (!Array.isArray(onnxFiles) || onnxFiles.length === 0) {
+    return '';
+  }
+
+  if (requestedFilePath && requestedFilePath.toLowerCase().endsWith('.onnx') && onnxFiles.includes(requestedFilePath)) {
+    return requestedFilePath;
+  }
+
+  const sorted = [...onnxFiles].sort((left, right) => scoreOnnxGraphFile(right) - scoreOnnxGraphFile(left));
+  return sorted[0] || '';
+}
+
+function scoreOnnxGraphFile(filePath) {
+  const lower = String(filePath || '').toLowerCase();
+  let score = 0;
+  if (/(^|\/)model\.onnx$/.test(lower)) score += 100;
+  if (/(^|\/)decoder_model_merged\.onnx$/.test(lower)) score += 70;
+  if (/(^|\/)encoder_model\.onnx$/.test(lower)) score += 60;
+  if (lower.includes('/onnx/')) score += 20;
+  if (lower.includes('quant')) score -= 30;
+  if (lower.includes('external')) score -= 20;
+  return score;
+}
+
+function inferOnnxFeatureBlockLabel(nodes) {
+  const names = nodes.map((node) => `${node.name} ${node.opType}`.toLowerCase()).join(' ');
+  if (names.includes('yolo')) return 'YOLO backbone';
+  if (names.includes('bert') || names.includes('attention')) return 'Transformer encoder';
+  return 'Feature extractor';
+}
+
+function inferOnnxHeadBlockLabel(nodes) {
+  const names = nodes.map((node) => `${node.name} ${node.opType}`.toLowerCase()).join(' ');
+  if (names.includes('pose')) return 'Pose detection head';
+  if (names.includes('detect')) return 'Detection head';
+  if (names.includes('class')) return 'Classification head';
+  return 'Prediction head';
+}
+
+function formatOnnxValueList(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return '';
+  }
+
+  return values.slice(0, 3).map((value) => {
+    const shape = Array.isArray(value.dims) && value.dims.length > 0 ? ` [${value.dims.join(' x ')}]` : '';
+    return `${value.name}${shape}`;
+  }).join(', ');
+}
+
+function detectHuggingFaceFileFormat(filename) {
+  const lower = String(filename || '').toLowerCase();
+  if (lower.endsWith('.gguf')) return 'GGUF';
+  if (lower.endsWith('.safetensors')) return 'safetensors';
+  if (lower.endsWith('.onnx')) return 'ONNX';
+  if (lower.endsWith('.bin')) return 'PyTorch';
+  if (lower.endsWith('.pt') || lower.endsWith('.pth')) return 'PyTorch';
+  if (lower.endsWith('.json')) return 'JSON';
+  if (lower.endsWith('.model')) return 'SentencePiece';
+  if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text';
+  return path.extname(lower).replace('.', '').toUpperCase() || 'file';
+}
+
+function detectHuggingFaceFileRole(filename) {
+  const base = path.basename(String(filename || '').toLowerCase());
+  if (base.endsWith('.gguf') || base.endsWith('.safetensors') || base.endsWith('.onnx') || base === 'pytorch_model.bin') {
+    return 'model weights';
+  }
+  if (base.includes('tokenizer') || base === 'vocab.json' || base === 'merges.txt' || base.endsWith('.model')) {
+    return 'tokenizer';
+  }
+  if (base === 'config.json' || base === 'generation_config.json') {
+    return 'config';
+  }
+  if (base === 'readme.md') {
+    return 'model card';
+  }
+  return 'support file';
+}
+
+function isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files }) {
+  const combined = [pipelineTag, libraryName, ...tags].join(' ').toLowerCase();
+  if (/object-detection|image-classification|image-to-text|image-segmentation|zero-shot-image-classification|depth-estimation|pose|yolo|vision/.test(combined)) {
+    return false;
+  }
+
+  if (/text-generation|text2text-generation|conversational|sentence-generation|causal-lm|llama|mistral|qwen|gemma|phi/.test(combined)) {
+    return true;
+  }
+
+  return files.some((file) => /tokenizer|generation_config|special_tokens_map|sentencepiece/i.test(file.name));
+}
+
+function getUnsupportedHuggingFaceReason({ pipelineTag, formats }) {
+  const formatText = formats.length > 0 ? formats.join(', ') : 'no supported model artifact';
+  if (pipelineTag) {
+    return `This repo appears to be a ${pipelineTag} model with ${formatText} files. Local quantization currently supports GGUF language models.`;
+  }
+
+  return `This repo exposes ${formatText} files. Local quantization currently supports GGUF language models.`;
+}
+
+function selectHuggingFaceGgufFile(ggufFiles, scheme = '') {
+  if (!Array.isArray(ggufFiles) || ggufFiles.length === 0) {
+    return '';
+  }
+
+  const qtype = LLAMA_QUANTIZATION_SCHEMES[scheme];
+  if (qtype) {
+    return ggufFiles.find((filename) => getGgufQuantizationFromPath(filename) === qtype) || '';
+  }
+
+  return ggufFiles.find((filename) => isFullPrecisionGgufFilename(filename))
+    || ggufFiles.find((filename) => /q8_0/i.test(filename))
+    || ggufFiles.find((filename) => /q6_k/i.test(filename))
+    || ggufFiles.find((filename) => /q5_k_m/i.test(filename))
+    || ggufFiles.find((filename) => /q4_k_m/i.test(filename))
+    || ggufFiles[0];
+}
+
+function selectHuggingFaceBaselineGgufFile(ggufFiles, targetFilePath = '') {
+  if (!Array.isArray(ggufFiles) || ggufFiles.length === 0) {
+    return targetFilePath || '';
+  }
+
+  const differentFiles = ggufFiles.filter((filename) => filename !== targetFilePath);
+  const candidates = differentFiles.length > 0 ? differentFiles : ggufFiles;
+  const preferred = candidates.find((filename) => isFullPrecisionGgufFilename(filename))
+    || candidates.find((filename) => /q8_0/i.test(filename))
+    || candidates.find((filename) => /q6_k/i.test(filename))
+    || candidates.find((filename) => /q5_k_m/i.test(filename))
+    || candidates.find((filename) => /q5_k_s/i.test(filename))
+    || candidates.find((filename) => /q4_k_m/i.test(filename))
+    || candidates[0];
+  return preferred || targetFilePath || '';
+}
+
+async function findHuggingFaceGgufFile(repoId, progress, scheme = '') {
+  const ggufFiles = await listHuggingFaceGgufFiles(repoId, progress);
+  const preferred = selectHuggingFaceGgufFile(ggufFiles, scheme);
+  if (!preferred) {
+    return '';
+  }
+  progress({ stage: 'download', message: `Selected Hugging Face GGUF artifact ${path.basename(preferred)}.` });
+  return preferred;
+}
+
+function isFullPrecisionGgufFilename(filename) {
+  return /(?:^|[._-])(f16|fp16|float16|f32|fp32|float32)(?:[._-]|$)/i.test(path.basename(filename));
+}
+
+function getGgufQuantizationFromPath(filePath) {
+  const name = path.basename(String(filePath || '')).toUpperCase();
+  const qtypes = [
+    'Q2_K',
+    'Q3_K_S',
+    'Q3_K_M',
+    'Q3_K_L',
+    'Q4_K_S',
+    'Q4_K_M',
+    'Q4_0',
+    'Q4_1',
+    'Q5_K_S',
+    'Q5_K_M',
+    'Q5_0',
+    'Q5_1',
+    'Q6_K',
+    'Q8_0',
+  ];
+
+  return qtypes.find((qtype) => name.includes(qtype)) || '';
+}
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: getHuggingFaceHeaders(),
+    }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        fetchJson(response.headers.location).then(resolve, reject);
+        return;
+      }
+
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (isHuggingFaceAccessStatus(response.statusCode)) {
+            reject(new Error(formatHuggingFaceAccessError(extractHuggingFaceRepoIdFromUrl(url), response.statusCode)));
+            return;
+          }
+          reject(new Error(`Hugging Face API returned HTTP ${response.statusCode}: ${body.slice(0, 300)}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('error', reject);
+    request.setTimeout(30000, () => {
+      request.destroy(new Error('Hugging Face API request timed out.'));
+    });
+  });
+}
+
+function downloadFile(url, destinationPath, progress, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) {
+      reject(new Error('Too many redirects while downloading Hugging Face model.'));
+      return;
+    }
+
+    const request = https.get(url, { headers: getHuggingFaceHeaders() }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        const nextUrl = new URL(response.headers.location, url).toString();
+        response.resume();
+        downloadFile(nextUrl, destinationPath, progress, redirects + 1).then(resolve, reject);
+        return;
+      }
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.resume();
+        if (isHuggingFaceAccessStatus(response.statusCode)) {
+          reject(new Error(formatHuggingFaceAccessError(extractHuggingFaceRepoIdFromUrl(url), response.statusCode)));
+          return;
+        }
+        reject(new Error(`Hugging Face download returned HTTP ${response.statusCode}.`));
+        return;
+      }
+
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+      const tempPath = `${destinationPath}.download`;
+      const file = fs.createWriteStream(tempPath);
+      const totalBytes = Number(response.headers['content-length'] || 0);
+      let downloadedBytes = 0;
+      response.on('data', (chunk) => {
+        downloadedBytes += chunk.length;
+        if (totalBytes > 0) {
+          const percent = Math.round((downloadedBytes / totalBytes) * 100);
+          progress({ stage: 'download', message: `Downloading Hugging Face model... ${percent}%`, detail: destinationPath });
+        }
+      });
+      response.pipe(file);
+      file.on('error', (error) => {
+        fs.rm(tempPath, { force: true }, () => {});
+        reject(error);
+      });
+      file.on('finish', () => {
+        file.close(() => {
+          try {
+            fs.renameSync(tempPath, destinationPath);
+            resolve();
+          } catch (error) {
+            fs.rm(tempPath, { force: true }, () => {});
+            reject(error);
+          }
+        });
+      });
+    });
+
+    request.on('error', (error) => {
+      reject(error);
+    });
+    request.setTimeout(60 * 60 * 1000, () => {
+      request.destroy(new Error('Hugging Face model download timed out.'));
+    });
+  });
+}
+
+function isHuggingFaceAccessStatus(statusCode) {
+  return Number(statusCode) === 401 || Number(statusCode) === 403;
+}
+
+function formatHuggingFaceAccessError(repoId = '', statusCode = '') {
+  const repoText = repoId ? `${repoId} is` : 'This Hugging Face model is';
+  const statusText = statusCode ? ` Hugging Face returned HTTP ${statusCode}.` : '';
+  return `${repoText} gated or private.${statusText} Accept the model terms on Hugging Face and configure a valid HF_TOKEN/Hugging Face access token, then retry inspection and evaluation.`;
+}
+
+function extractHuggingFaceRepoIdFromUrl(rawUrl = '') {
+  try {
+    const url = new URL(rawUrl);
+    if (!/huggingface\.co$/i.test(url.hostname)) {
+      return '';
+    }
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'api' && parts[1] === 'models') {
+      return parts.slice(2, 4).join('/');
+    }
+
+    return parts.slice(0, 2).join('/');
+  } catch {
+    return '';
+  }
+}
+
+function getHuggingFaceHeaders() {
+  const token = process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN || readEnvFileValue('HF_TOKEN') || readEnvFileValue('HUGGINGFACE_TOKEN');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function getLlamaToolCommand(tool) {
+  const names = {
+    quantize: ['llama-quantize', 'quantize'],
+    perplexity: ['llama-perplexity', 'perplexity'],
+    cli: ['llama-completion', 'completion', 'llama-cli', 'main'],
+  }[tool] || [];
+
+  const pathCandidates = isMacOS()
+    ? names.flatMap((name) => [`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, name])
+    : names;
+
+  return getFirstAvailableCommand(pathCandidates);
+}
+
+async function getQuantizationTools() {
+  const [quantize, cli, perplexity] = await Promise.all([
+    getLlamaToolCommand('quantize'),
+    getLlamaToolCommand('cli'),
+    getLlamaToolCommand('perplexity'),
+  ]);
+
+  return {
+    quantize: Boolean(quantize),
+    cli: Boolean(cli),
+    perplexity: Boolean(perplexity),
+    paths: {
+      quantize,
+      cli,
+      perplexity,
+    },
+  };
+}
+
+async function runPerplexityEval(command, modelPath, outputDirectory, progress) {
+  const evalPath = path.join(outputDirectory, 'eval.txt');
+  fs.writeFileSync(evalPath, DEFAULT_QUANT_EVAL_TEXT, 'utf8');
+
+  try {
+    const { stdout, stderr } = await runCommand(command, ['-m', modelPath, '-f', evalPath, '-c', '512', '-ngl', '0', '-dev', 'none', '-lv', '1'], {
+      timeoutMs: 20 * 60 * 1000,
+      maxOutputBuffer: 512 * 1024,
+      onStdout: (text) => progress({ stage: 'perplexity', message: 'Running perplexity evaluation...', detail: stripAnsi(text).slice(-300) }),
+      onStderr: (text) => progress({ stage: 'perplexity', message: 'Running perplexity evaluation...', detail: stripAnsi(text).slice(-300) }),
+    });
+    const text = `${stdout}\n${stderr}`;
+    const value = parseLlamaPerplexityValue(text);
+    return {
+      value,
+      raw: stripAnsi(text).slice(-4000),
+    };
+  } catch (error) {
+    progress({ stage: 'perplexity', message: 'Perplexity evaluation failed.', detail: formatCommandError(error), level: 'warning' });
+    return {
+      value: null,
+      error: formatCommandError(error),
+    };
+  }
+}
+
+function parseLlamaPerplexityValue(value) {
+  const text = stripAnsi(value);
+  const directMatch = text.match(/(?:Final estimate:\s*)?PPL\s*=\s*([0-9]+(?:\.[0-9]+)?)/i)
+    || text.match(/perplexity[^0-9]*([0-9]+(?:\.[0-9]+)?)/i);
+  if (directMatch) {
+    return Number(directMatch[1]);
+  }
+
+  const indexedMatches = [...text.matchAll(/\[\d+\]\s*([0-9]+(?:\.[0-9]+)?)/g)];
+  const lastIndexed = indexedMatches[indexedMatches.length - 1]?.[1];
+  if (lastIndexed) {
+    return Number(lastIndexed);
+  }
+
+  return null;
+}
+
+async function runGenerationEval(command, baselinePath, quantizedPath, prompt, progress, baselineOnly) {
+  const baseline = await runLlamaPrompt(command, baselinePath, prompt, progress, 'baseline');
+  const quantized = baselineOnly ? baseline : await runLlamaPrompt(command, quantizedPath, prompt, progress, 'quantized');
+  const errors = [baseline.error, quantized.error].filter(Boolean);
+  const failed = errors.length > 0 || !baseline.output || !quantized.output;
+  if (failed) {
+    const message = errors.join(' ') || 'Prompt generation did not return output.';
+    progress({ stage: 'generation', message: 'Prompt comparison failed.', detail: message, level: 'error' });
+    return {
+      baseline,
+      quantized,
+      tokenAgreement: null,
+      latencyDeltaPercent: null,
+      status: 'failed',
+      error: message,
+    };
+  }
+
+  return {
+    baseline,
+    quantized,
+    tokenAgreement: estimateTokenAgreement(baseline.output, quantized.output),
+    latencyDeltaPercent: baseline.tokensPerSecond && quantized.tokensPerSecond
+      ? ((quantized.tokensPerSecond - baseline.tokensPerSecond) / baseline.tokensPerSecond) * 100
+      : null,
+    status: 'success',
+  };
+}
+
+async function runLlamaPrompt(command, modelPath, prompt, progress, label) {
+  const startedAt = Date.now();
+  const commandName = path.basename(String(command || '')).toLowerCase();
+  const isCompletionCommand = commandName.includes('completion');
+  const args = [
+    '-m', modelPath,
+    '-p', prompt,
+    '-n', '32',
+    '--temp', '0',
+    '-ngl', '0',
+    '-dev', 'none',
+    '-lv', '1',
+    '--no-display-prompt',
+    '--no-warmup',
+    '--simple-io',
+    '--no-perf',
+  ];
+
+  if (isCompletionCommand) {
+    args.push('-no-cnv');
+  } else {
+    args.push('-st');
+  }
+
+  try {
+    const { stdout, stderr } = await runCommand(command, args, {
+      timeoutMs: 90 * 1000,
+      maxOutputBuffer: 512 * 1024,
+      onStdout: (text) => {
+        const detail = formatProgressDetail(text);
+        if (detail) {
+          progress({ stage: 'generation', message: `Generating ${label} output...`, detail });
+        }
+      },
+      onStderr: (text) => {
+        const detail = formatProgressDetail(text);
+        if (detail) {
+          progress({ stage: 'generation', message: `Generating ${label} output...`, detail });
+        }
+      },
+    });
+    const raw = stripAnsi(`${stdout}\n${stderr}`);
+    const timingMatch = raw.match(/([0-9.]+)\s*tokens per second/i) || raw.match(/([0-9.]+)\s*tok\/s/i);
+    const output = stripLlamaTimings(stdout).trim();
+    const durationMs = Date.now() - startedAt;
+    const estimatedTokensPerSecond = estimateOutputTokensPerSecond(output, durationMs);
+    const failureMessage = getLlamaPromptFailureMessage(raw, output);
+    if (failureMessage) {
+      progress({ stage: 'generation', message: `${label} generation failed.`, detail: failureMessage, level: 'warning' });
+      return {
+        output: '',
+        raw: raw.slice(-4000),
+        error: failureMessage,
+        durationMs,
+        tokensPerSecond: null,
+      };
+    }
+
+    return {
+      output,
+      raw: raw.slice(-4000),
+      durationMs,
+      tokensPerSecond: timingMatch ? Number(timingMatch[1]) : estimatedTokensPerSecond,
+    };
+  } catch (error) {
+    progress({ stage: 'generation', message: `${label} generation failed.`, detail: formatCommandError(error), level: 'warning' });
+    return {
+      output: '',
+      error: formatCommandError(error),
+      durationMs: Date.now() - startedAt,
+      tokensPerSecond: null,
+    };
+  }
+}
+
+function estimateOutputTokensPerSecond(output, durationMs) {
+  const tokens = tokenizeForAgreement(output);
+  if (!tokens.length || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return null;
+  }
+
+  return tokens.length / (durationMs / 1000);
+}
+
+function getLlamaPromptFailureMessage(raw, output) {
+  const text = stripAnsi(`${raw || ''}\n${output || ''}`);
+  const patterns = [
+    /failed to create command queue[^\n]*/i,
+    /failed to initialize\s+backend[^\n]*/i,
+    /unable to create context[^\n]*/i,
+    /no-conversation\s+is\s+not\s+supported[^\n]*/i,
+    /is\s+not\s+supported\s+by\s+llama-cli[^\n]*/i,
+    /--no-conversation is not supported[^\n]*/i,
+    /please use llama-completion instead[^\n]*/i,
+    /(?:unknown|invalid)\s+(?:argument|option)[^\n]*/i,
+    /(?:error|failed):[^\n]*/i,
+  ];
+
+  const match = patterns.map((pattern) => text.match(pattern)?.[0]).find(Boolean);
+  return match ? match.trim() : '';
+}
+
+function formatProgressDetail(value, maxLength = 300) {
+  const text = stripAnsi(value)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && line !== '>' && !/^>+$/.test(line))
+    .join('\n')
+    .trim();
+
+  return text ? text.slice(-maxLength) : '';
+}
+
+function stripLlamaTimings(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .filter((line) => !/llama_|load time|sample time|prompt eval time|eval time|total time/i.test(line))
+    .join('\n');
+}
+
+function estimateTokenAgreement(left, right) {
+  const leftTokens = tokenizeForAgreement(left);
+  const rightTokens = tokenizeForAgreement(right);
+  const total = Math.max(leftTokens.length, rightTokens.length);
+  if (total === 0) {
+    return null;
+  }
+
+  let matches = 0;
+  for (let index = 0; index < total; index += 1) {
+    if (leftTokens[index] && leftTokens[index] === rightTokens[index]) {
+      matches += 1;
+    }
+  }
+
+  return (matches / total) * 100;
+}
+
+function tokenizeForAgreement(value) {
+  return String(value || '')
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function normalizeQuantBenchmarks(value = {}) {
+  return {
+    tokenAccuracy: value.tokenAccuracy !== false,
+    perplexity: value.perplexity !== false,
+    mmlu: Boolean(value.mmlu),
+    hellaswag: Boolean(value.hellaswag),
+    truthfulqa: Boolean(value.truthfulqa),
+    arcChallenge: Boolean(value.arcChallenge),
+    winogrande: Boolean(value.winogrande),
+    gsm8k: Boolean(value.gsm8k),
+    humaneval: Boolean(value.humaneval),
+    rouge: value.rouge !== false,
+    bertScore: Boolean(value.bertScore),
+    latencyMemory: value.latencyMemory !== false,
+    ttft: value.ttft !== false,
+    peakMemory: value.peakMemory !== false,
+  };
+}
+
+function getUnsupportedQuantBenchmarks(benchmarks) {
+  const unsupported = [];
+  const benchmarkNames = [
+    ['mmlu', 'MMLU'],
+    ['hellaswag', 'HellaSwag'],
+    ['truthfulqa', 'TruthfulQA'],
+    ['arcChallenge', 'ARC-Challenge'],
+    ['winogrande', 'WinoGrande'],
+    ['gsm8k', 'GSM8K'],
+    ['humaneval', 'HumanEval'],
+  ];
+
+  for (const [key, name] of benchmarkNames) {
+    if (benchmarks[key]) {
+      unsupported.push({ name, reason: `Requires a benchmark dataset/scoring backend. The local llama.cpp runner does not score ${name} yet.` });
+    }
+  }
+
+  if (benchmarks.bertScore) {
+    unsupported.push({ name: 'BERTScore', reason: 'Requires a sentence embedding/scoring dependency or backend service. The local llama.cpp runner does not compute BERTScore yet.' });
+  }
+  if (benchmarks.ttft) {
+    unsupported.push({ name: 'TTFT', reason: 'llama.cpp CLI output exposes token throughput, but precise time-to-first-token instrumentation is not wired yet.' });
+  }
+  if (benchmarks.peakMemory) {
+    unsupported.push({ name: 'Peak memory', reason: 'Peak RAM/VRAM tracking needs platform-specific process sampling during generation.' });
+  }
+  return unsupported;
+}
+
+async function timeAsync(fn) {
+  const startedAt = Date.now();
+  await fn();
+  return Date.now() - startedAt;
+}
+
+function chooseRecommendedQuantRun(runs) {
+  if (!Array.isArray(runs) || runs.length === 0) {
+    return null;
+  }
+
+  const successfulRuns = runs.filter((run) => run.generation?.status !== 'failed' && !run.generation?.error);
+  if (successfulRuns.length === 0) {
+    return null;
+  }
+
+  return [...successfulRuns].sort((left, right) => {
+    const leftAgreement = left.generation?.tokenAgreement ?? 0;
+    const rightAgreement = right.generation?.tokenAgreement ?? 0;
+    const leftCompression = left.compressionRatio ?? 1;
+    const rightCompression = right.compressionRatio ?? 1;
+    const leftSpeed = left.generation?.quantized?.tokensPerSecond ?? 0;
+    const rightSpeed = right.generation?.quantized?.tokensPerSecond ?? 0;
+    const leftScore = leftAgreement * 0.62 + (1 - leftCompression) * 100 * 0.25 + leftSpeed * 0.13;
+    const rightScore = rightAgreement * 0.62 + (1 - rightCompression) * 100 * 0.25 + rightSpeed * 0.13;
+    return rightScore - leftScore;
+  })[0];
+}
+
 function createWindow() {
   const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
   const iconPath = path.join(__dirname, '..', 'build', iconFile);
@@ -5355,6 +7615,15 @@ app.whenReady().then(() => {
     }
 
     configureAutoUpdater();
+    if (!autoUpdater) {
+      setUpdateState({
+        phase: 'error',
+        version: app.getVersion(),
+        message: 'Auto-update is not available in this app session.',
+        progressPercent: null,
+      });
+      return { ...updateState };
+    }
     await autoUpdater.checkForUpdates();
     return { ...updateState };
   });
@@ -5364,7 +7633,9 @@ app.whenReady().then(() => {
     }
 
     setImmediate(() => {
-      autoUpdater.quitAndInstall(false, true);
+      if (autoUpdater) {
+        autoUpdater.quitAndInstall(false, true);
+      }
     });
 
     return { ...updateState };
@@ -5383,6 +7654,7 @@ app.whenReady().then(() => {
     name = normalizeServingLibraryName(name);
     return lastLibraryErrors[name] || null;
   });
+  ipcMain.handle('app:get-quantization-tools', async () => getQuantizationTools());
   ipcMain.handle('app:install-vc-redist', async () => {
     if (process.platform !== 'win32') {
       throw new Error('Visual C++ Redistributable is only required on Windows systems.');
@@ -5397,6 +7669,11 @@ app.whenReady().then(() => {
   ipcMain.handle('app:cancel-hf-deployment', async (_event, payload) => cancelHfDeployment(payload));
   ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
+  ipcMain.handle('app:run-quantization-eval', async (_event, payload) => runQuantizationEval(payload));
+  ipcMain.handle('app:run-selective-onnx-quantization', async (_event, payload) => runSelectiveOnnxQuantization(payload));
+  ipcMain.handle('app:run-selective-onnx-quantization-v2', async (_event, payload) => runSelectiveOnnxQuantization(payload));
+  ipcMain.handle('app:clear-quantization-cache', async (_event, payload) => clearQuantizationCache(payload));
+  ipcMain.handle('app:inspect-hf-model', async (_event, payload) => inspectHuggingFaceModel(payload));
   ipcMain.handle('app:git-pull', async () => {
     try {
       const projectRoot = path.join(__dirname, '..');
@@ -5415,9 +7692,12 @@ app.whenReady().then(() => {
 
   if (!isDev) {
     setTimeout(() => {
-      autoUpdater.checkForUpdates().catch((error) => {
-        console.error('[updater] startup check failed', error);
-      });
+      configureAutoUpdater();
+      if (autoUpdater) {
+        autoUpdater.checkForUpdates().catch((error) => {
+          console.error('[updater] startup check failed', error);
+        });
+      }
     }, 4000);
   }
 

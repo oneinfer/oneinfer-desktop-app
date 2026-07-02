@@ -148,6 +148,7 @@ interface Window {
     openExternalUrl: (payload: { url: string }) => Promise<{ opened: boolean; url: string }>;
     onUpdateStatus: (listener: (status: DesktopUpdateStatus) => void) => () => void;
     onDeploymentProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
+    onQuantizationProgress: (listener: (progress: DesktopDeploymentProgress) => void) => () => void;
     getMachineDetails: () => Promise<DesktopMachineDetails>;
     syncMachineDetails: (payload: { baseUrl: string; session: DesktopSession }) => Promise<DesktopMachineDetails>;
     enableClaudeCode: (payload: {
@@ -180,6 +181,16 @@ interface Window {
     installLibrary: (name: DesktopServingLibrary) => Promise<void>;
     onLibraryInstallLog: (listener: (log: { name: string; text: string; isError?: boolean }) => void) => () => void;
     getLibraryError: (name: DesktopServingLibrary) => Promise<string | null>;
+    getQuantizationTools: () => Promise<{
+      quantize: boolean;
+      cli: boolean;
+      perplexity: boolean;
+      paths: {
+        quantize?: string | null;
+        cli?: string | null;
+        perplexity?: string | null;
+      };
+    }>;
     installVcRedist: () => Promise<string>;
     deployHfModel: (payload: {
       repoId: string;
@@ -215,6 +226,171 @@ interface Window {
     getLocalModelMetrics: (payload: {
       endpointUrl: string;
     }) => Promise<DesktopLocalModelMetrics>;
+    runQuantizationEval: (payload: {
+      jobId?: string;
+      target: string;
+      modelSource: 'huggingface' | 'catalog' | 'local';
+      modelId?: string;
+      hfRepo?: string;
+      localPath?: string;
+      format?: string;
+      scheme: string;
+      dataset?: string;
+      calibrationSamples?: number;
+      benchmarks?: {
+        tokenAccuracy?: boolean;
+        perplexity?: boolean;
+        mmlu?: boolean;
+        hellaswag?: boolean;
+        truthfulqa?: boolean;
+        arcChallenge?: boolean;
+        winogrande?: boolean;
+        gsm8k?: boolean;
+        humaneval?: boolean;
+        rouge?: boolean;
+        bertScore?: boolean;
+        latencyMemory?: boolean;
+        ttft?: boolean;
+        peakMemory?: boolean;
+      };
+      selectiveQuantization?: {
+        bits: 'int8' | 'int4' | 'fp16';
+        selection: {
+          id: string;
+          label: string;
+          kind: 'section' | 'layer' | 'block';
+          opType: string;
+          count: number;
+          description?: string;
+        };
+        repoId?: string;
+        graphFile?: string;
+      };
+      prompt?: string;
+    }) => Promise<Record<string, unknown>>;
+    runSelectiveOnnxQuantization: (payload: {
+      jobId?: string;
+      repoId: string;
+      graphFile?: string;
+      bits: 'int8' | 'int4' | 'fp16';
+      selection: {
+        id: string;
+        label: string;
+        kind: 'section' | 'layer' | 'block';
+        opType: string;
+        count: number;
+        description?: string;
+      };
+      dataset?: string;
+    }) => Promise<{
+      jobId?: string;
+      runnerVersion?: number;
+      artifactKind?: string;
+      repoId?: string;
+      graphFile?: string;
+      outputPath?: string;
+      reportPath?: string;
+      bits?: string;
+      baselineSizeBytes?: number;
+      quantizedSizeBytes?: number;
+      opTypesQuantized?: string[];
+      nodesQuantized?: string[];
+      evaluation?: {
+        status?: 'success' | 'failed' | 'not-run';
+        baselineLatencyMs?: number | null;
+        quantizedLatencyMs?: number | null;
+        latencyDeltaPercent?: number | null;
+        meanAbsDelta?: number | null;
+        maxAbsDelta?: number | null;
+        comparableOutputs?: number;
+        outputCount?: number;
+        dataset?: string;
+        datasetStatus?: 'success' | 'failed' | 'skipped';
+        datasetError?: string;
+        task?: string;
+        map50?: number | null;
+        map5095?: number | null;
+        precision?: number | null;
+        recall?: number | null;
+        keypointMap50?: number | null;
+        keypointMap5095?: number | null;
+        imagesEvaluated?: number | null;
+        error?: string;
+      };
+    }>;
+    clearQuantizationCache: (payload?: {
+      includeRuns?: boolean;
+    }) => Promise<{
+      cleared: boolean;
+      removed: string[];
+      missing: string[];
+      message: string;
+    }>;
+    inspectHfModel: (payload: {
+      repo: string;
+    }) => Promise<{
+      repoId: string;
+      requestedFilePath?: string;
+      access?: 'public' | 'gated' | 'private' | 'unknown';
+      gated?: boolean;
+      accessError?: string;
+      name: string;
+      author?: string;
+      pipelineTag?: string;
+      libraryName?: string;
+      license?: string;
+      tags: string[];
+      likes?: number | null;
+      downloads?: number | null;
+      formats: string[];
+      availableSchemes: string[];
+      baselineFile?: string;
+      localQuantizationStatus: 'supported' | 'conversion-required' | 'unsupported';
+      localQuantizationSupported: boolean;
+      fileSummary: {
+        total: number;
+        gguf: number;
+        safetensors: number;
+        onnx: number;
+        pytorch: number;
+      };
+      files: Array<{
+        name: string;
+        size?: number | null;
+        format: string;
+        role: string;
+        quantization?: string | null;
+      }>;
+      graph?: {
+        status: 'ready' | 'error';
+        error?: string;
+        file?: string;
+        name?: string;
+        nodeCount?: number;
+        opTypeCount?: number;
+        opCounts?: Record<string, number>;
+        inputs?: Array<{ name: string; dims: Array<string | number> }>;
+        outputs?: Array<{ name: string; dims: Array<string | number> }>;
+        nodes?: Array<{
+          id: string;
+          name: string;
+          opType: string;
+          inputs: string[];
+          outputs: string[];
+          attributeCount: number;
+        }>;
+        blockGraph?: {
+          blocks: Array<{
+            id: string;
+            label: string;
+            description: string;
+            opTypes: string[];
+            count: number;
+          }>;
+        };
+      } | null;
+      warnings: string[];
+    }>;
     gitPull: () => Promise<{ success: boolean; message?: string; error?: string }>;
   };
 }

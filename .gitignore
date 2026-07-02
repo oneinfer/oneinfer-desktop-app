@@ -6,3 +6,6 @@ release/
 *.pyc
 .env
 .env.local
+datasets/
+runs/
+.DS_Store
