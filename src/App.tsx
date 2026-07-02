@@ -72,8 +72,8 @@ import type {
 import { getBalance } from './utils/format';
 
 const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
-const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console/credits';
-const ONEINFER_GPU_LIST_URL = import.meta.env.VITE_ONEINFER_GPU_LIST_URL || 'https://oneinfer.ai/console/gpu';
+const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console';
+const ONEINFER_GPU_LIST_URL = import.meta.env.VITE_ONEINFER_GPU_LIST_URL || 'https://oneinfer.ai/console';
 const DEV_UPDATE_DISABLED_MESSAGE = 'Auto-update is disabled in development mode.';
 
 const defaultRegistrationForm: RegistrationFormState = {
@@ -901,6 +901,22 @@ function App() {
         }));
 
         announcePartialFailures('Bandwidth', results, shouldBeSilent, ['developer plans', 'active developer plan']);
+      }
+
+      if (section === 'quantization') {
+        const results = await Promise.allSettled([
+          getInstances(currentBaseUrl, currentSession),
+        ]);
+
+        setDashboard((current) => ({
+          ...current,
+          instances: (results[0].status === 'fulfilled' ? results[0].value : current.instances).filter(i => {
+            const status = String(i.instance_status ?? i.status).toLowerCase();
+            return status !== 'deleted' && status !== 'terminated';
+          }),
+        }));
+
+        announcePartialFailures('Quantization', results, shouldBeSilent, ['instances']);
       }
 
       setLoadedSections((current) => ({ ...current, [section]: true }));

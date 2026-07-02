@@ -887,6 +887,14 @@ label span,
   border-radius: 16px;
 }
 
+.primary-button:disabled,
+.secondary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+}
+
 .primary-button {
   color: #071217;
   background: linear-gradient(135deg, var(--accent), #b9ffe9);

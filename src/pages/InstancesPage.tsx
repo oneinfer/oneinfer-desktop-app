@@ -64,7 +64,9 @@ export function InstancesPage(props: {
   const gpuPricePerHour = selectedGpu?.pricePerHourUsd ?? 0;
   const diskPricePerHour = calculateDiskPricePerHour(props.instanceForm.disk_size);
   const totalPricePerHour = gpuPricePerHour + diskPricePerHour;
+  const [activeEndpointsTab, setActiveEndpointsTab] = useState<'dedicated' | 'serverless'>('dedicated');
   const cloudEndpoints = getCloudEndpointRows(props.dashboard.inferenceEndpoints, props.dashboard.instances);
+  const serverlessEndpoints = useMemo(() => getServerlessEndpointRows(props.dashboard.inferenceEndpoints), [props.dashboard.inferenceEndpoints]);
   const gpuCards = useMemo(
     () => sortGpuCards(getGpuCardOptions(props.dashboard.providerInfo, props.dashboard.gpuSpecs), gpuSort),
     [props.dashboard.providerInfo, props.dashboard.gpuSpecs, gpuSort],
@@ -278,26 +280,69 @@ export function InstancesPage(props: {
             <Server size={18} />
             <div>
               <h3>Cloud Endpoints</h3>
-              <p className="cloud-endpoint-description">List of registered cloud model endpoints from GPU deployments. Use these endpoints as routing targets once the model server is ready.</p>
+              <p className="cloud-endpoint-description">List of registered cloud model endpoints. Use these endpoints as routing targets once the model server is ready.</p>
             </div>
           </div>
-          <span className="status-pill soft">{cloudEndpoints.length} registered</span>
+          <span className="status-pill soft">{cloudEndpoints.length + serverlessEndpoints.length} registered</span>
         </div>
-        <div className="cloud-endpoint-list">
-          {cloudEndpoints.length === 0 ? (
-            <div className="empty-state">No cloud inference endpoints registered yet.</div>
-          ) : null}
-          {cloudEndpoints.map((endpoint) => (
-            <CloudEndpointCard
-              endpoint={endpoint}
-              key={endpoint.endpointId}
-              onUseEndpointInRoute={props.onUseEndpointInRoute}
-              onShowUsage={props.onShowUsage}
-              onDelete={props.onDelete}
-              onDeleteEndpoint={props.onDeleteEndpoint}
-            />
-          ))}
+
+        <div className="flex border-b border-[rgba(255,255,255,0.08)] mb-5" style={{ gap: '16px' }}>
+          <button
+            className={`pb-2 px-1 text-[0.85rem] font-medium transition-colors border-b-2 bg-transparent border-transparent cursor-pointer`}
+            style={{
+              borderBottomColor: activeEndpointsTab === 'dedicated' ? '#38bdf8' : 'transparent',
+              color: activeEndpointsTab === 'dedicated' ? '#e2e8f0' : 'var(--muted)',
+            }}
+            onClick={() => setActiveEndpointsTab('dedicated')}
+            type="button"
+          >
+            Dedicated GPU Endpoints ({cloudEndpoints.length})
+          </button>
+          <button
+            className={`pb-2 px-1 text-[0.85rem] font-medium transition-colors border-b-2 bg-transparent border-transparent cursor-pointer`}
+            style={{
+              borderBottomColor: activeEndpointsTab === 'serverless' ? '#38bdf8' : 'transparent',
+              color: activeEndpointsTab === 'serverless' ? '#e2e8f0' : 'var(--muted)',
+            }}
+            onClick={() => setActiveEndpointsTab('serverless')}
+            type="button"
+          >
+            Serverless Endpoints ({serverlessEndpoints.length})
+          </button>
         </div>
+
+        {activeEndpointsTab === 'dedicated' ? (
+          <div className="cloud-endpoint-list">
+            {cloudEndpoints.length === 0 ? (
+              <div className="empty-state">No cloud inference endpoints registered yet.</div>
+            ) : null}
+            {cloudEndpoints.map((endpoint) => (
+              <CloudEndpointCard
+                endpoint={endpoint}
+                key={endpoint.endpointId}
+                onUseEndpointInRoute={props.onUseEndpointInRoute}
+                onShowUsage={props.onShowUsage}
+                onDelete={props.onDelete}
+                onDeleteEndpoint={props.onDeleteEndpoint}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="cloud-endpoint-list">
+            {serverlessEndpoints.length === 0 ? (
+              <div className="empty-state">No serverless endpoints registered yet.</div>
+            ) : null}
+            {serverlessEndpoints.map((endpoint) => (
+              <ServerlessEndpointCard
+                endpoint={endpoint}
+                key={endpoint.endpointId}
+                onUseEndpointInRoute={props.onUseEndpointInRoute}
+                onShowUsage={props.onShowUsage}
+                onDeleteEndpoint={props.onDeleteEndpoint}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <Modal title={selectedGpu ? `Deploy Model on ${formatGpuDisplayName(selectedGpu.name)}` : 'Deploy Cloud Model'} isOpen={props.showCreateInstanceModal} onClose={() => props.onModalChange(false)}>
@@ -716,6 +761,105 @@ function getModelOptions(models: any[]): ModelOption[] {
 
 function formatCloudServingLibraryLabel(library: ServingLibrary): string {
   return cloudServingLibraryOptions.find((option) => option.value === library)?.label ?? formatValue(library);
+}
+
+interface ServerlessEndpointRow {
+  endpointId: string;
+  endpointUrl: string;
+  modelId: string;
+  name: string;
+  provider: string;
+  status: string;
+  updatedAt: string;
+}
+
+function getServerlessEndpointRows(endpoints: EndpointItem[]): ServerlessEndpointRow[] {
+  return endpoints
+    .filter((endpoint) => {
+      const isServerless = Boolean(
+        endpoint.is_serverless
+        || endpoint.isServerless
+        || String(endpoint.deployment_target).toLowerCase() === 'serverless'
+        || String(endpoint.provider).toLowerCase().includes('serverless')
+      );
+      return isServerless;
+    })
+    .map((endpoint, index) => {
+      const endpointId = String(endpoint.inference_endpoint_id ?? endpoint.endpoint_id ?? endpoint.id ?? `serverless-${index + 1}`);
+      const modelId = String(endpoint.model_id ?? endpoint.model_name ?? endpoint.name ?? `model-${index + 1}`);
+      return {
+        endpointId,
+        endpointUrl: String(endpoint.endpoint_url ?? ''),
+        modelId,
+        name: String(endpoint.name ?? endpoint.endpoint_name ?? modelId),
+        provider: String(endpoint.provider ?? 'runpod'),
+        status: String(endpoint.status ?? endpoint.creation_status ?? 'ready'),
+        updatedAt: String(endpoint.updated_at ?? endpoint.created_at ?? 'Registered serverless endpoint'),
+      };
+    });
+}
+
+function ServerlessEndpointCard(props: {
+  endpoint: ServerlessEndpointRow;
+  onUseEndpointInRoute: (endpointId: string, endpointName: string) => void;
+  onShowUsage: (target: EndpointUsageTarget) => void;
+  onDeleteEndpoint?: (endpointId: string) => void;
+}) {
+  return (
+    <div className="cloud-endpoint-card">
+      <div className="cloud-endpoint-main">
+        <div style={{ minWidth: 0 }}>
+          <strong>{props.endpoint.name}</strong>
+          <span>{props.endpoint.provider} / {props.endpoint.modelId}</span>
+          {props.endpoint.endpointUrl ? <code>{props.endpoint.endpointUrl}</code> : null}
+        </div>
+        <span className={`status-pill ${isActiveEndpointStatus(props.endpoint.status) ? 'active' : 'soft'}`}>{props.endpoint.status}</span>
+      </div>
+      <div className="cloud-endpoint-meta">
+        <span>Endpoint ID: {props.endpoint.endpointId}</span>
+        <span>{props.endpoint.updatedAt}</span>
+      </div>
+      <div className="cloud-endpoint-actions">
+        <button className="ghost-button" type="button" onClick={() => props.onUseEndpointInRoute(props.endpoint.endpointId, props.endpoint.name)}>
+          <Orbit size={14} />
+          Use in route
+        </button>
+        <button
+          className="ghost-button"
+          type="button"
+          disabled={!props.endpoint.endpointUrl || !isActiveEndpointStatus(props.endpoint.status)}
+          onClick={() => props.onShowUsage({
+            endpointId: props.endpoint.endpointId,
+            endpointUrl: props.endpoint.endpointUrl,
+            modelId: props.endpoint.modelId,
+            name: props.endpoint.name,
+            source: 'cloud',
+          })}
+        >
+          <PlayCircle size={14} />
+          Usage
+        </button>
+        <button className="ghost-button" type="button" disabled={!props.endpoint.endpointUrl} onClick={() => navigator.clipboard?.writeText(props.endpoint.endpointUrl)}>
+          <Copy size={14} />
+          Copy URL
+        </button>
+        {props.onDeleteEndpoint ? (
+          <button
+            className="ghost-button danger"
+            type="button"
+            onClick={() => {
+              if (confirm(`Are you sure you want to delete serverless endpoint "${props.endpoint.name}"?`)) {
+                props.onDeleteEndpoint!(props.endpoint.endpointId);
+              }
+            }}
+          >
+            <Trash2 size={14} />
+            Delete Endpoint
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function getCloudEndpointRows(endpoints: EndpointItem[], instances: InstanceItem[]): CloudEndpointRow[] {

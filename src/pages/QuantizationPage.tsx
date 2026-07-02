@@ -10,6 +10,7 @@ import {
   Gauge,
   Layers3,
   Maximize2,
+  Info,
   Minus,
   Play,
   Plus,
@@ -465,7 +466,11 @@ export function QuantizationPage(props: {
     && selectedTarget.value === 'local'
     && Boolean(hfInspection)
     && (hfInspection?.localQuantizationStatus === 'unsupported' || hfIsOnnxWithoutGguf);
-  const canRunEval = !targetNeedsInstance && !hfUnsupportedForLocal && selectedModelName.trim().length > 0;
+  const canRunEval = selectedTarget.value === 'local'
+    && !hfUnsupportedForLocal
+    && (form.modelSource === 'huggingface' ? !hfIsOnnxWithoutGguf : true)
+    && (form.modelSource === 'local' ? /\.gguf$/i.test(form.localPath) : true)
+    && selectedModelName.trim().length > 0;
   const needsLocalGguf = form.modelSource === 'catalog' && selectedTarget.value === 'local';
   const localQuantizationTarget = selectedTarget.value === 'local';
   const quantizeInstalled = Boolean(tools?.quantize);
@@ -720,6 +725,14 @@ export function QuantizationPage(props: {
 
       {step === 'configure' ? (
         <>
+          {hfIsOnnxWithoutGguf ? (
+            <div className="banner info" style={{ marginBottom: '18px', gap: '10px', padding: '12px 16px', borderRadius: '12px' }}>
+              <Info size={16} style={{ flexShrink: 0, color: '#71beff' }} />
+              <span>
+                <strong>ONNX model detected:</strong> Whole-model <em>Run quick eval</em> is only available for GGUF language models. To quantize and evaluate this ONNX model, select <strong>ONNX graph</strong> (for the entire model) or a specific block in the interactive view below, then click <strong>Quantize selected part</strong> in the sidebar.
+              </span>
+            </div>
+          ) : null}
           <div className="section-grid two-col">
             <Panel title="Model" icon={Sparkles} description="Choose a baseline model and the edge target you want to optimize for.">
               <div className="stack-form">
@@ -973,6 +986,7 @@ export function QuantizationPage(props: {
             modelName={selectedModelName || 'Selected ONNX model'}
             run={selectiveOnnxRun}
             targetLabel={selectedTarget.label}
+            onNavigateToDeploy={() => setStep('deploy')}
           />
         ) : (
         <>
@@ -1078,7 +1092,12 @@ export function QuantizationPage(props: {
           <div className="quant-deploy-grid">
             <div className="quant-command">
               <Terminal size={16} />
-              <code>oneinfer-edge deploy {slugifyModelName(selectedModelName)}-{form.scheme.toLowerCase()} --target "{selectedTarget.value}"</code>
+              <code>
+                {runMode === 'onnx'
+                  ? `oneinfer-edge deploy ${slugifyModelName(selectedModelName)}-selective-onnx-${selectiveOnnxRun?.request.bits.toLowerCase() || 'int8'} --target "${selectedTarget.value}"`
+                  : `oneinfer-edge deploy ${slugifyModelName(selectedModelName)}-${form.scheme.toLowerCase()} --target "${selectedTarget.value}"`
+                }
+              </code>
             </div>
             <div className="quant-export-actions">
               <button className="secondary-button" type="button">
@@ -1105,6 +1124,7 @@ function SelectiveOnnxAnalyze(props: {
   modelName: string;
   run: SelectiveOnnxRun;
   targetLabel: string;
+  onNavigateToDeploy: () => void;
 }) {
   const { request, result } = props.run;
   const evaluation = result.evaluation;
@@ -1160,7 +1180,7 @@ function SelectiveOnnxAnalyze(props: {
           <h3>{request.bits.toUpperCase()} full model with {request.selection.label} quantized</h3>
           <p>{evaluationMessage}</p>
         </div>
-        <button className="primary-button" type="button" disabled={!evaluationReady}>
+        <button className="primary-button" type="button" onClick={props.onNavigateToDeploy} disabled={!evaluationReady}>
           <Rocket size={16} />
           Prepare deploy
         </button>
@@ -1347,6 +1367,11 @@ function getHfViewerGraph(inspection: HuggingFaceInspection) {
     return buildHfOnnxArchitectureGraph(inspection, inspection.graph?.error);
   }
 
+  const isGguf = inspection.files.some((file) => file.format === 'GGUF') || /gguf/i.test(inspection.repoId);
+  if (isGguf) {
+    return buildHfGgufArchitectureGraph(inspection, inspection.graph?.error);
+  }
+
   return buildHfArtifactGraph(inspection, inspection.graph?.error);
 }
 
@@ -1431,6 +1456,127 @@ function buildHfOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphEr
         { id: 'backbone', label: 'YOLOv8 CSP backbone', description: 'Feature extraction', opTypes: ['Conv', 'C2f', 'SPPF'], count: 11 },
         { id: 'neck', label: 'YOLOv8 PAN-FPN neck', description: 'Feature fusion', opTypes: ['Resize', 'Concat', 'C2f', 'Conv'], count: 12 },
         { id: 'head', label: 'YOLOv8 pose detection head', description: 'Pose prediction, keypoints, and NMS', opTypes: ['Conv', 'Logits', 'DFL', 'NonMaxSuppression'], count: 15 },
+      ],
+    },
+    error: graphError,
+  };
+}
+
+function buildHfGgufArchitectureGraph(inspection: HuggingFaceInspection, graphError?: string): HfModelGraph {
+  const repoLower = inspection.repoId.toLowerCase();
+  const nameLower = inspection.name.toLowerCase();
+  const searchStr = `${repoLower} ${nameLower}`.toLowerCase();
+
+  // 1. Detect architecture family
+  let arch = 'Llama';
+  let decoderLayerName = 'LlamaDecoderLayer';
+  let attentionName = 'LlamaAttention';
+  let mlpName = 'LlamaMLP';
+  let vocabSize = 128256;
+
+  if (searchStr.includes('qwen')) {
+    arch = 'Qwen';
+    decoderLayerName = 'Qwen2DecoderLayer';
+    attentionName = 'Qwen2Attention';
+    mlpName = 'Qwen2MLP';
+    vocabSize = 151936;
+  } else if (searchStr.includes('mistral') || searchStr.includes('mixtral')) {
+    arch = 'Mistral';
+    decoderLayerName = 'MistralDecoderLayer';
+    attentionName = 'MistralAttention';
+    mlpName = 'MistralMLP';
+    vocabSize = 32000;
+  } else if (searchStr.includes('gemma')) {
+    arch = 'Gemma';
+    decoderLayerName = 'GemmaDecoderLayer';
+    attentionName = 'GemmaAttention';
+    mlpName = 'GemmaMLP';
+    vocabSize = 256000;
+  } else if (searchStr.includes('phi')) {
+    arch = 'Phi';
+    decoderLayerName = 'Phi3DecoderLayer';
+    attentionName = 'Phi3Attention';
+    mlpName = 'Phi3MLP';
+    vocabSize = 32064;
+  }
+
+  // 2. Estimate layer/block count based on model parameter size in name
+  let blockCount = 32; // Default fallback (e.g. Llama 7B/8B has 32 layers)
+  if (searchStr.includes('0.5b') || searchStr.includes('500m')) {
+    blockCount = 24; // e.g. Qwen2.5-0.5B
+  } else if (searchStr.includes('1.5b') || searchStr.includes('1b') || searchStr.includes('2b')) {
+    blockCount = 28; // e.g. Qwen2.5-1.5B or Gemma-2B
+  } else if (searchStr.includes('3b')) {
+    blockCount = 32; // e.g. Qwen2.5-3B or Llama3.2-3B
+  } else if (searchStr.includes('7b') || searchStr.includes('8b') || searchStr.includes('9b')) {
+    blockCount = 32; // e.g. Llama-8B
+  } else if (searchStr.includes('14b') || searchStr.includes('13b')) {
+    blockCount = 40; // e.g. Qwen-14B
+  } else if (searchStr.includes('70b') || searchStr.includes('72b')) {
+    blockCount = 80; // e.g. Llama-70B or Qwen-72B
+  }
+
+  const layerPlan: Array<[string, string, string, number?]> = [
+    ['input', 'input', 'input'],
+    ['Text embeddings', 'Embedding', 'embeddings'],
+    [decoderLayerName, 'Group', 'backbone', blockCount],
+    ['Input RMSNorm', 'RMSNorm', 'attention'],
+    ['Linear Q/K/V projections', 'Linear', 'attention', 3],
+    [attentionName, 'Attention', 'attention'],
+    ['Linear O projection', 'Linear', 'attention'],
+    ['Add residual', 'Add', 'attention'],
+    ['Post Attention RMSNorm', 'RMSNorm', 'mlp'],
+    [mlpName, 'MLP', 'mlp'],
+    ['Linear gate/up projections', 'Linear', 'mlp', 2],
+    ['Activation (SiLU)', 'Activation', 'mlp'],
+    ['Mul gate', 'Mul', 'mlp'],
+    ['Linear down projection', 'Linear', 'mlp'],
+    ['Add residual', 'Add', 'mlp'],
+    ['Output RMSNorm', 'RMSNorm', 'output'],
+    ['Output head (Linear)', 'Linear', 'output'],
+    ['Output logits', 'output', 'output'],
+  ];
+
+  const nodes = layerPlan.map(([name, opType, section, repeat], index) => ({
+    id: `${section}-${index}`,
+    name,
+    opType,
+    inputs: index === 0 ? [] : [`layer_${index - 1}`],
+    outputs: [`layer_${index}`],
+    attributeCount: section === 'input' || section === 'output' ? 0 : 1,
+    repeat,
+  }));
+
+  const opCounts: Record<string, number> = {
+    input: 1,
+    Embedding: 1,
+    RMSNorm: 1 + blockCount * 2,
+    Linear: 1 + blockCount * 4,
+    Attention: blockCount,
+    MLP: blockCount,
+    Activation: blockCount,
+    Add: blockCount * 2,
+    Mul: blockCount,
+    output: 1,
+  };
+
+  return {
+    status: 'ready',
+    file: inspection.baselineFile || inspection.files.find((f) => f.format === 'GGUF')?.name || '',
+    name: graphError ? `${arch} architecture view` : `${inspection.name} (${arch} arch)`,
+    nodeCount: 3 + blockCount * 12,
+    opTypeCount: Object.keys(opCounts).length,
+    opCounts,
+    inputs: [{ name: 'input_ids', dims: [1, 'seq_len'] }],
+    outputs: [{ name: 'logits', dims: [1, 'seq_len', vocabSize] }],
+    nodes,
+    blockGraph: {
+      blocks: [
+        { id: 'input', label: 'input', description: 'Tokenized text inputs', opTypes: ['input'], count: 1 },
+        { id: 'embeddings', label: 'Text embeddings', description: 'Token and position embeddings', opTypes: ['Embedding'], count: 1 },
+        { id: 'attention', label: `${arch} Attention`, description: 'Multi-head self-attention layers', opTypes: ['RMSNorm', 'Linear', 'Attention', 'Add'], count: 5 },
+        { id: 'mlp', label: `${arch} MLP`, description: 'SwiGLU feed-forward layer network', opTypes: ['RMSNorm', 'MLP', 'Linear', 'Activation', 'Mul', 'Add'], count: 7 },
+        { id: 'output', label: 'Output head', description: 'Final vocab projection layers', opTypes: ['RMSNorm', 'Linear', 'output'], count: 3 },
       ],
     },
     error: graphError,

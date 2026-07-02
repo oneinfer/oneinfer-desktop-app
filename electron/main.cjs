@@ -5574,6 +5574,8 @@ if not nodes_to_quantize:
         nodes_to_quantize = supported_nodes_matching("/cv4.1/") + supported_nodes_matching("/cv2.1/") + supported_nodes_matching("/cv3.1/")
     elif "p5" in lowered:
         nodes_to_quantize = supported_nodes_matching("/cv4.2/") + supported_nodes_matching("/cv2.2/") + supported_nodes_matching("/cv3.2/")
+    elif any(kw in lowered for kw in ["graph", "model", "entire", "full"]):
+        op_types_to_quantize = list(supported_op_types)
 
 if nodes_to_quantize:
     op_types_to_quantize = []
