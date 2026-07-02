@@ -33,6 +33,17 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
   );
   const comparisonRows = useMemo(() => selectedRun ? getComparisonRows(selectedRun) : [], [selectedRun]);
 
+  const modelRuns = useMemo(() => runs.filter((r) => r.modelName === selectedRun?.modelName), [runs, selectedRun?.modelName]);
+  const availableSchemes = useMemo(() => {
+    const schemes = modelRuns.map((r) => r.scheme || r.kind.toUpperCase()).filter(Boolean);
+    return Array.from(new Set(schemes));
+  }, [modelRuns]);
+  const [selectedSchemes, setSelectedSchemes] = useState<string[]>([]);
+
+  useEffect(() => {
+    setSelectedSchemes(availableSchemes);
+  }, [availableSchemes]);
+
   if (!selectedRun) {
     return (
       <div className="quant-compare-page">
@@ -91,6 +102,82 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
             <small>{row.delta}</small>
           </div>
         ))}
+      </div>
+
+      <div className="quant-compare-scheme-selector" style={{ marginTop: '24px', marginBottom: '16px' }}>
+        <span className="eyebrow" style={{ display: 'block', marginBottom: '8px' }}>Compare Schemes</span>
+        <div className="quant-hf-bit-selector" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+          {availableSchemes.map((scheme) => {
+            const active = selectedSchemes.includes(scheme);
+            return (
+              <button
+                className={active ? 'active' : ''}
+                key={scheme}
+                type="button"
+                onClick={() => {
+                  setSelectedSchemes((current) =>
+                    current.includes(scheme)
+                      ? current.filter((v) => v !== scheme)
+                      : [...current, scheme]
+                  );
+                }}
+              >
+                <strong>{scheme.split(' ')[0]}</strong>
+                <span>{scheme}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="section-grid three-col" style={{ marginBottom: '24px' }}>
+        <Panel title="Model Size" icon={Boxes} description="Before and after model file size (GB/MB).">
+          <MetricProgressionChart
+            title="Size"
+            metricLabel="Model Size"
+            formatter={formatBytes}
+            selectedSchemes={selectedSchemes}
+            modelRuns={modelRuns}
+            valueExtractor={(run, isBaseline) => {
+              const detail = getDetailResult(run);
+              return isBaseline 
+                ? (detail.baselineSizeBytes ?? run.result.baselineSizeBytes ?? null)
+                : (detail.quantizedSizeBytes ?? run.result.quantizedSizeBytes ?? null);
+            }}
+          />
+        </Panel>
+
+        <Panel title="Latency" icon={Boxes} description="Before and after model latency (ms).">
+          <MetricProgressionChart
+            title="Latency"
+            metricLabel="Latency"
+            formatter={formatMilliseconds}
+            selectedSchemes={selectedSchemes}
+            modelRuns={modelRuns}
+            valueExtractor={(run, isBaseline) => {
+              const detail = getDetailResult(run);
+              return isBaseline
+                ? (run.kind === 'onnx' ? run.result.evaluation?.baselineLatencyMs ?? null : detail.generation?.baseline?.durationMs ?? null)
+                : (run.kind === 'onnx' ? run.result.evaluation?.quantizedLatencyMs ?? null : detail.generation?.quantized?.durationMs ?? null);
+            }}
+          />
+        </Panel>
+
+        <Panel title="Speed" icon={Boxes} description="Before and after tokens/sec.">
+          <MetricProgressionChart
+            title="Speed"
+            metricLabel="Tokens/sec"
+            formatter={formatCompactNumber}
+            selectedSchemes={selectedSchemes}
+            modelRuns={modelRuns}
+            valueExtractor={(run, isBaseline) => {
+              const detail = getDetailResult(run);
+              return isBaseline
+                ? detail.generation?.baseline?.tokensPerSecond ?? null
+                : detail.generation?.quantized?.tokensPerSecond ?? null;
+            }}
+          />
+        </Panel>
       </div>
 
 
@@ -332,4 +419,159 @@ function truncateMiddle(value: string, maxLength: number) {
 
   const side = Math.max(4, Math.floor((maxLength - 3) / 2));
   return `${value.slice(0, side)}...${value.slice(-side)}`;
+}
+
+interface MetricProgressionChartProps {
+  title: string;
+  metricLabel: string;
+  formatter: (value?: number | null) => string;
+  selectedSchemes: string[];
+  modelRuns: QuantizationComparisonRun[];
+  valueExtractor: (run: QuantizationComparisonRun, isBaseline: boolean) => number | null;
+}
+
+function MetricProgressionChart(props: MetricProgressionChartProps) {
+  const { formatter, selectedSchemes, modelRuns, valueExtractor } = props;
+  const schemeColors = ['#74e3c5', '#71beff', '#ffc66d', '#ff7b72', '#d2a8ff'];
+
+  const data = useMemo(() => {
+    return selectedSchemes.map((scheme, index) => {
+      const run = modelRuns.find((r) => (r.scheme || r.kind.toUpperCase()) === scheme);
+      if (!run) return null;
+      const before = valueExtractor(run, true);
+      const after = valueExtractor(run, false);
+      return {
+        scheme,
+        before,
+        after,
+        color: schemeColors[index % schemeColors.length],
+      };
+    }).filter(Boolean) as Array<{ scheme: string; before: number | null; after: number | null; color: string }>;
+  }, [selectedSchemes, modelRuns, valueExtractor]);
+
+  const baselineVal = useMemo(() => {
+    for (const item of data) {
+      if (item.before !== null && Number.isFinite(item.before)) {
+        return item.before;
+      }
+    }
+    return null;
+  }, [data]);
+
+  const allNums = useMemo(() => {
+    const nums: number[] = [];
+    if (baselineVal !== null) nums.push(baselineVal);
+    data.forEach((item) => {
+      if (item.after !== null && Number.isFinite(item.after)) {
+        nums.push(item.after);
+      }
+    });
+    return nums;
+  }, [baselineVal, data]);
+
+  const maxVal = allNums.length > 0 ? Math.max(...allNums) : 1;
+  const minVal = 0;
+
+  const getY = (val: number | null) => {
+    if (val === null || !Number.isFinite(val)) return 100;
+    const normalized = (val - minVal) / (maxVal - minVal || 1);
+    return 150 - normalized * 110;
+  };
+
+  if (data.length === 0) {
+    return (
+      <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>
+        No schemes selected or runs found.
+      </div>
+    );
+  }
+
+  const beforeY = baselineVal !== null ? getY(baselineVal) : 100;
+
+  return (
+    <div className="quant-line-chart" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <svg viewBox="0 0 240 180" style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
+        {[0.25, 0.5, 0.75, 1.0].map((ratio) => {
+          const y = 150 - ratio * 110;
+          return (
+            <line
+              key={ratio}
+              x1="30"
+              y1={y}
+              x2="210"
+              y2={y}
+              style={{ stroke: 'rgba(144, 197, 255, 0.08)', strokeWidth: 1 }}
+            />
+          );
+        })}
+
+        <line x1="50" y1="30" x2="50" y2="160" style={{ stroke: 'rgba(255, 255, 255, 0.1)', strokeWidth: 1.5 }} />
+        <line x1="190" y1="30" x2="190" y2="160" style={{ stroke: 'rgba(255, 255, 255, 0.1)', strokeWidth: 1.5 }} />
+
+        <text x="50" y="174" textAnchor="middle" style={{ fill: 'var(--muted)', fontSize: '0.7rem', fontWeight: 800 }}>Before</text>
+        <text x="190" y="174" textAnchor="middle" style={{ fill: 'var(--muted)', fontSize: '0.7rem', fontWeight: 800 }}>After</text>
+
+        {data.map((item) => {
+          if (item.after === null) return null;
+          const afterY = getY(item.after);
+          return (
+            <line
+              key={item.scheme}
+              x1="50"
+              y1={beforeY}
+              x2="190"
+              y2={afterY}
+              style={{
+                stroke: item.color,
+                strokeWidth: 3,
+                strokeLinecap: 'round',
+                opacity: 0.85,
+              }}
+            />
+          );
+        })}
+
+        {baselineVal !== null && (
+          <g>
+            <circle cx="50" cy={beforeY} r="5" style={{ fill: '#8fb0cf', stroke: 'rgba(4, 10, 18, 0.8)', strokeWidth: 2 }} />
+            <text
+              x="42"
+              y={beforeY + 4}
+              textAnchor="end"
+              style={{ fill: 'var(--text)', fontSize: '0.68rem', fontWeight: 800 }}
+            >
+              {formatter(baselineVal)}
+            </text>
+          </g>
+        )}
+
+        {data.map((item) => {
+          if (item.after === null) return null;
+          const afterY = getY(item.after);
+          return (
+            <g key={item.scheme}>
+              <circle cx="190" cy={afterY} r="5.5" style={{ fill: item.color, stroke: 'rgba(4, 10, 18, 0.8)', strokeWidth: 2 }} />
+              <text
+                x="198"
+                y={afterY + 4}
+                textAnchor="start"
+                style={{ fill: 'var(--text)', fontSize: '0.68rem', fontWeight: 800 }}
+              >
+                {formatter(item.after)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', fontSize: '0.65rem', justifyContent: 'center' }}>
+        {data.map((item) => (
+          <div key={item.scheme} style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--muted)' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: item.color, display: 'inline-block' }} />
+            <span>{item.scheme}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
