@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, WheelEvent } from 'react';
 import {
   AlertTriangle,
   BarChart3,
@@ -9,7 +10,9 @@ import {
   Gauge,
   Layers3,
   Maximize2,
+  Minus,
   Play,
+  Plus,
   Rocket,
   SlidersHorizontal,
   Sparkles,
@@ -118,6 +121,7 @@ interface HfModelGraph {
     inputs: string[];
     outputs: string[];
     attributeCount: number;
+    repeat?: number;
   }>;
   blockGraph?: {
     blocks: Array<{
@@ -1071,7 +1075,7 @@ function buildHfOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphEr
     return buildGenericOnnxArchitectureGraph(inspection, graphError);
   }
 
-  const layerPlan = [
+  const layerPlan: Array<[string, string, string, number?]> = [
     ['input', 'input', 'image tensor'],
     ['resize/rescale', 'Resize', 'preprocess'],
     ['YOLOv8 CSP backbone', 'Group', 'backbone'],
@@ -1079,9 +1083,9 @@ function buildHfOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphEr
     ['Conv', 'Conv', 'backbone'],
     ['C2f', 'C2f', 'backbone'],
     ['Conv', 'Conv', 'backbone'],
-    ['C2f x2', 'C2f', 'backbone'],
+    ['C2f', 'C2f', 'backbone', 2],
     ['Conv', 'Conv', 'backbone'],
-    ['C2f x2', 'C2f', 'backbone'],
+    ['C2f', 'C2f', 'backbone', 2],
     ['Conv', 'Conv', 'backbone'],
     ['C2f', 'C2f', 'backbone'],
     ['SPPF', 'SPPF', 'backbone'],
@@ -1099,19 +1103,31 @@ function buildHfOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphEr
     ['Concat', 'Concat', 'neck'],
     ['C2f', 'C2f', 'neck'],
     ['YOLOv8 pose detection head', 'Group', 'head'],
-    ['Detect Conv', 'Conv', 'head'],
-    ['Pose Conv', 'Conv', 'head'],
+    ['P3 box Conv', 'Conv', 'head'],
+    ['P3 pose Conv', 'Conv', 'head'],
+    ['P4 box Conv', 'Conv', 'head'],
+    ['P4 pose Conv', 'Conv', 'head'],
+    ['P5 box Conv', 'Conv', 'head'],
+    ['P5 pose Conv', 'Conv', 'head'],
+    ['P3 logits', 'Logits', 'head'],
+    ['P4 logits', 'Logits', 'head'],
+    ['P5 logits', 'Logits', 'head'],
+    ['8400 candidates', 'Candidates', 'head'],
     ['DFL', 'DFL', 'head'],
-    ['NMS', 'NonMaxSuppression', 'postprocess'],
-    ['person poses', 'output', 'output'],
+    ['person score', 'Score', 'head'],
+    ['17 keypoints', 'Keypoints', 'head'],
+    ['56 x 8400', 'Tensor', 'head'],
+    ['NMS', 'NonMaxSuppression', 'head'],
+    ['person poses', 'output', 'head'],
   ];
-  const nodes = layerPlan.map(([name, opType, section], index) => ({
+  const nodes = layerPlan.map(([name, opType, section, repeat], index) => ({
     id: `${section}-${index}`,
     name,
     opType,
     inputs: index === 0 ? [] : [`layer_${index - 1}`],
     outputs: [`layer_${index}`],
     attributeCount: section === 'input' || section === 'output' ? 0 : 1,
+    repeat,
   }));
   const opCounts = nodes.reduce<Record<string, number>>((accumulator, node) => {
     accumulator[node.opType] = (accumulator[node.opType] || 0) + 1;
@@ -1134,9 +1150,7 @@ function buildHfOnnxArchitectureGraph(inspection: HuggingFaceInspection, graphEr
         { id: 'preprocess', label: 'resize / rescale', description: 'Input normalization', opTypes: ['Resize'], count: 1 },
         { id: 'backbone', label: 'YOLOv8 CSP backbone', description: 'Feature extraction', opTypes: ['Conv', 'C2f', 'SPPF'], count: 11 },
         { id: 'neck', label: 'YOLOv8 PAN-FPN neck', description: 'Feature fusion', opTypes: ['Resize', 'Concat', 'C2f', 'Conv'], count: 12 },
-        { id: 'head', label: 'YOLOv8 pose detection head', description: 'Pose prediction', opTypes: ['Conv', 'DFL'], count: 3 },
-        { id: 'nms', label: 'NMS', description: 'Non-maximum suppression', opTypes: ['NonMaxSuppression'], count: 1 },
-        { id: 'output', label: 'person poses', description: 'Detected poses', opTypes: ['output'], count: 1 },
+        { id: 'head', label: 'YOLOv8 pose detection head', description: 'Pose prediction, keypoints, and NMS', opTypes: ['Conv', 'Logits', 'DFL', 'NonMaxSuppression'], count: 15 },
       ],
     },
     error: graphError,
@@ -1263,6 +1277,9 @@ function HfInteractiveGraph(props: {
 }) {
   const [selection, setSelection] = useState<HfGraphSelection | null>(null);
   const [selectionAction, setSelectionAction] = useState<string | null>(null);
+  const defaultZoom = props.size === 'large' ? 0.42 : 1;
+  const [graphZoom, setGraphZoom] = useState(defaultZoom);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const nodes = props.graph.status === 'ready' ? props.graph.nodes || [] : [];
   const blocks = props.graph.status === 'ready' ? props.graph.blockGraph?.blocks || [] : [];
   const size = props.size || 'embedded';
@@ -1271,7 +1288,31 @@ function HfInteractiveGraph(props: {
   useEffect(() => {
     setSelection(null);
     setSelectionAction(null);
-  }, [props.graph.name, props.repoId]);
+    setGraphZoom(defaultZoom);
+  }, [defaultZoom, props.graph.name, props.repoId, props.size]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || props.size !== 'large') {
+      return;
+    }
+    requestAnimationFrame(() => {
+      canvas.scrollTo({ left: 0, top: 0 });
+    });
+  }, [props.granularity, props.graph.name, props.repoId, props.size]);
+
+  function updateGraphZoom(nextZoom: number) {
+    setGraphZoom(Math.min(1.25, Math.max(0.25, Number(nextZoom.toFixed(2)))));
+  }
+
+  function handleGraphWheel(event: WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    updateGraphZoom(graphZoom + direction * 0.06);
+  }
 
   if (props.graph.status === 'error') {
     return (
@@ -1311,14 +1352,25 @@ function HfInteractiveGraph(props: {
       </div>
 
       <div className="quant-hf-graph-shell">
-        <div className="quant-hf-graph-canvas">
+        <div className="quant-hf-graph-canvas" onWheel={handleGraphWheel} ref={canvasRef}>
           <div className="quant-hf-window-dots" aria-hidden="true">
             <span />
             <span />
             <span />
           </div>
+          <div className="quant-hf-zoom-controls" aria-label="Graph zoom controls" role="group">
+            <button type="button" onClick={() => updateGraphZoom(graphZoom - 0.08)} aria-label="Zoom out">
+              <Minus size={14} />
+            </button>
+            <button type="button" onClick={() => updateGraphZoom(defaultZoom)} aria-label="Reset graph zoom">
+              {Math.round(graphZoom * 100)}%
+            </button>
+            <button type="button" onClick={() => updateGraphZoom(graphZoom + 0.08)} aria-label="Zoom in">
+              <Plus size={14} />
+            </button>
+          </div>
           {isFineMode ? (
-            <HfLayerFlow nodes={nodes} onSelect={setSelection} selectedId={selection?.id || ''} size={size} />
+            <HfLayerFlow nodes={nodes} onSelect={setSelection} selectedId={selection?.id || ''} size={size} zoom={graphZoom} />
           ) : (
             <HfBlockGraph blocks={blocks} onSelect={setSelection} selectedId={selection?.id || ''} />
           )}
@@ -1379,9 +1431,28 @@ function HfLayerFlow(props: {
   onSelect: (selection: HfGraphSelection) => void;
   selectedId: string;
   size: 'embedded' | 'large';
+  zoom: number;
 }) {
   const nodes = props.nodes || [];
   const visibleNodes = props.size === 'large' ? nodes : nodes.slice(0, 18);
+  const flowRef = useRef<HTMLDivElement | null>(null);
+  const [flowHeight, setFlowHeight] = useState(0);
+  const zoomStyle = {
+    '--hf-graph-zoom': props.zoom,
+    '--hf-graph-stage-height': flowHeight > 0 ? `${Math.ceil(flowHeight * props.zoom + 88)}px` : undefined,
+  } as CSSProperties;
+
+  useLayoutEffect(() => {
+    if (props.size !== 'large') {
+      setFlowHeight(0);
+      return;
+    }
+    const element = flowRef.current;
+    if (!element) {
+      return;
+    }
+    setFlowHeight(element.scrollHeight);
+  }, [props.size, props.zoom, visibleNodes.length]);
 
   if (visibleNodes.length === 0) {
     return <div className="quant-hf-empty-graph">No graph nodes were returned by the ONNX inspector.</div>;
@@ -1394,24 +1465,28 @@ function HfLayerFlow(props: {
         onSelect={props.onSelect}
         selectedId={props.selectedId}
         size={props.size}
+        style={zoomStyle}
         totalNodes={nodes.length}
+        zoom={props.zoom}
       />
     );
   }
 
   return (
-    <div className="quant-hf-layer-flow">
-      {visibleNodes.map((node, index) => (
-        <LayerNode
-          key={`${node.id}-${index}`}
-          node={node}
-          onSelect={props.onSelect}
-          selectedId={props.selectedId}
-        />
-      ))}
-      {props.size !== 'large' && nodes.length > visibleNodes.length ? (
-        <div className="quant-hf-layer-more">{nodes.length - visibleNodes.length} more layers in full graph</div>
-      ) : null}
+    <div className="quant-hf-zoom-stage" style={zoomStyle}>
+      <div className="quant-hf-layer-flow" ref={flowRef}>
+        {visibleNodes.map((node, index) => (
+          <LayerNode
+            key={`${node.id}-${index}`}
+            node={node}
+            onSelect={props.onSelect}
+            selectedId={props.selectedId}
+          />
+        ))}
+        {props.size !== 'large' && nodes.length > visibleNodes.length ? (
+          <div className="quant-hf-layer-more">{nodes.length - visibleNodes.length} more layers in full graph</div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1420,10 +1495,14 @@ function HfGroupedLayerFlow(props: {
   nodes: NonNullable<HfModelGraph['nodes']>;
   onSelect: (selection: HfGraphSelection) => void;
   selectedId: string;
+  style: CSSProperties;
   totalNodes: number;
   size: 'embedded' | 'large';
+  zoom: number;
 }) {
   const sections: Array<{ group?: NonNullable<HfModelGraph['nodes']>[number]; nodes: NonNullable<HfModelGraph['nodes']> }> = [];
+  const flowRef = useRef<HTMLDivElement | null>(null);
+  const [flowHeight, setFlowHeight] = useState(0);
 
   for (const node of props.nodes) {
     if (node.opType === 'Group') {
@@ -1437,52 +1516,217 @@ function HfGroupedLayerFlow(props: {
     sections[sections.length - 1].nodes.push(node);
   }
 
+  const stageStyle = {
+    ...props.style,
+    '--hf-graph-stage-height': flowHeight > 0 && props.size !== 'large' ? `${Math.ceil(flowHeight * props.zoom + 48)}px` : undefined,
+  } as CSSProperties;
+
+  useLayoutEffect(() => {
+    const element = flowRef.current;
+    if (!element) {
+      return;
+    }
+    setFlowHeight(element.scrollHeight);
+  }, [props.size, props.nodes.length, props.zoom]);
+
   return (
-    <div className="quant-hf-layer-flow grouped">
-      {sections.map((section, sectionIndex) => {
-        if (!section.group) {
-          return section.nodes.map((node, nodeIndex) => (
-            <LayerNode
-              key={`${node.id}-${sectionIndex}-${nodeIndex}`}
-              node={node}
-              onSelect={props.onSelect}
-              selectedId={props.selectedId}
-            />
-          ));
-        }
-        return (
-          <div className={`quant-hf-layer-section tone-${sectionIndex % 6} ${props.selectedId === section.group.id ? 'selected' : ''}`} key={section.group.id}>
-            <button
-              className="quant-hf-layer-section-title"
-              type="button"
-              onClick={() => props.onSelect({
-                id: section.group?.id || '',
-                label: section.group?.name || '',
-                kind: 'section',
-                opType: section.nodes.map((node) => node.opType).filter((value, index, array) => array.indexOf(value) === index).join(', ') || 'section',
-                count: section.nodes.length,
-                description: `Contains ${section.nodes.length} layers`,
-              })}
-            >
-              {section.group.name}
-            </button>
-            <div className="quant-hf-layer-section-body">
-              {section.nodes.map((node, nodeIndex) => (
-                <LayerNode
-                  compact
-                  key={`${node.id}-${nodeIndex}`}
-                  node={node}
+    <div className="quant-hf-zoom-stage" style={stageStyle}>
+      <div className="quant-hf-layer-flow grouped" ref={flowRef}>
+        {sections.map((section, sectionIndex) => {
+          if (!section.group) {
+            return section.nodes.map((node, nodeIndex) => (
+              <LayerNode
+                key={`${node.id}-${sectionIndex}-${nodeIndex}`}
+                node={node}
+                onSelect={props.onSelect}
+                selectedId={props.selectedId}
+              />
+            ));
+          }
+          if (isYoloPoseHeadSection(section.group.name)) {
+            return (
+              <div className={`quant-hf-layer-section yolo-head ${getYoloSectionClass(section.group.name)} tone-${sectionIndex % 6} ${props.selectedId === section.group.id ? 'selected' : ''}`} key={section.group.id}>
+                <button
+                  className="quant-hf-layer-section-title"
+                  type="button"
+                  onClick={() => props.onSelect({
+                    id: section.group?.id || '',
+                    label: section.group?.name || '',
+                    kind: 'section',
+                    opType: section.nodes.map((node) => node.opType).filter((value, index, array) => array.indexOf(value) === index).join(', ') || 'section',
+                    count: section.nodes.length,
+                    description: `Contains ${section.nodes.length} pose head layers`,
+                  })}
+                >
+                  {section.group.name}
+                </button>
+                <HfPoseHeadDetail
+                  nodes={section.nodes}
                   onSelect={props.onSelect}
                   selectedId={props.selectedId}
                 />
-              ))}
+              </div>
+            );
+          }
+          return (
+            <div className={`quant-hf-layer-section ${getYoloSectionClass(section.group.name)} tone-${sectionIndex % 6} ${props.selectedId === section.group.id ? 'selected' : ''}`} key={section.group.id}>
+              <button
+                className="quant-hf-layer-section-title"
+                type="button"
+                onClick={() => props.onSelect({
+                  id: section.group?.id || '',
+                  label: section.group?.name || '',
+                  kind: 'section',
+                  opType: section.nodes.map((node) => node.opType).filter((value, index, array) => array.indexOf(value) === index).join(', ') || 'section',
+                  count: section.nodes.length,
+                  description: `Contains ${section.nodes.length} layers`,
+                })}
+              >
+                {section.group.name}
+              </button>
+              {isYoloBackboneSection(section.group.name) ? <YoloBackboneBridge /> : null}
+              {isYoloNeckSection(section.group.name) ? <YoloNeckBridge /> : null}
+              <div className="quant-hf-layer-section-body">
+                {section.nodes.map((node, nodeIndex) => (
+                  <LayerNode
+                    compact
+                    key={`${node.id}-${nodeIndex}`}
+                    node={node}
+                    onSelect={props.onSelect}
+                    selectedId={props.selectedId}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
-        );
-      })}
-      {props.size !== 'large' && props.totalNodes > props.nodes.length ? (
-        <div className="quant-hf-layer-more">{props.totalNodes - props.nodes.length} more layers in full graph</div>
-      ) : null}
+          );
+        })}
+        {props.size !== 'large' && props.totalNodes > props.nodes.length ? (
+          <div className="quant-hf-layer-more">{props.totalNodes - props.nodes.length} more layers in full graph</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function isYoloPoseHeadSection(name: string) {
+  return /yolov8.*pose.*head/i.test(name);
+}
+
+function isYoloBackboneSection(name: string) {
+  return /yolov8.*backbone/i.test(name);
+}
+
+function isYoloNeckSection(name: string) {
+  return /pan-fpn.*neck/i.test(name);
+}
+
+function getYoloSectionClass(name: string) {
+  if (isYoloBackboneSection(name)) return 'yolo-backbone';
+  if (isYoloNeckSection(name)) return 'yolo-neck';
+  if (isYoloPoseHeadSection(name)) return 'yolo-head';
+  return '';
+}
+
+function YoloBackboneBridge() {
+  return (
+    <svg className="quant-hf-section-edge-overlay backbone-bridge" viewBox="0 0 520 260" focusable="false" aria-hidden="true">
+      <path className="rail-edge" d="M94 0 V238" />
+      <path className="rail-edge bright" d="M118 0 V238" />
+      <path className="skip-edge" d="M260 28 C310 48 360 54 392 72 C412 84 414 108 414 136 V238" />
+      <path className="skip-edge alt" d="M260 28 C300 44 324 52 334 70 C342 84 342 104 342 136 V238" />
+    </svg>
+  );
+}
+
+function YoloNeckBridge() {
+  return (
+    <svg className="quant-hf-section-edge-overlay neck-bridge" viewBox="0 0 520 360" focusable="false" aria-hidden="true">
+      <path className="rail-edge bright" d="M118 0 V346" />
+      <path className="neck-edge" d="M342 34 C296 52 250 52 206 70 C178 82 172 102 172 132 V346" />
+      <path className="neck-edge alt" d="M414 34 V182 C414 206 398 218 376 228 C346 242 316 254 292 272" />
+      <path className="head-edge" d="M260 292 C292 310 328 316 370 330" />
+    </svg>
+  );
+}
+
+function HfPoseHeadDetail(props: {
+  nodes: NonNullable<HfModelGraph['nodes']>;
+  onSelect: (selection: HfGraphSelection) => void;
+  selectedId: string;
+}) {
+  const findNode = (name: string) => props.nodes.find((node) => node.name === name);
+  const selectNode = (name: string, fallbackOpType: string, description: string) => {
+    const node = findNode(name);
+    props.onSelect({
+      id: node?.id || `pose-head-${name}`,
+      label: name,
+      kind: 'layer',
+      opType: node?.opType || fallbackOpType,
+      count: 1,
+      description,
+    });
+  };
+  const classFor = (name: string, tone: string) => `quant-hf-pose-node ${tone} ${props.selectedId === findNode(name)?.id ? 'selected' : ''}`;
+
+  return (
+    <div className="quant-hf-pose-head-detail" aria-label="YOLOv8 pose detection head detail">
+      <svg className="quant-hf-pose-lines" viewBox="0 0 660 360" focusable="false" aria-hidden="true">
+        <path className="conv-edge" d="M55 18 V46 C55 58 78 62 110 64" />
+        <path className="conv-edge" d="M160 18 V46 C160 58 142 62 110 64" />
+        <path className="conv-edge" d="M275 18 V46 C275 58 300 62 330 64" />
+        <path className="conv-edge" d="M385 18 V46 C385 58 360 62 330 64" />
+        <path className="conv-edge" d="M500 18 V46 C500 58 522 62 550 64" />
+        <path className="conv-edge" d="M605 18 V46 C605 58 578 62 550 64" />
+        <path d="M110 101 C110 122 186 121 330 121" />
+        <path d="M330 101 V121" />
+        <path d="M550 101 C550 122 474 121 330 121" />
+        <path d="M330 158 V181" />
+        <path className="branch-edge" d="M330 181 C228 184 190 195 160 214" />
+        <path className="branch-edge" d="M330 181 V214" />
+        <path className="branch-edge" d="M330 181 C432 184 470 195 500 214" />
+        <path d="M160 251 C160 270 250 270 330 270" />
+        <path d="M330 251 V270" />
+        <path d="M500 251 C500 270 410 270 330 270" />
+        <path className="nms-edge" d="M330 306 V324" />
+        <path className="output-edge" d="M330 344 V358" />
+      </svg>
+      <div className="quant-hf-pose-conv-row">
+        {['P3 box Conv', 'P3 pose Conv', 'P4 box Conv', 'P4 pose Conv', 'P5 box Conv', 'P5 pose Conv'].map((name) => (
+          <button className={classFor(name, 'conv')} key={name} type="button" onClick={() => selectNode(name, 'Conv', 'Scale-specific head convolution')}>
+            Conv
+          </button>
+        ))}
+      </div>
+      <div className="quant-hf-pose-logits-row">
+        {['P3 logits', 'P4 logits', 'P5 logits'].map((name) => (
+          <button className={classFor(name, 'logits')} key={name} type="button" onClick={() => selectNode(name, 'Logits', 'Scale-specific pose logits')}>
+            {name}
+          </button>
+        ))}
+      </div>
+      <button className={classFor('8400 candidates', 'logits wide')} type="button" onClick={() => selectNode('8400 candidates', 'Candidates', 'Merged candidates from P3, P4, and P5 predictions')}>
+        8400 candidates
+      </button>
+      <div className="quant-hf-pose-branch-row">
+        <button className={classFor('DFL', 'dfl')} type="button" onClick={() => selectNode('DFL', 'DFL', 'Distribution focal loss decode')}>
+          DFL
+        </button>
+        <button className={classFor('person score', 'score')} type="button" onClick={() => selectNode('person score', 'Score', 'Person confidence score')}>
+          person score
+        </button>
+        <button className={classFor('17 keypoints', 'logits')} type="button" onClick={() => selectNode('17 keypoints', 'Keypoints', 'Pose keypoint coordinates')}>
+          17 keypoints
+        </button>
+      </div>
+      <button className={classFor('56 x 8400', 'logits mid')} type="button" onClick={() => selectNode('56 x 8400', 'Tensor', 'Decoded pose tensor')}>
+        56 x 8400
+      </button>
+      <button className={classFor('NMS', 'nms')} type="button" onClick={() => selectNode('NMS', 'NonMaxSuppression', 'Non-maximum suppression')}>
+        NMS
+      </button>
+      <button className={classFor('person poses', 'output')} type="button" onClick={() => selectNode('person poses', 'output', 'Final detected person poses')}>
+        person poses
+      </button>
     </div>
   );
 }
@@ -1493,22 +1737,43 @@ function LayerNode(props: {
   onSelect: (selection: HfGraphSelection) => void;
   selectedId: string;
 }) {
+  const repeat = Number(props.node.repeat || 0);
+
   return (
     <button
-      className={`quant-hf-layer-node tone-${getLayerTone(props.node.opType)} ${props.compact ? 'compact' : ''} ${props.selectedId === props.node.id ? 'selected' : ''}`}
+      className={`quant-hf-layer-node tone-${getLayerTone(props.node.opType)} ${props.compact ? 'compact' : ''} ${repeat > 1 ? 'repeated' : ''} ${props.selectedId === props.node.id ? 'selected' : ''}`}
       type="button"
       onClick={() => props.onSelect({
         id: props.node.id,
-        label: props.node.name,
+        label: repeat > 1 ? `${props.node.name} x${repeat}` : props.node.name,
         kind: 'layer',
         opType: props.node.opType,
-        count: 1,
+        count: repeat > 1 ? repeat : 1,
         description: formatLayerPorts(props.node),
       })}
     >
-      <span>{props.node.opType}</span>
-      <strong>{props.node.name}</strong>
-      <small>{formatLayerPorts(props.node)}</small>
+      {repeat > 1 && props.node.opType === 'C2f' ? (
+        <span className="quant-hf-repeat-inner" aria-hidden="true">
+          <svg className="quant-hf-repeat-lines" viewBox="0 0 128 214" focusable="false">
+            <path d="M64 12 L64 202" />
+            <path d="M64 28 C42 42 30 52 30 72 L30 112 C30 126 42 133 55 137" />
+            <path d="M64 28 C86 42 98 52 98 72 L98 150 C98 168 82 180 64 190" />
+            <path d="M64 96 C48 104 42 114 42 128 C42 142 50 150 64 154" />
+            <path d="M64 154 C64 166 70 170 80 172" />
+          </svg>
+          <span className="quant-hf-repeat-title">C2f</span>
+          {['Conv', 'Conv', 'Add', 'Concat', 'Conv'].map((label, index) => (
+            <i key={`${label}-${index}`}>{label}</i>
+          ))}
+        </span>
+      ) : (
+        <>
+          <span>{props.node.opType}</span>
+          <strong>{props.node.name}</strong>
+          <small>{formatLayerPorts(props.node)}</small>
+        </>
+      )}
+      {repeat > 1 ? <b className="quant-hf-repeat-badge">x{repeat}</b> : null}
     </button>
   );
 }
