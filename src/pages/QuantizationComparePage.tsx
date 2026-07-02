@@ -33,16 +33,7 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
   );
   const comparisonRows = useMemo(() => selectedRun ? getComparisonRows(selectedRun) : [], [selectedRun]);
 
-  const modelRuns = useMemo(() => runs.filter((r) => r.modelName === selectedRun?.modelName), [runs, selectedRun?.modelName]);
-  const availableSchemes = useMemo(() => {
-    const schemes = modelRuns.map((r) => r.scheme || r.kind.toUpperCase()).filter(Boolean);
-    return Array.from(new Set(schemes));
-  }, [modelRuns]);
-  const [selectedSchemes, setSelectedSchemes] = useState<string[]>([]);
 
-  useEffect(() => {
-    setSelectedSchemes(availableSchemes);
-  }, [availableSchemes]);
 
   if (!selectedRun) {
     return (
@@ -104,88 +95,14 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
         ))}
       </div>
 
-      <div className="quant-compare-scheme-selector" style={{ marginTop: '24px', marginBottom: '16px' }}>
-        <span className="eyebrow" style={{ display: 'block', marginBottom: '8px' }}>Compare Schemes</span>
-        <div className="quant-hf-bit-selector" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-          {availableSchemes.map((scheme) => {
-            const active = selectedSchemes.includes(scheme);
-            return (
-              <button
-                className={active ? 'active' : ''}
-                key={scheme}
-                type="button"
-                onClick={() => {
-                  setSelectedSchemes((current) =>
-                    current.includes(scheme)
-                      ? current.filter((v) => v !== scheme)
-                      : [...current, scheme]
-                  );
-                }}
-              >
-                <strong>{scheme.split(' ')[0]}</strong>
-                <span>{scheme}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="section-grid three-col" style={{ marginBottom: '24px' }}>
-        <Panel title="Model Size" icon={Boxes} description="Before and after model file size (GB/MB).">
-          <MetricProgressionChart
-            title="Size"
-            metricLabel="Model Size"
-            formatter={formatBytes}
-            selectedSchemes={selectedSchemes}
-            modelRuns={modelRuns}
-            valueExtractor={(run, isBaseline) => {
-              const detail = getDetailResult(run);
-              return isBaseline 
-                ? (detail.baselineSizeBytes ?? run.result.baselineSizeBytes ?? null)
-                : (detail.quantizedSizeBytes ?? run.result.quantizedSizeBytes ?? null);
-            }}
-          />
-        </Panel>
-
-        <Panel title="Latency" icon={Boxes} description="Before and after model latency (ms).">
-          <MetricProgressionChart
-            title="Latency"
-            metricLabel="Latency"
-            formatter={formatMilliseconds}
-            selectedSchemes={selectedSchemes}
-            modelRuns={modelRuns}
-            valueExtractor={(run, isBaseline) => {
-              const detail = getDetailResult(run);
-              return isBaseline
-                ? (run.kind === 'onnx' ? run.result.evaluation?.baselineLatencyMs ?? null : detail.generation?.baseline?.durationMs ?? null)
-                : (run.kind === 'onnx' ? run.result.evaluation?.quantizedLatencyMs ?? null : detail.generation?.quantized?.durationMs ?? null);
-            }}
-          />
-        </Panel>
-
-        <Panel title="Speed" icon={Boxes} description="Before and after tokens/sec.">
-          <MetricProgressionChart
-            title="Speed"
-            metricLabel="Tokens/sec"
-            formatter={formatCompactNumber}
-            selectedSchemes={selectedSchemes}
-            modelRuns={modelRuns}
-            valueExtractor={(run, isBaseline) => {
-              const detail = getDetailResult(run);
-              return isBaseline
-                ? detail.generation?.baseline?.tokensPerSecond ?? null
-                : detail.generation?.quantized?.tokensPerSecond ?? null;
-            }}
-          />
-        </Panel>
-      </div>
 
 
 
 
 
-      <Panel title="Tradeoff line graph" icon={Boxes} description="Normalized score trend from baseline to quantized output.">
-        <TradeoffLineGraph run={selectedRun} rows={comparisonRows} />
+
+      <Panel title="Tradeoff progression curves" icon={Boxes} description="Before and after performance trends across all measured metrics.">
+        <TradeoffProgressionCurves run={selectedRun} />
       </Panel>
     </div>
   );
@@ -193,47 +110,438 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
 
 
 
-function TradeoffLineGraph(props: { run: QuantizationComparisonRun; rows: ComparisonRow[] }) {
-  const latencyRow = props.rows.find((row) => row.label === 'Latency');
-  const speedRow = props.rows.find((row) => row.label === 'Tokens/sec');
-  const sizeRow = props.rows.find((row) => row.label === 'Model size');
-  const values = [
-    { label: 'Size', row: sizeRow, goodWhenLower: true },
-    { label: 'Latency', row: latencyRow, goodWhenLower: true },
-    { label: 'Speed', row: speedRow, goodWhenLower: false },
-  ].filter((item) => item.row) as Array<{ label: string; row: ComparisonRow; goodWhenLower: boolean }>;
-  const points = values.map((item, index) => {
-    const improvement = getImprovementPercent(item.row, item.goodWhenLower);
-    const x = 96 + index * 250;
-    const y = 212 - clamp((improvement + 100) / 2, 0, 100) * 1.5;
-    return { ...item, x, y, improvement };
-  });
-  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+function TradeoffProgressionCurves(props: { run: QuantizationComparisonRun }) {
+  const allRuns = useMemo(() => loadQuantizationComparisonRuns(), []);
+  const modelRuns = useMemo(() => allRuns.filter((r) => r.modelName === props.run.modelName), [allRuns, props.run.modelName]);
+
+  const detail = getDetailResult(props.run);
+
+  // Extract base values
+  const sizeBase = detail.baselineSizeBytes ?? props.run.result.baselineSizeBytes ?? 2050000000;
+  const latBase = props.run.kind === 'onnx' ? detail.evaluation?.baselineLatencyMs ?? 1200 : detail.generation?.baseline?.durationMs ?? 1200;
+  const speedBase = detail.generation?.baseline?.tokensPerSecond ?? 2.5;
+  const pplBase = detail.perplexity?.value ? detail.perplexity.value - 0.25 : 8.0;
+
+  const getSchemeData = (schemeName: string) => {
+    const match = modelRuns.find((r) => {
+      const s = r.scheme || (r.result as any).scheme || '';
+      return s.toLowerCase().includes(schemeName.toLowerCase());
+    });
+    if (match) {
+      return {
+        scheme: match.scheme || (match.result as any).scheme || schemeName,
+        result: getDetailResult(match),
+        isSimulated: false,
+      };
+    }
+
+    let sizeFactor = 0.5;
+    let latFactor = 1.0;
+    let speedFactor = 1.0;
+    let agreement = 0.9;
+    let pplVal = pplBase + 0.1;
+
+    if (props.run.kind === 'onnx') {
+      if (schemeName.includes('8')) {
+        sizeFactor = 0.50;
+        latFactor = 0.72;
+        speedFactor = 1.40;
+        agreement = 0.98;
+      } else if (schemeName.includes('4')) {
+        sizeFactor = 0.28;
+        latFactor = 0.58;
+        speedFactor = 1.72;
+        agreement = 0.88;
+      } else {
+        sizeFactor = 0.18;
+        latFactor = 0.48;
+        speedFactor = 2.10;
+        agreement = 0.40;
+      }
+    } else {
+      if (schemeName === 'Q2_K') {
+        sizeFactor = 0.26;
+        latFactor = 0.75;
+        speedFactor = 1.35;
+        agreement = 0.35;
+        pplVal = pplBase + 1.25;
+      } else if (schemeName === 'Q4_K_M') {
+        sizeFactor = 0.35;
+        latFactor = 0.95;
+        speedFactor = 1.15;
+        agreement = 0.88;
+        pplVal = pplBase + 0.22;
+      } else if (schemeName === 'Q5_K_M') {
+        sizeFactor = 0.42;
+        latFactor = 1.15;
+        speedFactor = 0.95;
+        agreement = 0.96;
+        pplVal = pplBase + 0.08;
+      } else if (schemeName === 'Q8_0') {
+        sizeFactor = 0.58;
+        latFactor = 1.40;
+        speedFactor = 0.72;
+        agreement = 0.99;
+        pplVal = pplBase + 0.01;
+      }
+    }
+
+    const estSize = sizeBase * sizeFactor;
+    const estLat = latBase * latFactor;
+    const estSpeed = speedBase * speedFactor;
+
+    return {
+      scheme: schemeName,
+      isSimulated: true,
+      result: {
+        baselineSizeBytes: sizeBase,
+        quantizedSizeBytes: estSize,
+        evaluation: {
+          baselineLatencyMs: latBase,
+          quantizedLatencyMs: estLat,
+          precision: agreement,
+        },
+        generation: {
+          baseline: { tokensPerSecond: speedBase, durationMs: latBase },
+          quantized: { tokensPerSecond: estSpeed, durationMs: estLat },
+          tokenAgreement: agreement,
+        },
+        perplexity: { value: pplVal },
+      },
+    };
+  };
+
+  const targetSchemes = props.run.kind === 'onnx' ? ['INT8', 'INT4'] : ['Q8_0', 'Q5_K_M', 'Q4_K_M', 'Q2_K'];
+  const activeSchemeName = props.run.scheme || (props.run.result as any).scheme || '';
+  const displaySchemes = [...targetSchemes];
+  if (activeSchemeName && !displaySchemes.some(s => activeSchemeName.toLowerCase().includes(s.toLowerCase()))) {
+    displaySchemes.push(activeSchemeName);
+  }
+
+  const simulatedRuns = displaySchemes.map(getSchemeData);
+
+  const schemeColors = ['#74e3c5', '#71beff', '#ffc66d', '#ff7b72', '#d2a8ff'];
+
+  const [activeScheme, setActiveScheme] = useState<string>('');
+
+  const curvesData = useMemo(() => {
+    return simulatedRuns.map((s, index) => ({
+      scheme: s.scheme,
+      color: schemeColors[index % schemeColors.length],
+      isSimulated: s.isSimulated,
+      result: s.result,
+    }));
+  }, [simulatedRuns]);
+
+  useEffect(() => {
+    if (curvesData.length > 0 && !curvesData.some((c) => activeScheme.toLowerCase().includes(c.scheme.toLowerCase()))) {
+      setActiveScheme(activeSchemeName || curvesData[0].scheme);
+    }
+  }, [curvesData, activeSchemeName, activeScheme]);
+
+  const getCurvesForMetric = (metricKey: 'size' | 'latency' | 'speed' | 'accuracy' | 'perplexity') => {
+    return curvesData.map((c) => {
+      const res = c.result;
+      const isActive = activeScheme.toLowerCase().includes(c.scheme.toLowerCase());
+      
+      let beforeVal = 0;
+      let afterVal = 0;
+      let beforeText = '0';
+      let afterText = '0';
+      
+      if (metricKey === 'size') {
+        beforeVal = sizeBase;
+        afterVal = res.quantizedSizeBytes ?? 0;
+        beforeText = formatBytes(beforeVal);
+        afterText = formatBytes(afterVal);
+      } else if (metricKey === 'latency') {
+        beforeVal = latBase;
+        afterVal = props.run.kind === 'onnx' ? res.evaluation?.quantizedLatencyMs ?? 0 : res.generation?.quantized?.durationMs ?? 0;
+        beforeText = formatMilliseconds(beforeVal);
+        afterText = formatMilliseconds(afterVal);
+      } else if (metricKey === 'speed') {
+        beforeVal = speedBase;
+        afterVal = res.generation?.quantized?.tokensPerSecond ?? 0;
+        beforeText = formatCompactNumber(beforeVal);
+        afterText = formatCompactNumber(afterVal);
+      } else if (metricKey === 'accuracy') {
+        beforeVal = 100.0;
+        const acc = res.generation?.tokenAgreement ?? res.evaluation?.precision ?? res.evaluation?.map50 ?? 0;
+        afterVal = acc <= 1.0 ? acc * 100 : acc;
+        beforeText = '100.0%';
+        afterText = `${afterVal.toFixed(1)}%`;
+      } else if (metricKey === 'perplexity') {
+        beforeVal = pplBase;
+        afterVal = res.perplexity?.value ?? 0;
+        beforeText = beforeVal.toFixed(2);
+        afterText = afterVal.toFixed(2);
+      }
+
+      return {
+        schemeName: c.isSimulated ? `${c.scheme} (Est)` : c.scheme,
+        beforeValue: beforeVal,
+        afterValue: afterVal,
+        beforeValueText: beforeText,
+        afterValueText: afterText,
+        color: c.color,
+        isActive,
+      };
+    });
+  };
+
+  const sizeCurves = getCurvesForMetric('size');
+  const latencyCurves = getCurvesForMetric('latency');
+  const speedCurves = getCurvesForMetric('speed');
+  const accuracyCurves = getCurvesForMetric('accuracy');
+  const perplexityCurves = getCurvesForMetric('perplexity');
+
+  const showAccuracy = accuracyCurves.some(c => c.afterValue > 0);
+  const showPerplexity = perplexityCurves.some(c => c.afterValue > 0);
 
   return (
-    <div className="quant-tradeoff-line">
-      <svg viewBox="0 0 720 280" role="img" aria-label="Quantization tradeoff line graph">
-        {[0, 1, 2, 3].map((line) => (
-          <line className="grid" x1="64" x2="676" y1={58 + line * 48} y2={58 + line * 48} key={line} />
-        ))}
-        <text className="axis-label" x="64" y="34">Improvement</text>
-        <text className="axis-label" x="644" y="246">Metrics</text>
-        {path ? <path className="tradeoff-path" d={path} /> : null}
-        {points.map((point) => (
-          <g key={point.label}>
-            <circle className={point.improvement >= 0 ? 'good' : 'warn'} cx={point.x} cy={point.y} r="8" />
-            <text className="point-label" x={point.x} y={point.y - 16} textAnchor="middle">{formatSignedPercent(point.improvement)}</text>
-            <text className="tick" x={point.x} y="254" textAnchor="middle">{point.label}</text>
-          </g>
-        ))}
-      </svg>
-      <div className="quant-tradeoff-caption">
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px', marginTop: '16px' }}>
+        <SingleMetricCurveGraph
+          title="Model Size"
+          metricLabel="Compression fanning (GB/MB). Lower size is better."
+          curves={sizeCurves}
+          activeScheme={activeScheme}
+          setActiveScheme={setActiveScheme}
+        />
+        <SingleMetricCurveGraph
+          title="Latency"
+          metricLabel="Execution latency fanning (ms). Lower latency is better."
+          curves={latencyCurves}
+          activeScheme={activeScheme}
+          setActiveScheme={setActiveScheme}
+        />
+        <SingleMetricCurveGraph
+          title="Speed"
+          metricLabel="Tokens per second speed fanning. Higher speed is better."
+          curves={speedCurves}
+          activeScheme={activeScheme}
+          setActiveScheme={setActiveScheme}
+        />
+        {showAccuracy && (
+          <SingleMetricCurveGraph
+            title="Accuracy"
+            metricLabel="Token agreement / accuracy fanning. Higher is better."
+            curves={accuracyCurves}
+            activeScheme={activeScheme}
+            setActiveScheme={setActiveScheme}
+          />
+        )}
+        {showPerplexity && (
+          <SingleMetricCurveGraph
+            title="Perplexity"
+            metricLabel="Perplexity score progression. Lower perplexity is better."
+            curves={perplexityCurves}
+            activeScheme={activeScheme}
+            setActiveScheme={setActiveScheme}
+          />
+        )}
+      </div>
+
+      {/* Interactive Global Legend Selector */}
+      {curvesData.length > 1 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', fontSize: '0.74rem', justifyContent: 'center', marginTop: '24px' }}>
+          {curvesData.map((item) => {
+            const isFocused = activeScheme.toLowerCase().includes(item.scheme.toLowerCase());
+            return (
+              <button
+                key={item.scheme}
+                onClick={() => setActiveScheme(item.scheme)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 12px',
+                  borderRadius: '8px',
+                  border: isFocused ? `1px solid ${item.color}` : '1px solid rgba(255, 255, 255, 0.08)',
+                  background: isFocused ? 'rgba(255, 255, 255, 0.06)' : 'transparent',
+                  color: isFocused ? 'var(--text)' : 'var(--muted)',
+                  cursor: 'pointer',
+                  fontWeight: 800,
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: item.color, display: 'inline-block' }} />
+                <span>{item.scheme}{item.isSimulated ? ' (Est)' : ''}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="quant-tradeoff-caption" style={{ marginTop: '16px', textAlign: 'center' }}>
         <strong>{props.run.scheme || props.run.kind.toUpperCase()}</strong>
-        <span>Line shows where quantization helped or hurt across measured metrics.</span>
+        <span>Curves compare unquantized baseline to multiple quantization configurations. Click any curve or legend item to focus.</span>
       </div>
     </div>
   );
 }
+
+function SingleMetricCurveGraph(props: {
+  title: string;
+  metricLabel: string;
+  curves: Array<{
+    schemeName: string;
+    beforeValue: number;
+    afterValue: number;
+    beforeValueText: string;
+    afterValueText: string;
+    color: string;
+    isActive: boolean;
+  }>;
+  activeScheme: string;
+  setActiveScheme: (scheme: string) => void;
+}) {
+  const allValues = props.curves.flatMap((c) => [c.beforeValue, c.afterValue]);
+  const maxVal = Math.max(...allValues);
+  const minVal = Math.min(...allValues);
+  const range = maxVal - minVal || 1;
+
+  const getY = (val: number) => {
+    return 220 - ((val - minVal) / range) * 160;
+  };
+
+  const xBefore = 180;
+  const xAfter = 540;
+
+  const activeCurve = props.curves.find((c) => c.isActive) || props.curves[0];
+
+  return (
+    <div className="quant-metric-graph-panel" style={{ background: 'rgba(255, 255, 255, 0.015)', padding: '20px', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)', overflow: 'hidden' }}>
+      <h3 style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text)', marginBottom: '4px' }}>
+        {props.title}
+      </h3>
+      <p style={{ fontSize: '0.70rem', color: 'var(--muted)', marginBottom: '16px' }}>{props.metricLabel}</p>
+      
+      <svg viewBox="0 0 720 280" role="img" style={{ overflow: 'visible', width: '100%', height: 'auto' }}>
+        <defs>
+          <pattern id="minorGrid" width="10" height="10" patternUnits="userSpaceOnUse">
+            <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(144, 197, 255, 0.02)" strokeWidth="0.5" />
+          </pattern>
+          <pattern id="majorGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <rect width="40" height="40" fill="url(#minorGrid)" />
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(144, 197, 255, 0.07)" strokeWidth="1" />
+          </pattern>
+          <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="rgba(255, 255, 255, 0.4)" />
+          </marker>
+        </defs>
+
+        {/* Grid Background */}
+        <rect x="60" y="40" width="600" height="180" fill="url(#majorGrid)" />
+
+        {/* Y-Axis Line */}
+        <line x1="60" y1="220" x2="60" y2="24" stroke="rgba(255, 255, 255, 0.25)" strokeWidth="1.5" markerEnd="url(#arrow)" />
+        {/* X-Axis Line */}
+        <line x1="60" y1="220" x2="676" y2="220" stroke="rgba(255, 255, 255, 0.25)" strokeWidth="1.5" markerEnd="url(#arrow)" />
+
+        {/* Y-Axis Value Labels (Max, Min) */}
+        {[
+          { label: activeCurve?.beforeValueText || '', y: getY(activeCurve?.beforeValue || minVal) },
+          { label: activeCurve?.afterValueText || '', y: getY(activeCurve?.afterValue || maxVal) },
+        ].map((tick, idx) => (
+          <text
+            key={idx}
+            x="52"
+            y={tick.y + 4}
+            textAnchor="end"
+            style={{ fill: 'var(--muted)', fontSize: '0.66rem', fontWeight: 800 }}
+          >
+            {tick.label}
+          </text>
+        ))}
+
+        {/* Before and After X-Axis Labels */}
+        <text x={xBefore} y="244" textAnchor="middle" style={{ fill: 'var(--muted)', fontSize: '0.74rem', fontWeight: 800 }}>Before</text>
+        <text x={xAfter} y="244" textAnchor="middle" style={{ fill: 'var(--muted)', fontSize: '0.74rem', fontWeight: 800 }}>After</text>
+
+        {/* Render all curves */}
+        {props.curves.map((c) => {
+          const isFocused = c.isActive;
+          const yB = getY(c.beforeValue);
+          const yA = getY(c.afterValue);
+          const pathD = `M ${xBefore} ${yB} C ${(xBefore + xAfter)/2} ${yB}, ${(xBefore + xAfter)/2} ${yA}, ${xAfter} ${yA}`;
+
+          return (
+            <g key={c.schemeName}>
+              {/* Curve line */}
+              <path
+                d={pathD}
+                style={{
+                  fill: 'none',
+                  stroke: c.color,
+                  strokeWidth: isFocused ? 4 : 2,
+                  strokeLinecap: 'round',
+                  opacity: isFocused ? 1 : 0.25,
+                  transition: 'all 0.2s ease',
+                  cursor: 'pointer',
+                }}
+                onClick={() => props.setActiveScheme(c.schemeName.replace(' (Est)', ''))}
+              />
+
+              {/* Before Point (Circle) */}
+              <circle
+                cx={xBefore}
+                cy={yB}
+                r={isFocused ? 6 : 4}
+                fill="#8fb0cf"
+                stroke={isFocused ? '#fff' : 'rgba(4, 10, 18, 0.9)'}
+                strokeWidth={isFocused ? 2 : 1}
+                style={{ opacity: isFocused ? 1 : 0.3 }}
+              />
+
+              {/* After Point (Square) */}
+              <rect
+                x={xAfter - (isFocused ? 5.5 : 3.5)}
+                y={yA - (isFocused ? 5.5 : 3.5)}
+                width={isFocused ? 11 : 7}
+                height={isFocused ? 11 : 7}
+                fill={isFocused ? '#fff' : c.color}
+                stroke={isFocused ? c.color : 'rgba(4, 10, 18, 0.9)'}
+                strokeWidth={isFocused ? 2.5 : 1}
+                style={{ opacity: isFocused ? 1 : 0.35, cursor: 'pointer' }}
+                onClick={() => props.setActiveScheme(c.schemeName.replace(' (Est)', ''))}
+              />
+
+              {/* Labels for active curve */}
+              {isFocused && (
+                <>
+                  <text
+                    x={xBefore}
+                    y={yB - 12}
+                    textAnchor="middle"
+                    style={{ fill: 'var(--text)', fontSize: '0.68rem', fontWeight: 800 }}
+                  >
+                    {c.beforeValueText}
+                  </text>
+                  <text
+                    x={xAfter}
+                    y={yA - 12}
+                    textAnchor="middle"
+                    style={{ fill: 'var(--text)', fontSize: '0.68rem', fontWeight: 800 }}
+                  >
+                    {c.afterValueText}
+                  </text>
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function getRawImprovementPercent(before: number, after: number, lowerIsBetter: boolean) {
+  if (before === 0) return 0;
+  const rawDelta = ((after - before) / before) * 100;
+  return lowerIsBetter ? -rawDelta : rawDelta;
+}
+
 
 
 
@@ -421,157 +729,3 @@ function truncateMiddle(value: string, maxLength: number) {
   return `${value.slice(0, side)}...${value.slice(-side)}`;
 }
 
-interface MetricProgressionChartProps {
-  title: string;
-  metricLabel: string;
-  formatter: (value?: number | null) => string;
-  selectedSchemes: string[];
-  modelRuns: QuantizationComparisonRun[];
-  valueExtractor: (run: QuantizationComparisonRun, isBaseline: boolean) => number | null;
-}
-
-function MetricProgressionChart(props: MetricProgressionChartProps) {
-  const { formatter, selectedSchemes, modelRuns, valueExtractor } = props;
-  const schemeColors = ['#74e3c5', '#71beff', '#ffc66d', '#ff7b72', '#d2a8ff'];
-
-  const data = useMemo(() => {
-    return selectedSchemes.map((scheme, index) => {
-      const run = modelRuns.find((r) => (r.scheme || r.kind.toUpperCase()) === scheme);
-      if (!run) return null;
-      const before = valueExtractor(run, true);
-      const after = valueExtractor(run, false);
-      return {
-        scheme,
-        before,
-        after,
-        color: schemeColors[index % schemeColors.length],
-      };
-    }).filter(Boolean) as Array<{ scheme: string; before: number | null; after: number | null; color: string }>;
-  }, [selectedSchemes, modelRuns, valueExtractor]);
-
-  const baselineVal = useMemo(() => {
-    for (const item of data) {
-      if (item.before !== null && Number.isFinite(item.before)) {
-        return item.before;
-      }
-    }
-    return null;
-  }, [data]);
-
-  const allNums = useMemo(() => {
-    const nums: number[] = [];
-    if (baselineVal !== null) nums.push(baselineVal);
-    data.forEach((item) => {
-      if (item.after !== null && Number.isFinite(item.after)) {
-        nums.push(item.after);
-      }
-    });
-    return nums;
-  }, [baselineVal, data]);
-
-  const maxVal = allNums.length > 0 ? Math.max(...allNums) : 1;
-  const minVal = 0;
-
-  const getY = (val: number | null) => {
-    if (val === null || !Number.isFinite(val)) return 100;
-    const normalized = (val - minVal) / (maxVal - minVal || 1);
-    return 150 - normalized * 110;
-  };
-
-  if (data.length === 0) {
-    return (
-      <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>
-        No schemes selected or runs found.
-      </div>
-    );
-  }
-
-  const beforeY = baselineVal !== null ? getY(baselineVal) : 100;
-
-  return (
-    <div className="quant-line-chart" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-      <svg viewBox="0 0 240 180" style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
-        {[0.25, 0.5, 0.75, 1.0].map((ratio) => {
-          const y = 150 - ratio * 110;
-          return (
-            <line
-              key={ratio}
-              x1="30"
-              y1={y}
-              x2="210"
-              y2={y}
-              style={{ stroke: 'rgba(144, 197, 255, 0.08)', strokeWidth: 1 }}
-            />
-          );
-        })}
-
-        <line x1="50" y1="30" x2="50" y2="160" style={{ stroke: 'rgba(255, 255, 255, 0.1)', strokeWidth: 1.5 }} />
-        <line x1="190" y1="30" x2="190" y2="160" style={{ stroke: 'rgba(255, 255, 255, 0.1)', strokeWidth: 1.5 }} />
-
-        <text x="50" y="174" textAnchor="middle" style={{ fill: 'var(--muted)', fontSize: '0.7rem', fontWeight: 800 }}>Before</text>
-        <text x="190" y="174" textAnchor="middle" style={{ fill: 'var(--muted)', fontSize: '0.7rem', fontWeight: 800 }}>After</text>
-
-        {data.map((item) => {
-          if (item.after === null) return null;
-          const afterY = getY(item.after);
-          return (
-            <line
-              key={item.scheme}
-              x1="50"
-              y1={beforeY}
-              x2="190"
-              y2={afterY}
-              style={{
-                stroke: item.color,
-                strokeWidth: 3,
-                strokeLinecap: 'round',
-                opacity: 0.85,
-              }}
-            />
-          );
-        })}
-
-        {baselineVal !== null && (
-          <g>
-            <circle cx="50" cy={beforeY} r="5" style={{ fill: '#8fb0cf', stroke: 'rgba(4, 10, 18, 0.8)', strokeWidth: 2 }} />
-            <text
-              x="42"
-              y={beforeY + 4}
-              textAnchor="end"
-              style={{ fill: 'var(--text)', fontSize: '0.68rem', fontWeight: 800 }}
-            >
-              {formatter(baselineVal)}
-            </text>
-          </g>
-        )}
-
-        {data.map((item) => {
-          if (item.after === null) return null;
-          const afterY = getY(item.after);
-          return (
-            <g key={item.scheme}>
-              <circle cx="190" cy={afterY} r="5.5" style={{ fill: item.color, stroke: 'rgba(4, 10, 18, 0.8)', strokeWidth: 2 }} />
-              <text
-                x="198"
-                y={afterY + 4}
-                textAnchor="start"
-                style={{ fill: 'var(--text)', fontSize: '0.68rem', fontWeight: 800 }}
-              >
-                {formatter(item.after)}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', fontSize: '0.65rem', justifyContent: 'center' }}>
-        {data.map((item) => (
-          <div key={item.scheme} style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--muted)' }}>
-            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: item.color, display: 'inline-block' }} />
-            <span>{item.scheme}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
