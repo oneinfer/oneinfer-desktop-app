@@ -49,6 +49,8 @@ import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
 import { InstancesPage } from './pages/InstancesPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { QuantizationComparePage } from './pages/QuantizationComparePage';
+import { QuantizationPage } from './pages/QuantizationPage';
 import { RoutingPage, type CreateRoutePayload } from './pages/RoutingPage';
 import { SelfHostingPage, type SelfHostFormState } from './pages/SelfHostingPage';
 import { SettingsPage, type SettingsTab } from './pages/SettingsPage';
@@ -71,7 +73,8 @@ import type {
 import { getBalance } from './utils/format';
 
 const servingLibraries: ServingLibrary[] = ['vllm', 'sglang', 'tensorrt', 'ollama', 'llama_cpp', 'pytorch', 'transformers', 'dynamo'];
-const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console/credits';
+const ONEINFER_CREDITS_URL = 'https://oneinfer.ai/console';
+const ONEINFER_GPU_LIST_URL = import.meta.env.VITE_ONEINFER_GPU_LIST_URL || 'https://oneinfer.ai/console';
 const DEV_UPDATE_DISABLED_MESSAGE = 'Auto-update is disabled in development mode.';
 
 const defaultRegistrationForm: RegistrationFormState = {
@@ -899,6 +902,22 @@ function App() {
         }));
 
         announcePartialFailures('Bandwidth', results, shouldBeSilent, ['developer plans', 'active developer plan']);
+      }
+
+      if (section === 'quantization') {
+        const results = await Promise.allSettled([
+          getInstances(currentBaseUrl, currentSession),
+        ]);
+
+        setDashboard((current) => ({
+          ...current,
+          instances: (results[0].status === 'fulfilled' ? results[0].value : current.instances).filter(i => {
+            const status = String(i.instance_status ?? i.status).toLowerCase();
+            return status !== 'deleted' && status !== 'terminated';
+          }),
+        }));
+
+        announcePartialFailures('Quantization', results, shouldBeSilent, ['instances']);
       }
 
       setLoadedSections((current) => ({ ...current, [section]: true }));
@@ -2582,6 +2601,17 @@ function isSameLocalModelId(left: string, right: string): boolean {
     setIsInstallLogOpen(true);
     try {
       await window.desktopBridge.installLibrary(name);
+      if (name === 'llama_cpp') {
+        const tools = await window.desktopBridge.getQuantizationTools?.();
+        const ready = Boolean(tools?.quantize);
+        setLibraries((current) => ({ ...current, llama_cpp: ready }));
+        if (!ready) {
+          throw new Error('llama.cpp install finished, but llama-quantize was not found. Install llama.cpp CLI tools with "brew install llama.cpp", then restart OneInfer Edge.');
+        }
+        setMessage({ tone: 'success', text: 'llama.cpp CLI tools installed successfully.' });
+        return;
+      }
+
       const status = await window.desktopBridge.checkLibrary(name);
       if (name === 'transformers') {
         const pytorchStatus = await window.desktopBridge.checkLibrary('pytorch');
@@ -2609,6 +2639,25 @@ function isSameLocalModelId(left: string, right: string): boolean {
       window.open(ONEINFER_CREDITS_URL, '_blank', 'noopener,noreferrer');
     } catch (error) {
       setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to open credits page.' });
+    }
+  }
+
+  async function handleOpenGpuConsole() {
+    if (!session) {
+      setMessage({ tone: 'error', text: 'Sign in before opening the cloud GPU console.' });
+      return;
+    }
+
+    const gpuConsoleUrl = buildOneInferConsoleUrl(ONEINFER_GPU_LIST_URL, session);
+    try {
+      if (window.desktopBridge?.openExternalUrl) {
+        await window.desktopBridge.openExternalUrl({ url: gpuConsoleUrl });
+        return;
+      }
+
+      window.open(gpuConsoleUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Failed to open GPU console.' });
     }
   }
 
@@ -3063,6 +3112,21 @@ function isSameLocalModelId(left: string, right: string): boolean {
         ) : null}
 
         {activeSection === 'bandwidth' ? <BandwidthPage dashboard={visibleDashboard} /> : null}
+
+        {activeSection === 'quantization' ? (
+          <QuantizationPage
+            dashboard={visibleDashboard}
+            libraries={libraries}
+            busy={busy}
+            onCreateCloudMachine={handleOpenGpuConsole}
+            onInstallLibrary={handleInstallLibrary}
+            onNavigateToCompare={() => setActiveSection('quantizationCompare')}
+          />
+        ) : null}
+
+        {activeSection === 'quantizationCompare' ? (
+          <QuantizationComparePage dashboard={visibleDashboard} />
+        ) : null}
 
         {activeSection === 'settings' ? (
           <SettingsPage
@@ -3698,6 +3762,18 @@ function getWelcomeName(session: DesktopSession, profile: Record<string, unknown
   const candidateName = String(profileName || emailName || '').trim();
   const firstName = candidateName.split(/[\s._-]+/).find(Boolean);
   return firstName || 'back';
+}
+
+function buildOneInferConsoleUrl(baseUrl: string, session: DesktopSession): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set('access_token', session.accessToken);
+  url.searchParams.set('developer_id', session.developerId);
+  if (session.email) {
+    url.searchParams.set('email', session.email);
+  }
+  url.searchParams.set('source', 'oneinfer-edge');
+  url.searchParams.set('redirect', 'gpu-list');
+  return url.toString();
 }
 
 function getGreeting(): string {

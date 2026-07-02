@@ -1,4 +1,4 @@
-export type SectionKey = 'overview' | 'selfHosting' | 'instances' | 'apiKeys' | 'routing' | 'bandwidth' | 'settings';
+export type SectionKey = 'overview' | 'selfHosting' | 'quantization' | 'quantizationCompare' | 'instances' | 'apiKeys' | 'routing' | 'bandwidth' | 'settings';
 
 export interface DesktopSession {
   accessToken: string;
@@ -316,4 +316,3 @@ export interface Notification {
   timestamp: string;
   read: boolean;
 }
-

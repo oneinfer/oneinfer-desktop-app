@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { Rocket, Sparkles, X } from 'lucide-react';
 
 import { formatValue } from '../utils/format';
@@ -91,7 +92,7 @@ export function HeroChip(props: { icon: typeof Rocket; title: string; text: stri
 export function Modal(props: { title: string; isOpen: boolean; onClose: () => void; children: React.ReactNode }) {
   if (!props.isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="modal-overlay" onClick={props.onClose}>
       <div className="modal-content glass-panel" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
@@ -102,6 +103,7 @@ export function Modal(props: { title: string; isOpen: boolean; onClose: () => vo
         </div>
         <div className="modal-body">{props.children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
