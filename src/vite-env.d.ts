@@ -253,8 +253,59 @@ interface Window {
         ttft?: boolean;
         peakMemory?: boolean;
       };
+      selectiveQuantization?: {
+        bits: 'int8' | 'int4' | 'fp16';
+        selection: {
+          id: string;
+          label: string;
+          kind: 'section' | 'layer' | 'block';
+          opType: string;
+          count: number;
+          description?: string;
+        };
+        repoId?: string;
+        graphFile?: string;
+      };
       prompt?: string;
     }) => Promise<Record<string, unknown>>;
+    runSelectiveOnnxQuantization: (payload: {
+      jobId?: string;
+      repoId: string;
+      graphFile?: string;
+      bits: 'int8' | 'int4' | 'fp16';
+      selection: {
+        id: string;
+        label: string;
+        kind: 'section' | 'layer' | 'block';
+        opType: string;
+        count: number;
+        description?: string;
+      };
+    }) => Promise<{
+      jobId?: string;
+      runnerVersion?: number;
+      artifactKind?: string;
+      repoId?: string;
+      graphFile?: string;
+      outputPath?: string;
+      reportPath?: string;
+      bits?: string;
+      baselineSizeBytes?: number;
+      quantizedSizeBytes?: number;
+      opTypesQuantized?: string[];
+      nodesQuantized?: string[];
+      evaluation?: {
+        status?: 'success' | 'failed' | 'not-run';
+        baselineLatencyMs?: number | null;
+        quantizedLatencyMs?: number | null;
+        latencyDeltaPercent?: number | null;
+        meanAbsDelta?: number | null;
+        maxAbsDelta?: number | null;
+        comparableOutputs?: number;
+        outputCount?: number;
+        error?: string;
+      };
+    }>;
     clearQuantizationCache: (payload?: {
       includeRuns?: boolean;
     }) => Promise<{

@@ -5504,6 +5504,228 @@ print(json.dumps({
 }))
 `;
 
+const ONNX_SELECTIVE_QUANTIZE_SCRIPT = `
+import json
+import os
+import sys
+
+import numpy as np
+import onnx
+import onnxruntime as ort
+from onnx import TensorProto
+from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantType, quantize_static
+
+model_path = sys.argv[1]
+output_path = sys.argv[2]
+bits = sys.argv[3].lower()
+selection = json.loads(sys.argv[4])
+
+if bits != "int8":
+    raise RuntimeError(f"{bits.upper()} selective ONNX quantization is not available in the local ONNX Runtime path yet. Choose INT8.")
+
+model = onnx.load(model_path, load_external_data=False)
+graph = model.graph
+initializers = {item.name for item in graph.initializer}
+graph_inputs = [item for item in graph.input if item.name not in initializers]
+node_names = {node.name for node in graph.node if node.name}
+supported_op_types = {"Conv", "MatMul", "Gemm"}
+
+selection_id = str(selection.get("id") or "")
+selection_label = str(selection.get("label") or "")
+selection_op_type = str(selection.get("opType") or "")
+requested_op_types = [item.strip() for item in selection_op_type.split(",") if item.strip()]
+op_types_to_quantize = [item for item in requested_op_types if item in supported_op_types]
+nodes_to_quantize = [selection_id] if selection_id in node_names else []
+
+def model_index(node_name):
+    import re
+    match = re.search(r"/model\\.(\\d+)(?:/|$)", node_name or "")
+    return int(match.group(1)) if match else None
+
+def supported_nodes_in_section(start_index, end_index):
+    result = []
+    for node in graph.node:
+        index = model_index(node.name)
+        if index is None or index < start_index or index > end_index:
+            continue
+        if node.op_type in supported_op_types and node.name:
+            result.append(node.name)
+    return result
+
+def supported_nodes_matching(fragment):
+    lowered_fragment = fragment.lower()
+    return [
+        node.name
+        for node in graph.node
+        if node.name and lowered_fragment in node.name.lower() and node.op_type in supported_op_types
+    ]
+
+if not nodes_to_quantize:
+    lowered = f"{selection_label} {selection_op_type}".lower()
+    if "backbone" in lowered:
+        nodes_to_quantize = supported_nodes_in_section(0, 9)
+    elif "neck" in lowered or "pan-fpn" in lowered:
+        nodes_to_quantize = supported_nodes_in_section(10, 21)
+    elif "head" in lowered or "pose" in lowered or "logits" in lowered or "keypoints" in lowered or "score" in lowered or "dfl" in lowered:
+        nodes_to_quantize = supported_nodes_in_section(22, 22)
+    elif "p3" in lowered:
+        nodes_to_quantize = supported_nodes_matching("/cv4.0/") + supported_nodes_matching("/cv2.0/") + supported_nodes_matching("/cv3.0/")
+    elif "p4" in lowered:
+        nodes_to_quantize = supported_nodes_matching("/cv4.1/") + supported_nodes_matching("/cv2.1/") + supported_nodes_matching("/cv3.1/")
+    elif "p5" in lowered:
+        nodes_to_quantize = supported_nodes_matching("/cv4.2/") + supported_nodes_matching("/cv2.2/") + supported_nodes_matching("/cv3.2/")
+
+if nodes_to_quantize:
+    op_types_to_quantize = []
+
+if not nodes_to_quantize and not op_types_to_quantize:
+    raise RuntimeError(f"Selection '{selection_label or selection_id}' does not map to ONNX ops supported by local INT8 quantization.")
+
+def tensor_dtype(value_info):
+    tensor_type = value_info.type.tensor_type
+    return tensor_type.elem_type if tensor_type.HasField("elem_type") else TensorProto.FLOAT
+
+def tensor_shape(value_info):
+    result = []
+    tensor_type = value_info.type.tensor_type
+    if not tensor_type.HasField("shape"):
+        return [1]
+    for dim in tensor_type.shape.dim:
+        if dim.dim_value and dim.dim_value > 0:
+            result.append(int(dim.dim_value))
+        else:
+            result.append(1)
+    return result or [1]
+
+def numpy_dtype(onnx_type):
+    if onnx_type == TensorProto.FLOAT16:
+        return np.float16
+    if onnx_type == TensorProto.DOUBLE:
+        return np.float64
+    if onnx_type in (TensorProto.INT64, TensorProto.INT32, TensorProto.INT16, TensorProto.INT8):
+        return np.int64
+    return np.float32
+
+class SingleBatchCalibrationReader(CalibrationDataReader):
+    def __init__(self):
+        self.sent = False
+        self.batch = {}
+        for item in graph_inputs:
+            dtype = numpy_dtype(tensor_dtype(item))
+            shape = tensor_shape(item)
+            self.batch[item.name] = np.zeros(shape, dtype=dtype)
+
+    def get_next(self):
+        if self.sent:
+            return None
+        self.sent = True
+        return self.batch
+
+reader = SingleBatchCalibrationReader()
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+quantize_static(
+    model_input=model_path,
+    model_output=output_path,
+    calibration_data_reader=reader,
+    quant_format=QuantFormat.QDQ,
+    activation_type=QuantType.QUInt8,
+    weight_type=QuantType.QInt8,
+    op_types_to_quantize=op_types_to_quantize or None,
+    nodes_to_quantize=nodes_to_quantize or None,
+)
+
+def session_dtype(type_name):
+    if "float16" in type_name:
+        return np.float16
+    if "double" in type_name:
+        return np.float64
+    if "int64" in type_name:
+        return np.int64
+    if "int32" in type_name:
+        return np.int32
+    if "int16" in type_name:
+        return np.int16
+    if "int8" in type_name:
+        return np.int8
+    if "uint8" in type_name:
+        return np.uint8
+    return np.float32
+
+def session_shape(shape):
+    result = []
+    for dim in shape or []:
+        if isinstance(dim, int) and dim > 0:
+            result.append(dim)
+        else:
+            result.append(1)
+    return result or [1]
+
+def make_session_inputs(session):
+    inputs = {}
+    for item in session.get_inputs():
+        dtype = session_dtype(item.type)
+        shape = session_shape(item.shape)
+        inputs[item.name] = np.zeros(shape, dtype=dtype)
+    return inputs
+
+def run_full_model(model_file):
+    session = ort.InferenceSession(model_file, providers=["CPUExecutionProvider"])
+    inputs = make_session_inputs(session)
+    session.run(None, inputs)
+    import time
+    start = time.perf_counter()
+    outputs = session.run(None, inputs)
+    duration_ms = (time.perf_counter() - start) * 1000.0
+    return duration_ms, outputs
+
+evaluation = {
+    "status": "not-run",
+    "baselineLatencyMs": None,
+    "quantizedLatencyMs": None,
+    "latencyDeltaPercent": None,
+    "meanAbsDelta": None,
+    "maxAbsDelta": None,
+    "comparableOutputs": 0,
+    "outputCount": 0,
+    "error": "",
+}
+
+try:
+    print("Running full ONNX model smoke evaluation...", flush=True)
+    baseline_ms, baseline_outputs = run_full_model(model_path)
+    quantized_ms, quantized_outputs = run_full_model(output_path)
+    comparable = []
+    for left, right in zip(baseline_outputs, quantized_outputs):
+        if isinstance(left, np.ndarray) and isinstance(right, np.ndarray) and left.shape == right.shape and np.issubdtype(left.dtype, np.number) and np.issubdtype(right.dtype, np.number):
+            delta = np.abs(left.astype(np.float32) - right.astype(np.float32))
+            comparable.append(delta)
+    if comparable:
+        flat = np.concatenate([item.reshape(-1) for item in comparable])
+        evaluation["meanAbsDelta"] = float(np.mean(flat))
+        evaluation["maxAbsDelta"] = float(np.max(flat))
+    evaluation["status"] = "success"
+    evaluation["baselineLatencyMs"] = float(baseline_ms)
+    evaluation["quantizedLatencyMs"] = float(quantized_ms)
+    evaluation["latencyDeltaPercent"] = float(((quantized_ms - baseline_ms) / baseline_ms) * 100.0) if baseline_ms > 0 else None
+    evaluation["comparableOutputs"] = len(comparable)
+    evaluation["outputCount"] = min(len(baseline_outputs), len(quantized_outputs))
+except Exception as exc:
+    evaluation["status"] = "failed"
+    evaluation["error"] = str(exc)
+
+print(json.dumps({
+    "outputPath": output_path,
+    "artifactKind": "full-onnx-model",
+    "bits": bits,
+    "selection": selection,
+    "opTypesQuantized": op_types_to_quantize,
+    "nodesQuantized": nodes_to_quantize,
+    "baselineSizeBytes": os.path.getsize(model_path),
+    "quantizedSizeBytes": os.path.getsize(output_path),
+    "evaluation": evaluation,
+}))
+`;
+
 async function runQuantizationEval(payload = {}) {
   const jobId = String(payload.jobId || `quant-${Date.now()}`);
   const progress = (patch) => sendQuantizationProgress({ id: jobId, ...patch });
@@ -5514,8 +5736,24 @@ async function runQuantizationEval(payload = {}) {
   const scheme = String(payload.scheme || 'Q4_K_M').trim();
   const prompt = String(payload.prompt || 'Explain gradient descent in one paragraph.').trim();
   const benchmarks = normalizeQuantBenchmarks(payload.benchmarks);
+  const selectiveQuantization = payload.selectiveQuantization && typeof payload.selectiveQuantization === 'object'
+    ? payload.selectiveQuantization
+    : null;
 
   progress({ stage: 'preparing', message: 'Preparing quantization evaluation job.' });
+
+  if (selectiveQuantization) {
+    const selection = selectiveQuantization.selection || {};
+    const bits = String(selectiveQuantization.bits || '').toUpperCase() || 'selected precision';
+    const label = String(selection.label || selection.id || 'selected graph region');
+    progress({
+      stage: 'preparing',
+      message: `Selective ${bits} quantization requested for ${label}.`,
+      detail: 'The current local runner uses llama.cpp whole-model GGUF quantization.',
+      level: 'warning',
+    });
+    throw new Error('Selective graph-region quantization needs an ONNX Runtime node-level backend. The current local runner can rebuild full GGUF models only by quantizing the entire model with llama.cpp.');
+  }
 
   if (target && target !== 'local') {
     throw new Error('Cloud quantization jobs need a OneInfer backend job endpoint. Local GGUF evaluation is available now.');
@@ -5586,6 +5824,95 @@ async function runQuantizationEval(payload = {}) {
   fs.writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf8');
 
   progress({ stage: 'complete', message: 'Quantization evaluation complete.', detail: reportPath, level: 'success' });
+  return { ...result, reportPath };
+}
+
+async function runSelectiveOnnxQuantization(payload = {}) {
+  const jobId = String(payload.jobId || `onnx-selective-${Date.now()}`);
+  const progress = (patch) => sendQuantizationProgress({ id: jobId, ...patch });
+  const parsed = parseHuggingFaceInput(payload.repoId || payload.hfRepo || payload.modelId);
+  const selection = payload.selection && typeof payload.selection === 'object' ? payload.selection : null;
+  const bits = String(payload.bits || 'int8').toLowerCase();
+
+  if (!parsed.repoId) {
+    throw new Error('Enter a valid Hugging Face repo id for ONNX selective quantization.');
+  }
+
+  if (!selection) {
+    throw new Error('Select a graph layer or section before running selective quantization.');
+  }
+
+  if (bits !== 'int8') {
+    throw new Error(`${bits.toUpperCase()} selective ONNX quantization is not available locally yet. Choose INT8.`);
+  }
+
+  progress({ stage: 'preparing', message: `Preparing selective ${bits.toUpperCase()} ONNX quantization.`, detail: selection.label || selection.id || parsed.repoId });
+
+  let graphFile = String(payload.graphFile || parsed.filePath || '').trim();
+  if (!graphFile || !graphFile.toLowerCase().endsWith('.onnx')) {
+    const modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+    const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+    const onnxFiles = siblings
+      .map((item) => String(item.rfilename || '').trim())
+      .filter((file) => detectHuggingFaceFileFormat(file) === 'ONNX');
+    graphFile = selectHuggingFaceOnnxGraphFile(onnxFiles, parsed.filePath);
+  }
+
+  if (!graphFile) {
+    throw new Error(`${parsed.repoId} does not expose an ONNX model file to quantize.`);
+  }
+
+  const modelPath = await downloadHuggingFaceArtifactFile(parsed.repoId, graphFile, progress, 'ONNX model');
+  const outputDirectory = path.join(getQuantizationRunsDirectory(), jobId);
+  const outputPath = path.join(outputDirectory, `${path.basename(graphFile, path.extname(graphFile))}-${bits}-${sanitizeCacheSegment(selection.id || selection.label || 'selection')}.onnx`);
+  const python = await getQuantizationPythonCommand(progress);
+  await ensurePythonPackages(python, ['onnx', 'onnxruntime'], progress);
+
+  progress({ stage: 'quantize', message: `Quantizing selected ONNX region as ${bits.toUpperCase()}.`, detail: graphFile });
+  const { stdout } = await runCommand(python.command, [
+    ...python.prefixArgs,
+    '-u',
+    '-c',
+    ONNX_SELECTIVE_QUANTIZE_SCRIPT,
+    modelPath,
+    outputPath,
+    bits,
+    JSON.stringify(selection),
+  ], {
+    timeoutMs: 30 * 60 * 1000,
+    maxOutputBuffer: 2 * 1024 * 1024,
+    onStdout: (text) => progress({ stage: 'quantize', message: 'Running ONNX Runtime quantization...', detail: stripAnsi(text).slice(-500) }),
+    onStderr: (text) => progress({ stage: 'quantize', message: 'Running ONNX Runtime quantization...', detail: stripAnsi(text).slice(-500) }),
+  });
+
+  const parsedResult = JSON.parse(stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || '{}');
+  if (parsedResult.evaluation?.status === 'success') {
+    progress({
+      stage: 'benchmark',
+      message: 'Full ONNX model smoke evaluation complete.',
+      detail: `${Math.round(Number(parsedResult.evaluation.quantizedLatencyMs || 0))} ms quantized latency`,
+      level: 'success',
+    });
+  } else if (parsedResult.evaluation?.status === 'failed') {
+    progress({
+      stage: 'benchmark',
+      message: 'Full ONNX model smoke evaluation failed.',
+      detail: parsedResult.evaluation.error || '',
+      level: 'warning',
+    });
+  }
+  const result = {
+    jobId,
+    runnerVersion: 2,
+    repoId: parsed.repoId,
+    graphFile,
+    modelPath,
+    ...parsedResult,
+    createdAt: new Date().toISOString(),
+  };
+  const reportPath = path.join(outputDirectory, 'selective-onnx-report.json');
+  fs.writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf8');
+  progress({ stage: 'complete', message: 'Selective ONNX quantization complete.', detail: outputPath, level: 'success' });
   return { ...result, reportPath };
 }
 
@@ -5706,6 +6033,10 @@ async function resolveHuggingFaceGgufModelSpec({ repoInput, progress, scheme }) 
   const primaryTargetFilePath = requestedFilePath || selectHuggingFaceGgufFile(ggufFiles, scheme);
 
   if (!primaryTargetFilePath) {
+    const conversionReadiness = await getHuggingFaceGgufConversionReadiness(parsed.repoId);
+    if (!conversionReadiness.canConvert) {
+      throw new Error(conversionReadiness.reason);
+    }
     const convertedPath = await convertHuggingFaceRepoToGguf({
       repoId: parsed.repoId,
       progress,
@@ -5731,6 +6062,37 @@ async function resolveHuggingFaceGgufModelSpec({ repoInput, progress, scheme }) 
   return {
     baselinePath,
     quantizedPathsByScheme,
+  };
+}
+
+async function getHuggingFaceGgufConversionReadiness(repoId) {
+  const modelInfo = await fetchJson(`https://huggingface.co/api/models/${repoId}`);
+  const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
+  const files = siblings
+    .map((item) => {
+      const name = String(item.rfilename || '').trim();
+      return {
+        name,
+        format: detectHuggingFaceFileFormat(name),
+        role: detectHuggingFaceFileRole(name),
+      };
+    })
+    .filter((file) => file.name);
+  const tags = Array.isArray(modelInfo?.tags) ? modelInfo.tags.map((tag) => String(tag)) : [];
+  const pipelineTag = String(modelInfo?.pipeline_tag || '').trim();
+  const libraryName = String(modelInfo?.library_name || '').trim();
+  const safetensorsFiles = files.filter((file) => file.format === 'safetensors');
+  const likelyTextModel = isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files });
+  const hasTokenizer = files.some((file) => file.role === 'tokenizer');
+
+  if (safetensorsFiles.length > 0 && (likelyTextModel || hasTokenizer)) {
+    return { canConvert: true, reason: '' };
+  }
+
+  const formats = [...new Set(files.map((file) => file.format).filter(Boolean))];
+  return {
+    canConvert: false,
+    reason: `${repoId} does not contain a GGUF artifact and is not a supported text-generation Transformers model for GGUF conversion. ${getUnsupportedHuggingFaceReason({ pipelineTag, formats })} Use the ONNX selective quantization flow for graph models such as YOLO.`,
   };
 }
 
@@ -6288,7 +6650,11 @@ function detectHuggingFaceFileRole(filename) {
 
 function isLikelyTextGenerationModel({ pipelineTag, tags, libraryName, files }) {
   const combined = [pipelineTag, libraryName, ...tags].join(' ').toLowerCase();
-  if (/text-generation|text2text-generation|conversational|sentence-generation|llama|mistral|qwen|gemma|phi|transformers/.test(combined)) {
+  if (/object-detection|image-classification|image-to-text|image-segmentation|zero-shot-image-classification|depth-estimation|pose|yolo|vision/.test(combined)) {
+    return false;
+  }
+
+  if (/text-generation|text2text-generation|conversational|sentence-generation|causal-lm|llama|mistral|qwen|gemma|phi/.test(combined)) {
     return true;
   }
 
@@ -6951,6 +7317,8 @@ app.whenReady().then(() => {
   ipcMain.handle('app:delete-local-model', async (_event, payload) => deleteLocalModel(payload));
   ipcMain.handle('app:get-local-model-metrics', async (_event, payload) => getLocalModelMetrics(payload));
   ipcMain.handle('app:run-quantization-eval', async (_event, payload) => runQuantizationEval(payload));
+  ipcMain.handle('app:run-selective-onnx-quantization', async (_event, payload) => runSelectiveOnnxQuantization(payload));
+  ipcMain.handle('app:run-selective-onnx-quantization-v2', async (_event, payload) => runSelectiveOnnxQuantization(payload));
   ipcMain.handle('app:clear-quantization-cache', async (_event, payload) => clearQuantizationCache(payload));
   ipcMain.handle('app:inspect-hf-model', async (_event, payload) => inspectHuggingFaceModel(payload));
   ipcMain.handle('app:git-pull', async () => {

@@ -4894,14 +4894,19 @@ input:checked + .slider:before {
 }
 
 .quant-hf-block-node strong,
-.quant-hf-block-node span,
-.quant-hf-layer-node strong,
-.quant-hf-layer-node span,
-.quant-hf-layer-node small {
+.quant-hf-block-node span {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.quant-hf-layer-node strong,
+.quant-hf-layer-node span,
+.quant-hf-layer-node small {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .quant-hf-block-node strong,
@@ -5179,7 +5184,7 @@ button.quant-hf-layer-section-title {
   position: relative;
   z-index: 1;
   display: inline-grid;
-  min-width: 0;
+  min-width: max-content;
   min-height: 38px;
   align-items: center;
   justify-content: center;
@@ -5194,7 +5199,9 @@ button.quant-hf-layer-section-title {
   line-height: 1.15;
   padding: 7px 10px;
   text-align: center;
-  width: 100%;
+  width: max-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .quant-hf-pose-node:hover,
@@ -5246,9 +5253,11 @@ button.quant-hf-layer-section-title {
 .quant-hf-layer-node {
   position: relative;
   display: grid;
-  width: min(260px, 100%);
-  gap: 5px;
-  min-height: 58px;
+  width: max-content;
+  min-width: 86px;
+  max-width: min(220px, 100%);
+  gap: 4px;
+  min-height: 48px;
   align-content: center;
   justify-items: center;
   border: 2px solid rgba(144, 197, 255, 0.48);
@@ -5256,22 +5265,24 @@ button.quant-hf-layer-section-title {
   background: rgba(29, 45, 59, 0.94);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.2);
   color: inherit;
-  padding: 9px 12px;
+  padding: 7px 10px;
   text-align: center;
 }
 
 .quant-hf-layer-node.compact {
-  width: min(160px, 100%);
-  min-height: 42px;
+  width: max-content;
+  min-width: 68px;
+  max-width: min(148px, 100%);
+  min-height: 34px;
   border-width: 1px;
   border-radius: 7px;
-  padding: 7px 9px;
+  padding: 5px 8px;
 }
 
 .quant-hf-layer-node.compact.repeated {
-  width: min(174px, 100%);
-  min-height: 220px;
-  padding: 11px 10px;
+  width: min(142px, 100%);
+  min-height: 184px;
+  padding: 9px 8px;
 }
 
 .quant-hf-layer-node.repeated {
@@ -5346,15 +5357,15 @@ button.quant-hf-layer-section-title {
 .quant-hf-repeat-inner i {
   position: relative;
   z-index: 1;
-  min-width: 54px;
+  min-width: 44px;
   border: 1px solid rgba(255, 203, 75, 0.32);
   border-radius: 6px;
   background: rgba(86, 72, 36, 0.92);
   color: var(--text);
   font-style: normal;
-  font-size: 0.61rem;
+  font-size: 0.56rem;
   font-weight: 800;
-  padding: 4px 7px;
+  padding: 3px 6px;
   text-align: center;
 }
 
@@ -5477,6 +5488,44 @@ button.quant-hf-layer-section-title {
   line-height: 1.45;
 }
 
+.quant-hf-bit-selector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.quant-hf-bit-selector button {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.62);
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.quant-hf-bit-selector button.active {
+  border-color: rgba(108, 235, 205, 0.72);
+  background: rgba(108, 235, 205, 0.16);
+  color: var(--text);
+}
+
+.quant-hf-bit-selector strong {
+  font-size: 0.74rem;
+}
+
+.quant-hf-bit-selector span {
+  color: inherit;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .quant-hf-selection-panel .primary-button {
   width: 100%;
   min-height: 40px;
@@ -5513,6 +5562,17 @@ button.quant-hf-layer-section-title {
   font-weight: 800;
   line-height: 1.4;
   padding: 9px 10px;
+  overflow-wrap: anywhere;
+}
+
+.quant-hf-selection-status.success {
+  background: rgba(76, 217, 151, 0.12);
+  color: #8df5c7;
+}
+
+.quant-hf-selection-status.error {
+  background: rgba(255, 99, 99, 0.12);
+  color: #ffc7c7;
 }
 
 .quant-hf-graph-side strong {
@@ -5662,8 +5722,11 @@ button.quant-hf-layer-section-title {
 }
 
 .quant-hf-graph.large .quant-hf-layer-node {
-  width: min(330px, 100%);
-  min-height: 62px;
+  width: max-content;
+  min-width: 78px;
+  max-width: min(180px, 100%);
+  min-height: 40px;
+  padding: 6px 9px;
 }
 
 .quant-hf-graph.large .quant-hf-layer-node.group {
@@ -5672,23 +5735,26 @@ button.quant-hf-layer-section-title {
 }
 
 .quant-hf-graph.large .quant-hf-layer-section {
-  width: min(500px, 100%);
-  padding: 26px 22px 22px;
+  width: min(330px, 100%);
+  padding: 22px 16px 18px;
 }
 
 .quant-hf-graph.large .quant-hf-layer-section-body {
-  width: min(300px, 100%);
-  gap: 13px;
+  width: min(210px, 100%);
+  gap: 10px;
 }
 
 .quant-hf-graph.large .quant-hf-layer-node.compact {
-  width: min(180px, 100%);
-  min-height: 46px;
+  width: max-content;
+  min-width: 64px;
+  max-width: min(136px, 100%);
+  min-height: 32px;
+  padding: 5px 8px;
 }
 
 .quant-hf-graph.large .quant-hf-layer-node.compact.repeated {
-  width: min(178px, 100%);
-  min-height: 230px;
+  width: min(142px, 100%);
+  min-height: 184px;
 }
 
 .quant-hf-graph.large .quant-hf-repeat-badge {

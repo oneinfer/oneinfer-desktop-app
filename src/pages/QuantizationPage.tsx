@@ -143,6 +143,70 @@ interface HfGraphSelection {
   description?: string;
 }
 
+type SelectiveQuantizationBits = 'int8' | 'int4' | 'fp16';
+
+interface SelectiveQuantizationRequest {
+  bits: SelectiveQuantizationBits;
+  selection: HfGraphSelection;
+  repoId?: string;
+  graphFile?: string;
+}
+
+interface SelectiveOnnxQuantizationResult {
+  runnerVersion?: number;
+  artifactKind?: string;
+  repoId?: string;
+  graphFile?: string;
+  outputPath?: string;
+  reportPath?: string;
+  baselineSizeBytes?: number;
+  quantizedSizeBytes?: number;
+  opTypesQuantized?: string[];
+  nodesQuantized?: string[];
+  evaluation?: {
+    status?: 'success' | 'failed' | 'not-run';
+    baselineLatencyMs?: number | null;
+    quantizedLatencyMs?: number | null;
+    latencyDeltaPercent?: number | null;
+    meanAbsDelta?: number | null;
+    maxAbsDelta?: number | null;
+    comparableOutputs?: number;
+    outputCount?: number;
+    error?: string;
+  };
+}
+
+interface SelectiveOnnxRun {
+  request: SelectiveQuantizationRequest;
+  result: SelectiveOnnxQuantizationResult;
+}
+
+const selectiveQuantizationBitOptions: Array<{
+  value: SelectiveQuantizationBits;
+  label: string;
+  scheme: string;
+  description: string;
+}> = [
+  {
+    value: 'int8',
+    label: 'INT8',
+    scheme: 'INT8',
+    description: 'Balanced accuracy and size for most Conv-heavy regions.',
+  },
+  {
+    value: 'int4',
+    label: 'INT4',
+    scheme: 'INT4 AWQ',
+    description: 'Smaller output with higher calibration risk.',
+  },
+  {
+    value: 'fp16',
+    label: 'FP16',
+    scheme: 'FP16 baseline',
+    description: 'Keep this region high precision while rebuilding the model.',
+  },
+];
+
 interface QuantizationForm {
   modelSource: ModelSource;
   model: string;
@@ -285,6 +349,13 @@ const baseRunStages = [
   { key: 'latencyMemory', title: 'Latency and memory benchmark', detail: 'Measure prompt latency, tokens/sec, size, and compression' },
 ];
 
+const onnxRunStages = [
+  { key: 'preparing', title: 'Prepare ONNX graph', detail: 'Resolve the selected Hugging Face ONNX artifact and graph region' },
+  { key: 'quantize', title: 'Quantize selected part', detail: 'Rebuild the full ONNX model with only the selected region quantized' },
+  { key: 'benchmark', title: 'Run full model', detail: 'Run baseline and rebuilt ONNX models end-to-end with ONNX Runtime' },
+  { key: 'complete', title: 'Collect results', detail: 'Compare latency, size, and output deltas for the rebuilt model' },
+];
+
 const headlineMetrics = [
   { label: 'Token agreement', value: '94.7%', delta: '+0.7 above threshold', tone: 'sea' },
   { label: 'Perplexity', value: '8.24', delta: '+0.31 vs FP16', tone: 'gold' },
@@ -338,6 +409,8 @@ export function QuantizationPage(props: {
   const [progressEvents, setProgressEvents] = useState<QuantizationProgress[]>([]);
   const [evalError, setEvalError] = useState<string | null>(null);
   const [evalResult, setEvalResult] = useState<QuantizationResult | null>(null);
+  const [selectiveOnnxRun, setSelectiveOnnxRun] = useState<SelectiveOnnxRun | null>(null);
+  const [runMode, setRunMode] = useState<'gguf' | 'onnx'>('gguf');
   const [tools, setTools] = useState<QuantizationTools | null>(null);
   const [cacheClearStatus, setCacheClearStatus] = useState<string | null>(null);
   const [cacheClearing, setCacheClearing] = useState(false);
@@ -346,7 +419,7 @@ export function QuantizationPage(props: {
   const [hfInspectionError, setHfInspectionError] = useState<string | null>(null);
   const [hfGraphGranularity, setHfGraphGranularity] = useState<'block' | 'node'>('block');
 
-  const runStages = useMemo(() => getRunStages(form), [form]);
+  const runStages = useMemo(() => runMode === 'onnx' ? onnxRunStages : getRunStages(form), [form, runMode]);
   const runStepIndex = status === 'complete' ? runStages.length : Math.min(runStages.length - 1, Math.floor(progress / Math.max(1, 100 / runStages.length)));
   const machineLabel = useMemo(() => {
     const machine = props.dashboard.machineDetails;
@@ -383,9 +456,15 @@ export function QuantizationPage(props: {
   const targetNeedsInstance = Boolean(selectedTarget.requiresInstance);
   const catalogModels = useMemo(() => getCatalogModelOptions(props.dashboard.models), [props.dashboard.models]);
   const selectedModelName = getSelectedModelName(form);
+  const hfHasGgufArtifact = Boolean(hfInspection && (hfInspection.fileSummary.gguf > 0 || hfInspection.formats.includes('GGUF')));
+  const hfIsOnnxWithoutGguf = Boolean(hfInspection && !hfHasGgufArtifact && (hfInspection.fileSummary.onnx > 0 || hfInspection.formats.includes('ONNX')));
+  const hfLocalGgufBlockReason = hfIsOnnxWithoutGguf
+    ? 'This Hugging Face repo contains ONNX graph artifacts, not GGUF language-model artifacts. Use the graph selection flow for ONNX selective quantization; Run quick eval is only for GGUF/llama.cpp models.'
+    : hfInspection?.warnings[0] || 'This Hugging Face repo is not supported by the local GGUF quantization runner.';
   const hfUnsupportedForLocal = form.modelSource === 'huggingface'
     && selectedTarget.value === 'local'
-    && hfInspection?.localQuantizationStatus === 'unsupported';
+    && Boolean(hfInspection)
+    && (hfInspection?.localQuantizationStatus === 'unsupported' || hfIsOnnxWithoutGguf);
   const canRunEval = !targetNeedsInstance && !hfUnsupportedForLocal && selectedModelName.trim().length > 0;
   const needsLocalGguf = form.modelSource === 'catalog' && selectedTarget.value === 'local';
   const localQuantizationTarget = selectedTarget.value === 'local';
@@ -484,16 +563,24 @@ export function QuantizationPage(props: {
     setForm((current) => ({ ...current, ...next }));
   }
 
-  async function runEvaluation() {
-    if (!canRunEval) {
+  async function runEvaluation(selectiveQuantization?: SelectiveQuantizationRequest) {
+    const canRunRequestedEval = selectiveQuantization
+      ? !targetNeedsInstance && selectedModelName.trim().length > 0
+      : canRunEval;
+    if (!canRunRequestedEval) {
+      if (!selectiveQuantization && hfUnsupportedForLocal) {
+        setEvalError(hfLocalGgufBlockReason);
+      }
       return;
     }
 
     setStep('evaluate');
+    setRunMode('gguf');
     setStatus('running');
     setProgress(5);
     setEvalError(null);
     setEvalResult(null);
+    setSelectiveOnnxRun(null);
     setProgressEvents([]);
 
     if (!window.desktopBridge?.runQuantizationEval) {
@@ -503,6 +590,9 @@ export function QuantizationPage(props: {
     }
 
     try {
+      const selectedBitOption = selectiveQuantization
+        ? selectiveQuantizationBitOptions.find((option) => option.value === selectiveQuantization.bits)
+        : null;
       const result = await window.desktopBridge.runQuantizationEval({
         jobId: `quant-${Date.now()}`,
         target: selectedTarget.value,
@@ -511,11 +601,12 @@ export function QuantizationPage(props: {
         hfRepo: form.hfRepo,
         localPath: form.localPath,
         format: getInferredModelFormat(form),
-        scheme: form.scheme,
+        scheme: selectedBitOption?.scheme || form.scheme,
         dataset: form.dataset,
         calibrationSamples: form.calibrationSamples,
         benchmarks: form.benchmarks,
         prompt,
+        selectiveQuantization,
       }) as QuantizationResult;
       setEvalResult(result);
       setStatus('complete');
@@ -524,6 +615,39 @@ export function QuantizationPage(props: {
     } catch (error) {
       setStatus('idle');
       setEvalError(error instanceof Error ? error.message : 'Quantization evaluation failed.');
+    }
+  }
+
+  async function runSelectiveOnnxQuantization(request: SelectiveQuantizationRequest) {
+    if (!window.desktopBridge?.runSelectiveOnnxQuantization) {
+      throw new Error('Selective ONNX quantization is not available in this app build. Restart Electron after updating the app.');
+    }
+
+    setRunMode('onnx');
+    setStep('evaluate');
+    setStatus('running');
+    setProgress(5);
+    setEvalError(null);
+    setEvalResult(null);
+    setSelectiveOnnxRun(null);
+    setProgressEvents([]);
+
+    try {
+      const result = await window.desktopBridge.runSelectiveOnnxQuantization({
+        jobId: `onnx-selective-${Date.now()}`,
+        repoId: request.repoId || form.hfRepo,
+        graphFile: request.graphFile,
+        bits: request.bits,
+        selection: request.selection,
+      }) as SelectiveOnnxQuantizationResult;
+      setSelectiveOnnxRun({ request, result });
+      setStatus('complete');
+      setProgress(100);
+      setStep('analyze');
+    } catch (error) {
+      setStatus('idle');
+      setEvalError(formatSelectiveOnnxQuantizationError(error));
+      throw new Error(formatSelectiveOnnxQuantizationError(error));
     }
   }
 
@@ -569,7 +693,7 @@ export function QuantizationPage(props: {
           <h2>Quantization Playground</h2>
           <p>Measure quality loss, token agreement, size, speed, and deployment readiness before shipping a model to edge hardware.</p>
         </div>
-        <button className="primary-button" type="button" onClick={runEvaluation} disabled={!canRunEval}>
+        <button className="primary-button" type="button" onClick={() => runEvaluation()} disabled={!canRunEval}>
           <Play size={16} />
           Run quick eval
         </button>
@@ -633,6 +757,7 @@ export function QuantizationPage(props: {
                       graphGranularity={hfGraphGranularity}
                       inspection={hfInspection}
                       onGraphGranularityChange={setHfGraphGranularity}
+                      onSelectiveQuantization={runSelectiveOnnxQuantization}
                       status={hfInspectionStatus}
                     />
                   </>
@@ -686,7 +811,7 @@ export function QuantizationPage(props: {
                 ) : null}
                 {hfUnsupportedForLocal ? (
                   <div className="quant-target-warning">
-                    <span>{hfInspection?.warnings[0] || 'This Hugging Face repo is not supported by the local GGUF quantization runner.'}</span>
+                    <span>{hfLocalGgufBlockReason}</span>
                   </div>
                 ) : null}
                 {localQuantizationTarget && !quantizeInstalled ? (
@@ -798,7 +923,11 @@ export function QuantizationPage(props: {
       ) : null}
 
       {step === 'evaluate' ? (
-        <Panel title={`${selectedModelName || 'Selected model'} - ${form.scheme}`} icon={Gauge} description={`${form.dataset} eval on ${selectedTarget.label}`}>
+        <Panel
+          title={runMode === 'onnx' ? `${selectedModelName || 'Selected model'} - selective ONNX ${selectiveOnnxRun?.request.bits.toUpperCase() || 'INT8'}` : `${selectedModelName || 'Selected model'} - ${form.scheme}`}
+          icon={Gauge}
+          description={runMode === 'onnx' ? `Full rebuilt ONNX evaluation on ${selectedTarget.label}` : `${form.dataset} eval on ${selectedTarget.label}`}
+        >
           <div className="quant-run-status">
             <span className={`status-pill ${status === 'complete' ? 'active' : ''}`}>{evalError ? 'Failed' : status === 'complete' ? 'Complete' : 'Running'}</span>
             <div className="quant-progress-track">
@@ -830,7 +959,7 @@ export function QuantizationPage(props: {
           ) : null}
           <div className="action-row" style={{ marginTop: '18px' }}>
             <button className="secondary-button" type="button" onClick={() => setStep('configure')}>Back</button>
-            <button className="primary-button" type="button" onClick={completeEvaluation} disabled={!evalResult}>
+            <button className="primary-button" type="button" onClick={completeEvaluation} disabled={!evalResult && !selectiveOnnxRun}>
               <BarChart3 size={16} />
               View results
             </button>
@@ -839,6 +968,13 @@ export function QuantizationPage(props: {
       ) : null}
 
       {step === 'analyze' ? (
+        selectiveOnnxRun ? (
+          <SelectiveOnnxAnalyze
+            modelName={selectedModelName || 'Selected ONNX model'}
+            run={selectiveOnnxRun}
+            targetLabel={selectedTarget.label}
+          />
+        ) : (
         <>
           <div className={`quant-recommendation glass-panel ${recommendationState}`}>
             <div>
@@ -865,7 +1001,7 @@ export function QuantizationPage(props: {
           <Panel title="Output diff" icon={Layers3} description="Compare baseline and quantized responses on prompts that matter to your workload.">
             <div className="quant-prompt-row">
               <input value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-              <button className="secondary-button" type="button" onClick={runEvaluation} disabled={!canRunEval || status === 'running'}>Run</button>
+              <button className="secondary-button" type="button" onClick={() => runEvaluation()} disabled={!canRunEval || status === 'running'}>Run</button>
             </div>
             <div className="quant-diff-grid">
               <DiffCard title="Baseline" tag="reference" text={baselineDiffText} />
@@ -934,6 +1070,7 @@ export function QuantizationPage(props: {
             </Panel>
           </div>
         </>
+        )
       ) : null}
 
       {step === 'deploy' ? (
@@ -961,6 +1098,140 @@ export function QuantizationPage(props: {
         </Panel>
       ) : null}
     </div>
+  );
+}
+
+function SelectiveOnnxAnalyze(props: {
+  modelName: string;
+  run: SelectiveOnnxRun;
+  targetLabel: string;
+}) {
+  const { request, result } = props.run;
+  const evaluation = result.evaluation;
+  const latencyDelta = evaluation?.latencyDeltaPercent ?? null;
+  const sizeReduction = getSizeReductionPercent(result.baselineSizeBytes, result.quantizedSizeBytes);
+  const quantizedScope = result.nodesQuantized?.length
+    ? `${result.nodesQuantized.length} ONNX node${result.nodesQuantized.length === 1 ? '' : 's'}`
+    : result.opTypesQuantized?.length
+      ? `${result.opTypesQuantized.join(', ')} op${result.opTypesQuantized.length === 1 ? '' : 's'}`
+      : request.selection.label;
+  const selectedQuantizedScope = `${request.selection.label} (${quantizedScope})`;
+  const evaluationReady = result.runnerVersion === 2 && evaluation?.status === 'success';
+  const evaluationMessage = result.runnerVersion !== 2
+    ? 'This artifact was created by an older Electron handler. Restart Electron and run the selection again to get full-model evaluation.'
+    : evaluation?.status === 'failed'
+      ? `Artifact created, but full-model evaluation failed: ${evaluation.error || 'unknown error'}`
+      : evaluationReady
+        ? 'The rebuilt ONNX model ran end-to-end and was compared with the baseline model.'
+        : 'Artifact created, but full-model evaluation did not report metrics.';
+
+  const metrics = [
+    {
+      label: 'Full model size',
+      value: formatBytes(result.quantizedSizeBytes) || 'Not measured',
+      delta: sizeReduction === null ? 'baseline unavailable' : `${sizeReduction.toFixed(1)}% smaller`,
+      tone: 'sky',
+    },
+    {
+      label: 'Latency',
+      value: formatMilliseconds(evaluation?.quantizedLatencyMs),
+      delta: latencyDelta === null || latencyDelta === undefined ? 'not measured' : `${formatSignedPercent(latencyDelta)} vs baseline`,
+      tone: latencyDelta !== null && latencyDelta !== undefined && latencyDelta <= 0 ? 'sea' : 'gold',
+    },
+    {
+      label: 'Output mean delta',
+      value: formatCompactNumber(evaluation?.meanAbsDelta),
+      delta: `${evaluation?.comparableOutputs || 0} comparable output${evaluation?.comparableOutputs === 1 ? '' : 's'}`,
+      tone: 'gold',
+    },
+    {
+      label: 'Output max delta',
+      value: formatCompactNumber(evaluation?.maxAbsDelta),
+      delta: 'baseline vs rebuilt ONNX',
+      tone: 'rose',
+    },
+  ];
+
+  return (
+    <>
+      <div className={`quant-recommendation glass-panel ${evaluationReady ? 'ready' : 'incomplete'}`}>
+        <div>
+          <span className="eyebrow">Full ONNX model result</span>
+          <h3>{request.bits.toUpperCase()} full model with {request.selection.label} quantized</h3>
+          <p>{evaluationMessage}</p>
+        </div>
+        <button className="primary-button" type="button" disabled={!evaluationReady}>
+          <Rocket size={16} />
+          Prepare deploy
+        </button>
+      </div>
+
+      <div className="quant-metrics-grid">
+        {metrics.map((metric) => (
+          <div className={`metric-card ${metric.tone}`} key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+            <small>{metric.delta}</small>
+          </div>
+        ))}
+      </div>
+
+      <div className="section-grid two-col">
+        <Panel title="Full model run" icon={Gauge} description={`ONNX Runtime evaluation on ${props.targetLabel}`}>
+          <div className="data-list">
+            <div className="data-row">
+              <span>Baseline latency</span>
+              <strong>{formatMilliseconds(evaluation?.baselineLatencyMs)}</strong>
+            </div>
+            <div className="data-row">
+              <span>Quantized latency</span>
+              <strong>{formatMilliseconds(evaluation?.quantizedLatencyMs)}</strong>
+            </div>
+            <div className="data-row">
+              <span>Latency delta</span>
+              <strong>{formatSignedPercent(evaluation?.latencyDeltaPercent) || 'Not measured'}</strong>
+            </div>
+            <div className="data-row">
+              <span>Outputs compared</span>
+              <strong>{evaluation?.comparableOutputs ?? 0} / {evaluation?.outputCount ?? 0}</strong>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel title="Full rebuilt model artifact" icon={FileJson} description={`${props.modelName} rebuilt as a complete ONNX model with the selected region quantized`}>
+          <div className="data-list">
+            <div className="data-row">
+              <span>Full model</span>
+              <strong>{props.modelName}</strong>
+            </div>
+            <div className="data-row">
+              <span>Quantized selected part</span>
+              <strong>{request.selection.label}</strong>
+            </div>
+            <div className="data-row">
+              <span>Quantized operators in part</span>
+              <strong>{selectedQuantizedScope}</strong>
+            </div>
+            <div className="data-row">
+              <span>Baseline full model size</span>
+              <strong>{formatBytes(result.baselineSizeBytes) || 'Not measured'}</strong>
+            </div>
+            <div className="data-row">
+              <span>Rebuilt full model size</span>
+              <strong>{formatBytes(result.quantizedSizeBytes) || 'Not measured'}</strong>
+            </div>
+            <div className="data-row">
+              <span>Full model artifact path</span>
+              <strong className="path-value" title={result.outputPath || ''}>{result.outputPath || 'Not created'}</strong>
+            </div>
+            <div className="data-row">
+              <span>Report path</span>
+              <strong className="path-value" title={result.reportPath || ''}>{result.reportPath || 'Not created'}</strong>
+            </div>
+          </div>
+        </Panel>
+      </div>
+    </>
   );
 }
 
@@ -993,6 +1264,7 @@ function HuggingFacePreview(props: {
   error: string | null;
   graphGranularity: 'block' | 'node';
   onGraphGranularityChange: (value: 'block' | 'node') => void;
+  onSelectiveQuantization: (request: SelectiveQuantizationRequest) => Promise<void>;
 }) {
   const [graphExpanded, setGraphExpanded] = useState(false);
 
@@ -1031,6 +1303,10 @@ function HuggingFacePreview(props: {
         graph={graph}
         granularity={props.graphGranularity}
         onGranularityChange={props.onGraphGranularityChange}
+        onSelectiveQuantization={async (request) => {
+          setGraphExpanded(false);
+          await props.onSelectiveQuantization(request);
+        }}
         onViewGraph={() => {
           props.onGraphGranularityChange('node');
           setGraphExpanded(true);
@@ -1044,6 +1320,10 @@ function HuggingFacePreview(props: {
               graph={graph}
               granularity={props.graphGranularity}
               onGranularityChange={props.onGraphGranularityChange}
+              onSelectiveQuantization={async (request) => {
+                setGraphExpanded(false);
+                await props.onSelectiveQuantization(request);
+              }}
               repoId={inspection.repoId}
               size="large"
             />
@@ -1271,12 +1551,16 @@ function HfInteractiveGraph(props: {
   graph: HfModelGraph;
   granularity: 'block' | 'node';
   onGranularityChange: (value: 'block' | 'node') => void;
+  onSelectiveQuantization: (request: SelectiveQuantizationRequest) => Promise<void>;
   onViewGraph?: () => void;
   repoId: string;
   size?: 'embedded' | 'large';
 }) {
   const [selection, setSelection] = useState<HfGraphSelection | null>(null);
   const [selectionAction, setSelectionAction] = useState<string | null>(null);
+  const [selectionActionState, setSelectionActionState] = useState<'idle' | 'success' | 'error'>('idle');
+  const [selectionQuantizing, setSelectionQuantizing] = useState(false);
+  const [selectionBits, setSelectionBits] = useState<SelectiveQuantizationBits>('int8');
   const defaultZoom = props.size === 'large' ? 0.42 : 1;
   const [graphZoom, setGraphZoom] = useState(defaultZoom);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1288,6 +1572,8 @@ function HfInteractiveGraph(props: {
   useEffect(() => {
     setSelection(null);
     setSelectionAction(null);
+    setSelectionActionState('idle');
+    setSelectionQuantizing(false);
     setGraphZoom(defaultZoom);
   }, [defaultZoom, props.graph.name, props.repoId, props.size]);
 
@@ -1377,14 +1663,36 @@ function HfInteractiveGraph(props: {
         </div>
         <HfGraphSidebar
           graph={props.graph}
-          onQuantizeSelection={() => {
+          onQuantizeSelection={async () => {
             if (!selection) {
               return;
             }
-            setSelectionAction(`Prepared ${selection.label} (${selection.count} ${selection.count === 1 ? 'layer' : 'layers'}) for selective quantization.`);
+            const selectedBitOption = selectiveQuantizationBitOptions.find((option) => option.value === selectionBits);
+            setSelectionQuantizing(true);
+            setSelectionActionState('idle');
+            setSelectionAction(`Submitting ${selection.label} (${selection.count} ${selection.count === 1 ? 'layer' : 'layers'}) for ${selectedBitOption?.label || selectionBits.toUpperCase()} selective quantization.`);
+            try {
+              await props.onSelectiveQuantization({
+                bits: selectionBits,
+                selection,
+                repoId: props.repoId,
+                graphFile: props.graph.file,
+              });
+              setSelectionAction('Selective ONNX job started. Results will open in the Analyze tab.');
+              setSelectionActionState('success');
+            } catch (error) {
+              setSelectionAction(error instanceof Error ? error.message : 'Selective ONNX quantization failed.');
+              setSelectionActionState('error');
+            } finally {
+              setSelectionQuantizing(false);
+            }
           }}
+          onSelectionBitsChange={setSelectionBits}
           selection={selection}
           selectionAction={selectionAction}
+          selectionActionState={selectionActionState}
+          selectionBits={selectionBits}
+          selectionQuantizing={selectionQuantizing}
         />
       </div>
     </div>
@@ -1738,6 +2046,9 @@ function LayerNode(props: {
   selectedId: string;
 }) {
   const repeat = Number(props.node.repeat || 0);
+  const opLabel = String(props.node.opType || '').trim();
+  const nameLabel = String(props.node.name || '').trim();
+  const showName = nameLabel && nameLabel.toLowerCase() !== opLabel.toLowerCase();
 
   return (
     <button
@@ -1768,8 +2079,8 @@ function LayerNode(props: {
         </span>
       ) : (
         <>
-          <span>{props.node.opType}</span>
-          <strong>{props.node.name}</strong>
+          <span>{opLabel}</span>
+          {showName ? <strong>{nameLabel}</strong> : null}
           <small>{formatLayerPorts(props.node)}</small>
         </>
       )}
@@ -1796,12 +2107,17 @@ function formatLayerPorts(node: NonNullable<HfModelGraph['nodes']>[number]) {
 
 function HfGraphSidebar(props: {
   graph: HfModelGraph;
-  onQuantizeSelection: () => void;
+  onQuantizeSelection: () => void | Promise<void>;
+  onSelectionBitsChange: (value: SelectiveQuantizationBits) => void;
   selection: HfGraphSelection | null;
   selectionAction: string | null;
+  selectionActionState: 'idle' | 'success' | 'error';
+  selectionBits: SelectiveQuantizationBits;
+  selectionQuantizing: boolean;
 }) {
   const topOps = getTopOpTypes(props.graph.opCounts);
   const totalOps = topOps.reduce((sum, item) => sum + item.count, 0);
+  const selectedBitOption = selectiveQuantizationBitOptions.find((option) => option.value === props.selectionBits) || selectiveQuantizationBitOptions[0];
 
   return (
     <aside className="quant-hf-graph-side">
@@ -1815,13 +2131,27 @@ function HfGraphSidebar(props: {
             <span>{props.selection.count} {props.selection.count === 1 ? 'layer' : 'layers'}</span>
           </div>
           {props.selection.description ? <p>{props.selection.description}</p> : null}
-          <button className="primary-button" type="button" onClick={props.onQuantizeSelection}>
-            Quantize selected part
+          <div className="quant-hf-bit-selector" role="group" aria-label="Selective quantization precision">
+            {selectiveQuantizationBitOptions.map((option) => (
+              <button
+                className={props.selectionBits === option.value ? 'active' : ''}
+                key={option.value}
+                type="button"
+                onClick={() => props.onSelectionBitsChange(option.value)}
+              >
+                <strong>{option.label}</strong>
+                <span>{option.scheme}</span>
+              </button>
+            ))}
+          </div>
+          <small>{selectedBitOption.description}</small>
+          <button className="primary-button" type="button" onClick={props.onQuantizeSelection} disabled={props.selectionQuantizing}>
+            {props.selectionQuantizing ? 'Quantizing selected part...' : 'Quantize selected part'}
           </button>
           <small>
-            Selective quantization will target this graph region and preserve the rest of the model at the current baseline precision.
+            The full ONNX model will be rebuilt with this region quantized, then run end-to-end with ONNX Runtime.
           </small>
-          {props.selectionAction ? <div className="quant-hf-selection-status">{props.selectionAction}</div> : null}
+          {props.selectionAction ? <div className={`quant-hf-selection-status ${props.selectionActionState}`}>{props.selectionAction}</div> : null}
         </div>
       ) : null}
 
@@ -2233,6 +2563,81 @@ function getPrimaryRun(result: QuantizationResult) {
   }
 
   return result.runs.find((run) => run.scheme === result.recommendedScheme) || result.runs[0];
+}
+
+function formatSelectiveOnnxQuantizationError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/No handler registered for 'app:run-selective-onnx-quantization(?:-v2)?'/i.test(message)) {
+    return 'Selective ONNX full-model evaluation is installed in the renderer, but the Electron main process is still running the previous build. Quit and restart the Electron app so the v2 quantization handler is registered.';
+  }
+
+  return message || 'Selective ONNX quantization failed.';
+}
+
+function formatSelectiveOnnxEvaluationSummary(evaluation?: SelectiveOnnxQuantizationResult['evaluation']) {
+  if (!evaluation) {
+    return 'The artifact was created by an older Electron handler, so the full-model ONNX run was not executed. Quit and restart Electron, then run this selection again.';
+  }
+
+  if (evaluation.status === 'failed') {
+    return `Artifact was created, but the full-model ONNX smoke run failed: ${evaluation.error || 'unknown error'}.`;
+  }
+
+  if (evaluation.status !== 'success') {
+    return 'Artifact was created; full-model ONNX run was not completed.';
+  }
+
+  const baselineLatency = formatMilliseconds(evaluation.baselineLatencyMs);
+  const quantizedLatency = formatMilliseconds(evaluation.quantizedLatencyMs);
+  const latencyDelta = formatSignedPercent(evaluation.latencyDeltaPercent);
+  const meanDelta = formatCompactNumber(evaluation.meanAbsDelta);
+  const maxDelta = formatCompactNumber(evaluation.maxAbsDelta);
+  const outputText = evaluation.comparableOutputs
+    ? `output delta mean ${meanDelta}, max ${maxDelta}`
+    : 'outputs ran without comparable numeric tensors';
+
+  return `Full rebuilt model ran end-to-end: baseline ${baselineLatency}, quantized ${quantizedLatency}${latencyDelta ? ` (${latencyDelta})` : ''}; ${outputText}.`;
+}
+
+function getSizeReductionPercent(baselineSize?: number | null, quantizedSize?: number | null) {
+  if (!baselineSize || !quantizedSize || !Number.isFinite(baselineSize) || !Number.isFinite(quantizedSize) || baselineSize <= 0) {
+    return null;
+  }
+
+  return (1 - (quantizedSize / baselineSize)) * 100;
+}
+
+function formatMilliseconds(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+
+  return value >= 100 ? `${Math.round(value)} ms` : `${value.toFixed(1)} ms`;
+}
+
+function formatSignedPercent(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '';
+  }
+
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(1)}%`;
+}
+
+function formatCompactNumber(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+
+  if (value === 0) {
+    return '0';
+  }
+
+  if (Math.abs(value) < 0.001) {
+    return value.toExponential(2);
+  }
+
+  return value.toFixed(4);
 }
 
 function formatBytes(value?: number | null) {

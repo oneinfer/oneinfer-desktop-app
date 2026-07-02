@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   deleteLocalModel: (payload) => ipcRenderer.invoke('app:delete-local-model', payload),
   getLocalModelMetrics: (payload) => ipcRenderer.invoke('app:get-local-model-metrics', payload),
   runQuantizationEval: (payload) => ipcRenderer.invoke('app:run-quantization-eval', payload),
+  runSelectiveOnnxQuantization: (payload) => ipcRenderer.invoke('app:run-selective-onnx-quantization-v2', payload),
   clearQuantizationCache: (payload) => ipcRenderer.invoke('app:clear-quantization-cache', payload),
   inspectHfModel: (payload) => ipcRenderer.invoke('app:inspect-hf-model', payload),
   gitPull: () => ipcRenderer.invoke('app:git-pull'),
