@@ -5971,11 +5971,38 @@ button.quant-hf-layer-section-title {
   word-break: break-word;
 }
 
+.quant-result-ready {
+  display: grid;
+  gap: 4px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(116, 227, 197, 0.2);
+  border-radius: 14px;
+  background: rgba(116, 227, 197, 0.08);
+}
+
+.quant-result-ready strong {
+  color: var(--accent);
+}
+
+.quant-result-ready span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .quant-recommendation {
   justify-content: space-between;
   gap: 18px;
   padding: 22px;
   border-radius: 22px;
+}
+
+.quant-recommendation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .quant-recommendation.failed {
@@ -6010,6 +6037,341 @@ button.quant-hf-layer-section-title {
 .quant-metrics-grid .metric-card small {
   color: var(--accent);
   font-weight: 800;
+}
+
+.quant-compare-page {
+  display: grid;
+  gap: 16px;
+}
+
+.quant-compare-header,
+.quant-compare-summary,
+.quant-compare-controls,
+.quant-tradeoff-caption {
+  display: flex;
+  align-items: center;
+}
+
+.quant-compare-header,
+.quant-compare-summary {
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.quant-compare-header h2,
+.quant-compare-summary h3,
+.quant-compare-empty h2 {
+  margin: 6px 0 8px;
+  color: var(--text);
+  font-size: 1.5rem;
+  letter-spacing: 0;
+}
+
+.quant-compare-header p,
+.quant-compare-summary p,
+.quant-compare-empty p {
+  margin: 0;
+  max-width: 760px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.quant-compare-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.quant-compare-controls select {
+  min-width: min(420px, 100%);
+}
+
+.quant-compare-summary,
+.quant-compare-empty {
+  padding: 22px;
+  border-radius: 22px;
+}
+
+.quant-compare-summary-meta {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.quant-compare-summary-meta strong {
+  color: var(--text);
+}
+
+.quant-compare-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.quant-line-chart,
+.quant-tradeoff-line {
+  display: grid;
+  gap: 14px;
+}
+
+.quant-line-chart {
+  position: relative;
+}
+
+.quant-line-chart svg,
+.quant-tradeoff-line svg {
+  width: 100%;
+  min-height: 280px;
+  overflow: visible;
+  border: 1px solid rgba(144, 197, 255, 0.14);
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(144, 197, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(144, 197, 255, 0.045) 1px, transparent 1px),
+    radial-gradient(circle at 28% 18%, rgba(116, 227, 197, 0.12), transparent 30%),
+    rgba(255, 255, 255, 0.025);
+  background-size: 32px 32px, 32px 32px, auto, auto;
+}
+
+.quant-line-chart .grid,
+.quant-tradeoff-line .grid {
+  stroke: rgba(144, 197, 255, 0.12);
+  stroke-width: 1;
+}
+
+.quant-line-chart .axis {
+  stroke: rgba(255, 255, 255, 0.14);
+  stroke-width: 1.5;
+}
+
+.quant-line-chart .trend,
+.quant-tradeoff-line .tradeoff-path {
+  fill: none;
+  stroke: url("#quantLineGradient");
+  stroke-linecap: round;
+  stroke-width: 4;
+}
+
+.quant-line-chart .trend.gold {
+  stroke: #ffc66d;
+}
+
+.quant-line-chart .trend.sky {
+  stroke: #71beff;
+}
+
+.quant-line-chart .trend.sea,
+.quant-tradeoff-line .tradeoff-path {
+  stroke: #74e3c5;
+}
+
+.quant-line-chart .point,
+.quant-tradeoff-line circle {
+  stroke: rgba(4, 10, 18, 0.96);
+  stroke-width: 4;
+}
+
+.quant-line-chart .point.before {
+  fill: #8fb0cf;
+}
+
+.quant-line-chart .point.sea,
+.quant-tradeoff-line circle.good {
+  fill: #74e3c5;
+}
+
+.quant-line-chart .point.gold,
+.quant-tradeoff-line circle.warn {
+  fill: #ffc66d;
+}
+
+.quant-line-chart .point.sky {
+  fill: #71beff;
+}
+
+.quant-line-chart text,
+.quant-tradeoff-line text {
+  fill: var(--muted);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.quant-line-chart .series-label,
+.quant-tradeoff-line .point-label {
+  fill: var(--text);
+}
+
+.quant-line-axis {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 1;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.quant-line-legend {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quant-line-legend div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.quant-line-legend span {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.quant-line-legend span.gold {
+  background: #ffc66d;
+}
+
+.quant-line-legend span.sky {
+  background: #71beff;
+}
+
+.quant-line-legend strong,
+.quant-line-legend small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quant-line-legend strong {
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.quant-line-legend small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.quant-graph-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.quant-graph-lane {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(144, 197, 255, 0.14);
+  border-radius: 16px;
+  background:
+    linear-gradient(rgba(144, 197, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(144, 197, 255, 0.045) 1px, transparent 1px),
+    rgba(255, 255, 255, 0.025);
+  background-size: 28px 28px;
+}
+
+.quant-graph-lane strong {
+  color: var(--text);
+}
+
+.quant-graph-lane > div {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+}
+
+.quant-graph-node {
+  position: relative;
+  display: grid;
+  width: min(220px, 100%);
+  min-height: 42px;
+  place-items: center;
+  border: 1px solid rgba(144, 197, 255, 0.38);
+  border-radius: 8px;
+  background: rgba(10, 21, 33, 0.88);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.quant-graph-node:not(:last-child)::after {
+  position: absolute;
+  bottom: -15px;
+  left: 50%;
+  width: 2px;
+  height: 14px;
+  transform: translateX(-50%);
+  background: rgba(144, 197, 255, 0.44);
+  content: "";
+}
+
+.quant-graph-lane.after .quant-graph-node {
+  border-color: rgba(116, 227, 197, 0.5);
+  background: rgba(17, 48, 45, 0.72);
+}
+
+.quant-op-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.quant-op-cloud span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 7px 9px;
+  border-radius: 999px;
+  background: rgba(116, 227, 197, 0.12);
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quant-op-cloud span.node {
+  background: rgba(113, 190, 255, 0.12);
+  color: #cfeaff;
+}
+
+.quant-op-cloud span.muted {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+
+.quant-artifact-list {
+  margin-top: 8px;
+}
+
+.quant-tradeoff-caption {
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.quant-tradeoff-caption strong {
+  color: var(--text);
 }
 
 .quant-prompt-row {
@@ -6221,6 +6583,8 @@ button.quant-hf-layer-section-title {
 @media (max-width: 980px) {
   .quant-header,
   .quant-recommendation,
+  .quant-compare-header,
+  .quant-compare-summary,
   .quant-run-status {
     align-items: stretch;
     flex-direction: column;
@@ -6228,12 +6592,21 @@ button.quant-hf-layer-section-title {
 
   .quant-steps,
   .quant-metrics-grid,
+  .quant-compare-metrics,
   .quant-scheme-grid,
   .quant-advanced-grid,
   .quant-diff-grid,
   .quant-deploy-grid,
+  .quant-graph-compare,
   .quant-hf-graph-shell {
     grid-template-columns: 1fr;
+  }
+
+  .quant-compare-controls,
+  .quant-compare-summary-meta,
+  .quant-recommendation-actions {
+    justify-content: flex-start;
+    justify-items: start;
   }
 
   .quant-step {
@@ -6260,6 +6633,15 @@ button.quant-hf-layer-section-title {
   .quant-pareto,
   .quant-table-row {
     grid-template-columns: 1fr;
+  }
+
+  .quant-bar-row {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .quant-bar-row strong {
+    grid-column: 2;
+    text-align: left;
   }
 
   .quant-table-row span {

@@ -281,6 +281,7 @@ interface Window {
         count: number;
         description?: string;
       };
+      dataset?: string;
     }) => Promise<{
       jobId?: string;
       runnerVersion?: number;
@@ -303,6 +304,17 @@ interface Window {
         maxAbsDelta?: number | null;
         comparableOutputs?: number;
         outputCount?: number;
+        dataset?: string;
+        datasetStatus?: 'success' | 'failed' | 'skipped';
+        datasetError?: string;
+        task?: string;
+        map50?: number | null;
+        map5095?: number | null;
+        precision?: number | null;
+        recall?: number | null;
+        keypointMap50?: number | null;
+        keypointMap5095?: number | null;
+        imagesEvaluated?: number | null;
         error?: string;
       };
     }>;
@@ -319,6 +331,9 @@ interface Window {
     }) => Promise<{
       repoId: string;
       requestedFilePath?: string;
+      access?: 'public' | 'gated' | 'private' | 'unknown';
+      gated?: boolean;
+      accessError?: string;
       name: string;
       author?: string;
       pipelineTag?: string;

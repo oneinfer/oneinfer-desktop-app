@@ -1,4 +1,4 @@
-export type SectionKey = 'overview' | 'selfHosting' | 'quantization' | 'instances' | 'apiKeys' | 'routing' | 'bandwidth' | 'settings';
+export type SectionKey = 'overview' | 'selfHosting' | 'quantization' | 'quantizationCompare' | 'instances' | 'apiKeys' | 'routing' | 'bandwidth' | 'settings';
 
 export interface DesktopSession {
   accessToken: string;

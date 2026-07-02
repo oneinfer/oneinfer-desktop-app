@@ -49,6 +49,7 @@ import { AuthPage } from './pages/AuthPage';
 import { BandwidthPage } from './pages/BandwidthPage';
 import { InstancesPage } from './pages/InstancesPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { QuantizationComparePage } from './pages/QuantizationComparePage';
 import { QuantizationPage } from './pages/QuantizationPage';
 import { RoutingPage, type CreateRoutePayload } from './pages/RoutingPage';
 import { SelfHostingPage, type SelfHostFormState } from './pages/SelfHostingPage';
@@ -3119,7 +3120,12 @@ function isSameLocalModelId(left: string, right: string): boolean {
             busy={busy}
             onCreateCloudMachine={handleOpenGpuConsole}
             onInstallLibrary={handleInstallLibrary}
+            onNavigateToCompare={() => setActiveSection('quantizationCompare')}
           />
+        ) : null}
+
+        {activeSection === 'quantizationCompare' ? (
+          <QuantizationComparePage dashboard={visibleDashboard} />
         ) : null}
 
         {activeSection === 'settings' ? (

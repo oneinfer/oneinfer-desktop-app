@@ -5519,6 +5519,10 @@ model_path = sys.argv[1]
 output_path = sys.argv[2]
 bits = sys.argv[3].lower()
 selection = json.loads(sys.argv[4])
+config = json.loads(sys.argv[5]) if len(sys.argv) > 5 else {}
+dataset = str(config.get("dataset") or "").strip()
+repo_id = str(config.get("repoId") or "").strip()
+dataset_root_base = str(config.get("datasetRoot") or os.path.join(os.getcwd(), "datasets")).strip()
 
 if bits != "int8":
     raise RuntimeError(f"{bits.upper()} selective ONNX quantization is not available in the local ONNX Runtime path yet. Choose INT8.")
@@ -5689,6 +5693,17 @@ evaluation = {
     "maxAbsDelta": None,
     "comparableOutputs": 0,
     "outputCount": 0,
+    "dataset": dataset,
+    "datasetStatus": "skipped",
+    "datasetError": "",
+    "task": "",
+    "map50": None,
+    "map5095": None,
+    "precision": None,
+    "recall": None,
+    "keypointMap50": None,
+    "keypointMap5095": None,
+    "imagesEvaluated": None,
     "error": "",
 }
 
@@ -5714,6 +5729,222 @@ try:
 except Exception as exc:
     evaluation["status"] = "failed"
     evaluation["error"] = str(exc)
+
+def first_number(*values):
+    for value in values:
+        try:
+            if value is None:
+                continue
+            number = float(value)
+            if np.isfinite(number):
+                return number
+        except Exception:
+            continue
+    return None
+
+def nested_attr(value, path):
+    current = value
+    for part in path.split("."):
+        try:
+            current = getattr(current, part)
+        except Exception:
+            return None
+    return current
+
+def dict_number(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return None
+    lowered = {str(key).lower(): val for key, val in mapping.items()}
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+        lowered_key = str(key).lower()
+        if lowered_key in lowered:
+            return lowered[lowered_key]
+    return None
+
+def detect_ultralytics_task():
+    lowered = f"{repo_id} {selection_label} {selection_op_type} {dataset}".lower()
+    if "pose" in lowered or "keypoint" in lowered:
+        return "pose"
+    if "segment" in lowered or "mask" in lowered:
+        return "segment"
+    if "classif" in lowered or "imagenet" in lowered:
+        return "classify"
+    return "detect"
+
+COCO80_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+
+def download_file(url, destination):
+    import ssl
+    import urllib.request
+    complete_marker = destination + ".complete"
+    if os.path.exists(destination) and os.path.getsize(destination) > 0 and os.path.exists(complete_marker):
+        return
+    partial_destination = destination + ".part"
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    print(f"Downloading {url} to {destination}", flush=True)
+    if os.path.exists(partial_destination):
+        os.remove(partial_destination)
+    context = None
+    if url.lower().startswith("https://"):
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            context = ssl.create_default_context()
+    with urllib.request.urlopen(url, context=context, timeout=120) as response, open(partial_destination, "wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+    os.replace(partial_destination, destination)
+    with open(complete_marker, "w", encoding="utf-8") as handle:
+        handle.write("ok")
+
+def extract_zip(zip_path, destination):
+    import zipfile
+    marker = os.path.join(destination, ".extracted")
+    if os.path.exists(marker):
+        return
+    os.makedirs(destination, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(destination)
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write("ok")
+
+def has_files(directory, suffix):
+    if not os.path.isdir(directory):
+        return False
+    for _root, _dirs, files in os.walk(directory):
+        if any(file.lower().endswith(suffix) for file in files):
+            return True
+    return False
+
+def copy_val_labels_into_place(dataset_root, extract_root):
+    import shutil
+    target = os.path.join(dataset_root, "labels", "val2017")
+    if has_files(target, ".txt"):
+        return
+    for current_root, dirs, _files in os.walk(extract_root):
+        if os.path.basename(current_root) == "val2017" and os.path.basename(os.path.dirname(current_root)) == "labels":
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copytree(current_root, target, dirs_exist_ok=True)
+            return
+    raise RuntimeError("COCO val2017 labels were not found after extracting label archive.")
+
+def write_coco_val_yaml(dataset_root, task):
+    yaml_path = os.path.join(dataset_root, "oneinfer-coco-val.yaml")
+    names = {0: "person"} if task == "pose" else {index: name for index, name in enumerate(COCO80_NAMES)}
+    lines = [
+        f"path: {dataset_root}",
+        "val: images/val2017",
+        f"names: {names}",
+    ]
+    if task == "pose":
+        lines.extend([
+            "kpt_shape: [17, 3]",
+            "flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]",
+        ])
+    with open(yaml_path, "w", encoding="utf-8") as handle:
+        handle.write("\\n".join(lines) + "\\n")
+    return yaml_path
+
+def prepare_coco_val_dataset(task):
+    dataset_root = os.path.join(dataset_root_base, "coco-pose-val" if task == "pose" else "coco-val")
+    images_root = os.path.join(dataset_root, "images")
+    labels_extract_root = os.path.join(dataset_root, "_labels_extract")
+    labels_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/coco2017labels-pose.zip" if task == "pose" else "https://github.com/ultralytics/assets/releases/download/v0.0.0/coco2017labels.zip"
+    labels_zip = os.path.join(dataset_root, "labels.zip")
+    val_zip = os.path.join(images_root, "val2017.zip")
+
+    download_file(labels_url, labels_zip)
+    extract_zip(labels_zip, labels_extract_root)
+    copy_val_labels_into_place(dataset_root, labels_extract_root)
+
+    download_file("http://images.cocodataset.org/zips/val2017.zip", val_zip)
+    image_extract_marker = os.path.join(images_root, ".extracted")
+    if os.path.exists(image_extract_marker) and not has_files(os.path.join(images_root, "val2017"), ".jpg"):
+        os.remove(image_extract_marker)
+    extract_zip(val_zip, images_root)
+    if not has_files(os.path.join(images_root, "val2017"), ".jpg"):
+        raise RuntimeError(f"COCO val2017 images were not found after extracting {val_zip}. Delete the partial COCO cache and run again.")
+    return write_coco_val_yaml(dataset_root, task)
+
+def run_coco_validation():
+    if "coco" not in dataset.lower():
+        return
+
+    print(f"Running COCO validation for {dataset}...", flush=True)
+    from ultralytics import YOLO
+
+    task = detect_ultralytics_task()
+    data = prepare_coco_val_dataset(task)
+    model = YOLO(output_path, task=task)
+    metrics = model.val(
+        data=data,
+        split="val",
+        imgsz=640,
+        batch=1,
+        device="cpu",
+        plots=False,
+        verbose=False,
+    )
+    results_dict = getattr(metrics, "results_dict", {}) or {}
+    evaluation["datasetStatus"] = "success"
+    evaluation["task"] = task
+
+    box = getattr(metrics, "box", None)
+    pose = getattr(metrics, "pose", None)
+    evaluation["map50"] = first_number(
+        nested_attr(box, "map50"),
+        dict_number(results_dict, "metrics/mAP50(B)", "metrics/mAP50-95(B)", "map50"),
+    )
+    evaluation["map5095"] = first_number(
+        nested_attr(box, "map"),
+        dict_number(results_dict, "metrics/mAP50-95(B)", "map"),
+    )
+    evaluation["precision"] = first_number(
+        nested_attr(box, "mp"),
+        dict_number(results_dict, "metrics/precision(B)", "precision"),
+    )
+    evaluation["recall"] = first_number(
+        nested_attr(box, "mr"),
+        dict_number(results_dict, "metrics/recall(B)", "recall"),
+    )
+    evaluation["keypointMap50"] = first_number(
+        nested_attr(pose, "map50"),
+        dict_number(results_dict, "metrics/mAP50(P)", "keypoint_map50"),
+    )
+    evaluation["keypointMap5095"] = first_number(
+        nested_attr(pose, "map"),
+        dict_number(results_dict, "metrics/mAP50-95(P)", "keypoint_map"),
+    )
+
+    seen = getattr(metrics, "seen", None)
+    if seen is None:
+        try:
+            seen = int(np.sum(getattr(metrics, "nt_per_class", [])))
+        except Exception:
+            seen = None
+    evaluation["imagesEvaluated"] = int(seen) if seen is not None else None
+
+try:
+    run_coco_validation()
+except Exception as exc:
+    evaluation["datasetStatus"] = "failed" if "coco" in dataset.lower() else "skipped"
+    evaluation["datasetError"] = str(exc)
 
 print(json.dumps({
     "outputPath": output_path,
@@ -5850,9 +6081,10 @@ async function runSelectiveOnnxQuantization(payload = {}) {
 
   progress({ stage: 'preparing', message: `Preparing selective ${bits.toUpperCase()} ONNX quantization.`, detail: selection.label || selection.id || parsed.repoId });
 
+  let modelInfo = null;
   let graphFile = String(payload.graphFile || parsed.filePath || '').trim();
   if (!graphFile || !graphFile.toLowerCase().endsWith('.onnx')) {
-    const modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+    modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
     const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
     const onnxFiles = siblings
       .map((item) => String(item.rfilename || '').trim())
@@ -5868,7 +6100,23 @@ async function runSelectiveOnnxQuantization(payload = {}) {
   const outputDirectory = path.join(getQuantizationRunsDirectory(), jobId);
   const outputPath = path.join(outputDirectory, `${path.basename(graphFile, path.extname(graphFile))}-${bits}-${sanitizeCacheSegment(selection.id || selection.label || 'selection')}.onnx`);
   const python = await getQuantizationPythonCommand(progress);
-  await ensurePythonPackages(python, ['onnx', 'onnxruntime'], progress);
+  let dataset = String(payload.dataset || '').trim();
+  const requestedCocoEvaluation = /coco/i.test(dataset);
+  if (requestedCocoEvaluation && !modelInfo) {
+    modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+  }
+  const canRunCocoEvaluation = requestedCocoEvaluation && isCocoCompatibleHuggingFaceModel(modelInfo, parsed.repoId, graphFile);
+  if (requestedCocoEvaluation && !canRunCocoEvaluation) {
+    progress({
+      stage: 'benchmark',
+      message: 'COCO validation skipped.',
+      detail: `${parsed.repoId} does not look like a COCO-compatible vision detector, pose, or segmentation model.`,
+      level: 'warning',
+    });
+    dataset = '';
+  }
+  const needsCocoEvaluation = canRunCocoEvaluation;
+  await ensurePythonPackages(python, needsCocoEvaluation ? ['onnx', 'onnxruntime', 'ultralytics', 'pycocotools', 'certifi'] : ['onnx', 'onnxruntime'], progress);
 
   progress({ stage: 'quantize', message: `Quantizing selected ONNX region as ${bits.toUpperCase()}.`, detail: graphFile });
   const { stdout } = await runCommand(python.command, [
@@ -5880,9 +6128,15 @@ async function runSelectiveOnnxQuantization(payload = {}) {
     outputPath,
     bits,
     JSON.stringify(selection),
+    JSON.stringify({
+      dataset,
+      datasetRoot: path.join(app.getPath('userData'), 'datasets'),
+      repoId: parsed.repoId,
+      graphFile,
+    }),
   ], {
-    timeoutMs: 30 * 60 * 1000,
-    maxOutputBuffer: 2 * 1024 * 1024,
+    timeoutMs: needsCocoEvaluation ? 4 * 60 * 60 * 1000 : 30 * 60 * 1000,
+    maxOutputBuffer: needsCocoEvaluation ? 16 * 1024 * 1024 : 2 * 1024 * 1024,
     onStdout: (text) => progress({ stage: 'quantize', message: 'Running ONNX Runtime quantization...', detail: stripAnsi(text).slice(-500) }),
     onStderr: (text) => progress({ stage: 'quantize', message: 'Running ONNX Runtime quantization...', detail: stripAnsi(text).slice(-500) }),
   });
@@ -5903,6 +6157,21 @@ async function runSelectiveOnnxQuantization(payload = {}) {
       level: 'warning',
     });
   }
+  if (parsedResult.evaluation?.datasetStatus === 'success') {
+    progress({
+      stage: 'benchmark',
+      message: 'COCO validation complete.',
+      detail: formatCocoValidationProgressDetail(parsedResult.evaluation),
+      level: 'success',
+    });
+  } else if (parsedResult.evaluation?.datasetStatus === 'failed') {
+    progress({
+      stage: 'benchmark',
+      message: 'COCO validation failed.',
+      detail: parsedResult.evaluation.datasetError || '',
+      level: 'warning',
+    });
+  }
   const result = {
     jobId,
     runnerVersion: 2,
@@ -5916,6 +6185,44 @@ async function runSelectiveOnnxQuantization(payload = {}) {
   fs.writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf8');
   progress({ stage: 'complete', message: 'Selective ONNX quantization complete.', detail: outputPath, level: 'success' });
   return { ...result, reportPath };
+}
+
+function formatCocoValidationProgressDetail(evaluation = {}) {
+  const parts = [];
+  if (Number.isFinite(evaluation.keypointMap5095)) {
+    parts.push(`keypoint mAP50-95 ${Number(evaluation.keypointMap5095).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.keypointMap50)) {
+    parts.push(`keypoint mAP50 ${Number(evaluation.keypointMap50).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.map5095)) {
+    parts.push(`box mAP50-95 ${Number(evaluation.map5095).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.map50)) {
+    parts.push(`box mAP50 ${Number(evaluation.map50).toFixed(3)}`);
+  }
+  if (Number.isFinite(evaluation.imagesEvaluated)) {
+    parts.push(`${Number(evaluation.imagesEvaluated)} images`);
+  }
+  return parts.join(' · ') || evaluation.dataset || 'COCO validation';
+}
+
+function isCocoCompatibleHuggingFaceModel(modelInfo, repoId = '', graphFile = '') {
+  const tags = Array.isArray(modelInfo?.tags) ? modelInfo.tags.map((tag) => String(tag)) : [];
+  const haystack = [
+    repoId,
+    graphFile,
+    modelInfo?.modelId,
+    modelInfo?.pipeline_tag,
+    modelInfo?.library_name,
+    ...tags,
+  ].join(' ').toLowerCase();
+
+  if (/(sentence|embedding|feature-extraction|text|token|bert|gpt|t5|minilm|clip|audio|speech|whisper)/.test(haystack)) {
+    return false;
+  }
+
+  return /(yolo|object-detection|detection|pose|keypoint|segmentation|image-segmentation|instance-segmentation|semantic-segmentation|detr|sam|resnet|mobilenet)/.test(haystack);
 }
 
 async function runSingleQuantizationEval({ modelPath, scheme, prebuiltQuantizedPath = '', outputDirectory, progress, prompt, benchmarks }) {
@@ -6433,6 +6740,7 @@ async function inspectHuggingFaceModel(payload = {}) {
   }
 
   const modelInfo = await fetchJson(`https://huggingface.co/api/models/${parsed.repoId}`);
+  const gated = Boolean(modelInfo?.gated) && String(modelInfo.gated).toLowerCase() !== 'false';
   const siblings = Array.isArray(modelInfo?.siblings) ? modelInfo.siblings : [];
   const files = siblings
     .map((item) => {
@@ -6478,6 +6786,10 @@ async function inspectHuggingFaceModel(payload = {}) {
     warnings.push('No F16/FP16 GGUF baseline was found. The app will use the strongest available GGUF artifact as the baseline.');
   }
 
+  if (gated) {
+    warnings.unshift(formatHuggingFaceAccessError(parsed.repoId));
+  }
+
   const graphFile = selectHuggingFaceOnnxGraphFile(onnxFiles.map((file) => file.name), parsed.filePath);
   const graph = graphFile
     ? await inspectHuggingFaceOnnxGraph({
@@ -6493,6 +6805,9 @@ async function inspectHuggingFaceModel(payload = {}) {
   return {
     repoId: parsed.repoId,
     requestedFilePath: parsed.filePath || '',
+    access: gated ? 'gated' : 'public',
+    gated,
+    accessError: gated ? formatHuggingFaceAccessError(parsed.repoId) : '',
     name: String(modelInfo?.modelId || parsed.repoId),
     author: String(modelInfo?.author || ''),
     pipelineTag,
@@ -6760,6 +7075,10 @@ function fetchJson(url) {
       });
       response.on('end', () => {
         if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (isHuggingFaceAccessStatus(response.statusCode)) {
+            reject(new Error(formatHuggingFaceAccessError(extractHuggingFaceRepoIdFromUrl(url), response.statusCode)));
+            return;
+          }
           reject(new Error(`Hugging Face API returned HTTP ${response.statusCode}: ${body.slice(0, 300)}`));
           return;
         }
@@ -6794,6 +7113,10 @@ function downloadFile(url, destinationPath, progress, redirects = 0) {
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         response.resume();
+        if (isHuggingFaceAccessStatus(response.statusCode)) {
+          reject(new Error(formatHuggingFaceAccessError(extractHuggingFaceRepoIdFromUrl(url), response.statusCode)));
+          return;
+        }
         reject(new Error(`Hugging Face download returned HTTP ${response.statusCode}.`));
         return;
       }
@@ -6835,6 +7158,34 @@ function downloadFile(url, destinationPath, progress, redirects = 0) {
       request.destroy(new Error('Hugging Face model download timed out.'));
     });
   });
+}
+
+function isHuggingFaceAccessStatus(statusCode) {
+  return Number(statusCode) === 401 || Number(statusCode) === 403;
+}
+
+function formatHuggingFaceAccessError(repoId = '', statusCode = '') {
+  const repoText = repoId ? `${repoId} is` : 'This Hugging Face model is';
+  const statusText = statusCode ? ` Hugging Face returned HTTP ${statusCode}.` : '';
+  return `${repoText} gated or private.${statusText} Accept the model terms on Hugging Face and configure a valid HF_TOKEN/Hugging Face access token, then retry inspection and evaluation.`;
+}
+
+function extractHuggingFaceRepoIdFromUrl(rawUrl = '') {
+  try {
+    const url = new URL(rawUrl);
+    if (!/huggingface\.co$/i.test(url.hostname)) {
+      return '';
+    }
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'api' && parts[1] === 'models') {
+      return parts.slice(2, 4).join('/');
+    }
+
+    return parts.slice(0, 2).join('/');
+  } catch {
+    return '';
+  }
 }
 
 function getHuggingFaceHeaders() {

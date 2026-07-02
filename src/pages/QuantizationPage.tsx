@@ -22,11 +22,13 @@ import {
 } from 'lucide-react';
 
 import { Modal, Panel } from '../components/Common';
+import { saveQuantizationComparisonRun } from '../helpers/quantizationHistory';
 import type { DashboardState, ServingLibrary } from '../types';
 
 type PlaygroundStep = 'configure' | 'evaluate' | 'analyze' | 'deploy';
 type EvalStatus = 'idle' | 'running' | 'complete';
 type ModelSource = 'huggingface' | 'catalog' | 'local';
+type EvaluationModality = 'text' | 'image' | 'video' | 'audio' | 'multimodal' | 'unknown';
 
 interface QuantizationProgress {
   id?: string;
@@ -74,6 +76,9 @@ interface QuantizationTools {
 interface HuggingFaceInspection {
   repoId: string;
   requestedFilePath?: string;
+  access?: 'public' | 'gated' | 'private' | 'unknown';
+  gated?: boolean;
+  accessError?: string;
   name: string;
   author?: string;
   pipelineTag?: string;
@@ -151,6 +156,7 @@ interface SelectiveQuantizationRequest {
   selection: HfGraphSelection;
   repoId?: string;
   graphFile?: string;
+  dataset?: string;
 }
 
 interface SelectiveOnnxQuantizationResult {
@@ -173,6 +179,17 @@ interface SelectiveOnnxQuantizationResult {
     maxAbsDelta?: number | null;
     comparableOutputs?: number;
     outputCount?: number;
+    dataset?: string;
+    datasetStatus?: 'success' | 'failed' | 'skipped';
+    datasetError?: string;
+    task?: string;
+    map50?: number | null;
+    map5095?: number | null;
+    precision?: number | null;
+    recall?: number | null;
+    keypointMap50?: number | null;
+    keypointMap5095?: number | null;
+    imagesEvaluated?: number | null;
     error?: string;
   };
 }
@@ -232,13 +249,41 @@ interface QuantizationForm {
     humaneval: boolean;
     rouge: boolean;
     bertScore: boolean;
+    exactMatch: boolean;
+    map50: boolean;
+    map5095: boolean;
+    precisionRecall: boolean;
+    keypointMap: boolean;
+    miou: boolean;
+    top1Accuracy: boolean;
+    wer: boolean;
+    cer: boolean;
+    audioSnr: boolean;
+    clipScore: boolean;
+    frameMap: boolean;
+    temporalConsistency: boolean;
     latencyMemory: boolean;
     ttft: boolean;
     peakMemory: boolean;
   };
 }
 
-const datasetOptions = [
+type BenchmarkKey = keyof QuantizationForm['benchmarks'];
+
+interface EvaluationProfile {
+  id: EvaluationModality;
+  label: string;
+  description: string;
+  datasetOptions: string[];
+  defaultDataset: string;
+  benchmarks: QuantizationForm['benchmarks'];
+  groups: Array<{
+    title: string;
+    items: Array<[BenchmarkKey, string]>;
+  }>;
+}
+
+const defaultTextDatasetOptions = [
   'wikitext2',
   'c4 small',
   'pile validation',
@@ -250,6 +295,270 @@ const datasetOptions = [
   'summarization prompts',
   'custom eval set',
 ];
+
+const defaultBenchmarkState: QuantizationForm['benchmarks'] = {
+  tokenAccuracy: false,
+  perplexity: false,
+  mmlu: false,
+  hellaswag: false,
+  truthfulqa: false,
+  arcChallenge: false,
+  winogrande: false,
+  gsm8k: false,
+  humaneval: false,
+  rouge: false,
+  bertScore: false,
+  exactMatch: false,
+  map50: false,
+  map5095: false,
+  precisionRecall: false,
+  keypointMap: false,
+  miou: false,
+  top1Accuracy: false,
+  wer: false,
+  cer: false,
+  audioSnr: false,
+  clipScore: false,
+  frameMap: false,
+  temporalConsistency: false,
+  latencyMemory: false,
+  ttft: false,
+  peakMemory: false,
+};
+
+const textBenchmarks: QuantizationForm['benchmarks'] = {
+  ...defaultBenchmarkState,
+  tokenAccuracy: true,
+  perplexity: true,
+  rouge: true,
+  latencyMemory: true,
+  ttft: true,
+  peakMemory: true,
+};
+
+const imageBenchmarks: QuantizationForm['benchmarks'] = {
+  ...defaultBenchmarkState,
+  map50: true,
+  map5095: true,
+  precisionRecall: true,
+  keypointMap: true,
+  miou: true,
+  top1Accuracy: true,
+  latencyMemory: true,
+  peakMemory: true,
+};
+
+const videoBenchmarks: QuantizationForm['benchmarks'] = {
+  ...defaultBenchmarkState,
+  map50: true,
+  map5095: true,
+  frameMap: true,
+  temporalConsistency: true,
+  latencyMemory: true,
+  peakMemory: true,
+};
+
+const audioBenchmarks: QuantizationForm['benchmarks'] = {
+  ...defaultBenchmarkState,
+  wer: true,
+  cer: true,
+  audioSnr: true,
+  latencyMemory: true,
+  peakMemory: true,
+};
+
+const multimodalBenchmarks: QuantizationForm['benchmarks'] = {
+  ...defaultBenchmarkState,
+  clipScore: true,
+  exactMatch: true,
+  rouge: true,
+  latencyMemory: true,
+  peakMemory: true,
+};
+
+const textBenchmarkGroups: EvaluationProfile['groups'] = [
+  {
+    title: 'Core quality',
+    items: [
+      ['tokenAccuracy', 'Token accuracy'],
+      ['perplexity', 'Perplexity'],
+    ],
+  },
+  {
+    title: 'Task benchmarks',
+    items: [
+      ['mmlu', 'MMLU'],
+      ['hellaswag', 'HellaSwag'],
+      ['truthfulqa', 'TruthfulQA'],
+      ['arcChallenge', 'ARC-Challenge'],
+      ['winogrande', 'WinoGrande'],
+      ['gsm8k', 'GSM8K'],
+      ['humaneval', 'HumanEval'],
+    ],
+  },
+  {
+    title: 'Generation quality',
+    items: [
+      ['rouge', 'ROUGE-style prompt similarity'],
+      ['bertScore', 'BERTScore'],
+      ['exactMatch', 'Exact match'],
+    ],
+  },
+  {
+    title: 'Edge performance',
+    items: [
+      ['latencyMemory', 'Tokens/sec'],
+      ['ttft', 'TTFT'],
+      ['peakMemory', 'Peak memory'],
+    ],
+  },
+];
+
+const imageBenchmarkGroups: EvaluationProfile['groups'] = [
+  {
+    title: 'Core quality',
+    items: [
+      ['map50', 'mAP@50'],
+      ['map5095', 'mAP@50-95'],
+      ['precisionRecall', 'Precision / recall'],
+    ],
+  },
+  {
+    title: 'Vision task metrics',
+    items: [
+      ['keypointMap', 'Keypoint mAP / OKS'],
+      ['miou', 'Mask mIoU'],
+      ['top1Accuracy', 'Top-1 accuracy'],
+    ],
+  },
+  {
+    title: 'Edge performance',
+    items: [
+      ['latencyMemory', 'Images/sec'],
+      ['peakMemory', 'Peak memory'],
+    ],
+  },
+];
+
+const videoBenchmarkGroups: EvaluationProfile['groups'] = [
+  {
+    title: 'Core quality',
+    items: [
+      ['map50', 'mAP@50'],
+      ['map5095', 'mAP@50-95'],
+      ['frameMap', 'Frame-level mAP'],
+      ['temporalConsistency', 'Temporal consistency'],
+    ],
+  },
+  {
+    title: 'Edge performance',
+    items: [
+      ['latencyMemory', 'Frames/sec'],
+      ['peakMemory', 'Peak memory'],
+    ],
+  },
+];
+
+const audioBenchmarkGroups: EvaluationProfile['groups'] = [
+  {
+    title: 'Core quality',
+    items: [
+      ['wer', 'Word error rate'],
+      ['cer', 'Character error rate'],
+      ['audioSnr', 'Signal/noise delta'],
+    ],
+  },
+  {
+    title: 'Edge performance',
+    items: [
+      ['latencyMemory', 'Audio/sec'],
+      ['peakMemory', 'Peak memory'],
+    ],
+  },
+];
+
+const multimodalBenchmarkGroups: EvaluationProfile['groups'] = [
+  {
+    title: 'Core quality',
+    items: [
+      ['clipScore', 'CLIPScore'],
+      ['exactMatch', 'Exact match'],
+      ['rouge', 'Text similarity'],
+    ],
+  },
+  {
+    title: 'Edge performance',
+    items: [
+      ['latencyMemory', 'Samples/sec'],
+      ['peakMemory', 'Peak memory'],
+    ],
+  },
+];
+
+const evaluationProfiles: Record<EvaluationModality, EvaluationProfile> = {
+  text: {
+    id: 'text',
+    label: 'Text / language model',
+    description: 'Text datasets and language-model metrics are available for GGUF/llama.cpp evaluation.',
+    datasetOptions: defaultTextDatasetOptions,
+    defaultDataset: 'wikitext2',
+    benchmarks: textBenchmarks,
+    groups: textBenchmarkGroups,
+  },
+  image: {
+    id: 'image',
+    label: 'Image / vision model',
+    description: 'Use image datasets with labels or annotations for real accuracy. COCO val2017 full downloads the official validation images before reporting dataset metrics.',
+    datasetOptions: ['ONNX smoke test only', 'COCO val2017 full', 'COCO keypoints val2017 full', 'ImageNet validation', 'VOC validation', 'custom image dataset'],
+    defaultDataset: 'ONNX smoke test only',
+    benchmarks: imageBenchmarks,
+    groups: imageBenchmarkGroups,
+  },
+  video: {
+    id: 'video',
+    label: 'Video model',
+    description: 'Use video/frame datasets for real video quality. Current local ONNX path only smoke-tests model execution.',
+    datasetOptions: ['Kinetics validation', 'ActivityNet validation', 'COCO frame sample', 'custom video dataset'],
+    defaultDataset: 'Kinetics validation',
+    benchmarks: videoBenchmarks,
+    groups: videoBenchmarkGroups,
+  },
+  audio: {
+    id: 'audio',
+    label: 'Audio / speech model',
+    description: 'Use labeled audio clips for quality metrics such as WER/CER. Current local ONNX path only smoke-tests model execution.',
+    datasetOptions: ['LibriSpeech test-clean', 'Common Voice validation', 'AudioSet eval', 'custom audio dataset'],
+    defaultDataset: 'LibriSpeech test-clean',
+    benchmarks: audioBenchmarks,
+    groups: audioBenchmarkGroups,
+  },
+  multimodal: {
+    id: 'multimodal',
+    label: 'Multimodal model',
+    description: 'Use paired image/text, audio/text, or video/text datasets that match the model inputs.',
+    datasetOptions: ['COCO captions validation', 'VQAv2 validation', 'Flickr30k validation', 'custom multimodal dataset'],
+    defaultDataset: 'COCO captions validation',
+    benchmarks: multimodalBenchmarks,
+    groups: multimodalBenchmarkGroups,
+  },
+  unknown: {
+    id: 'unknown',
+    label: 'Unknown model type',
+    description: 'Model type is not clear yet. Choose a dataset that matches the model inputs once inspection completes.',
+    datasetOptions: ['custom eval set'],
+    defaultDataset: 'custom eval set',
+    benchmarks: { ...defaultBenchmarkState, latencyMemory: true, peakMemory: true },
+    groups: [
+      {
+        title: 'Edge performance',
+        items: [
+          ['latencyMemory', 'Samples/sec'],
+          ['peakMemory', 'Peak memory'],
+        ],
+      },
+    ],
+  },
+};
 const schemeOptions = [
   'Q2_K',
   'Q3_K_S',
@@ -284,63 +593,8 @@ const defaultForm: QuantizationForm = {
   maxPerplexityDelta: 3,
   minTokenAgreement: 94,
   minTokensPerSecond: 30,
-  benchmarks: {
-    tokenAccuracy: true,
-    perplexity: true,
-    mmlu: false,
-    hellaswag: false,
-    truthfulqa: false,
-    arcChallenge: false,
-    winogrande: false,
-    gsm8k: false,
-    humaneval: false,
-    rouge: true,
-    bertScore: false,
-    latencyMemory: true,
-    ttft: true,
-    peakMemory: true,
-  },
+  benchmarks: textBenchmarks,
 };
-
-const benchmarkGroups: Array<{
-  title: string;
-  items: Array<[keyof QuantizationForm['benchmarks'], string]>;
-}> = [
-  {
-    title: 'Core quality',
-    items: [
-      ['tokenAccuracy', 'Token accuracy'],
-      ['perplexity', 'Perplexity'],
-    ],
-  },
-  {
-    title: 'Task benchmarks',
-    items: [
-      ['mmlu', 'MMLU'],
-      ['hellaswag', 'HellaSwag'],
-      ['truthfulqa', 'TruthfulQA'],
-      ['arcChallenge', 'ARC-Challenge'],
-      ['winogrande', 'WinoGrande'],
-      ['gsm8k', 'GSM8K'],
-      ['humaneval', 'HumanEval'],
-    ],
-  },
-  {
-    title: 'Generation quality',
-    items: [
-      ['rouge', 'ROUGE-style prompt similarity'],
-      ['bertScore', 'BERTScore'],
-    ],
-  },
-  {
-    title: 'Edge performance',
-    items: [
-      ['latencyMemory', 'Tokens/sec'],
-      ['ttft', 'TTFT'],
-      ['peakMemory', 'Peak memory'],
-    ],
-  },
-];
 
 const baseRunStages = [
   { key: 'quantize', title: 'Quantize model', detail: 'Create selected quantized artifact or batch of schemes' },
@@ -352,7 +606,7 @@ const baseRunStages = [
 
 const onnxRunStages = [
   { key: 'preparing', title: 'Prepare ONNX graph', detail: 'Resolve the selected Hugging Face ONNX artifact and graph region' },
-  { key: 'quantize', title: 'Quantize selected part', detail: 'Rebuild the full ONNX model with only the selected region quantized' },
+  { key: 'quantize', title: 'Quantize ONNX model', detail: 'Rebuild the full ONNX model with the requested graph region quantized' },
   { key: 'benchmark', title: 'Run full model', detail: 'Run baseline and rebuilt ONNX models end-to-end with ONNX Runtime' },
   { key: 'complete', title: 'Collect results', detail: 'Compare latency, size, and output deltas for the rebuilt model' },
 ];
@@ -400,6 +654,7 @@ export function QuantizationPage(props: {
   busy?: string | null;
   onCreateCloudMachine?: () => void;
   onInstallLibrary?: (library: ServingLibrary) => Promise<void>;
+  onNavigateToCompare?: () => void;
 }) {
   const [form, setForm] = useState(defaultForm);
   const [step, setStep] = useState<PlaygroundStep>('configure');
@@ -419,6 +674,7 @@ export function QuantizationPage(props: {
   const [hfInspectionStatus, setHfInspectionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [hfInspectionError, setHfInspectionError] = useState<string | null>(null);
   const [hfGraphGranularity, setHfGraphGranularity] = useState<'block' | 'node'>('block');
+  const appliedEvaluationProfile = useRef<EvaluationModality>('text');
 
   const runStages = useMemo(() => runMode === 'onnx' ? onnxRunStages : getRunStages(form), [form, runMode]);
   const runStepIndex = status === 'complete' ? runStages.length : Math.min(runStages.length - 1, Math.floor(progress / Math.max(1, 100 / runStages.length)));
@@ -457,20 +713,35 @@ export function QuantizationPage(props: {
   const targetNeedsInstance = Boolean(selectedTarget.requiresInstance);
   const catalogModels = useMemo(() => getCatalogModelOptions(props.dashboard.models), [props.dashboard.models]);
   const selectedModelName = getSelectedModelName(form);
+  const evaluationProfile = useMemo(
+    () => getEvaluationProfile(form, hfInspection),
+    [form.modelSource, form.model, form.hfRepo, form.localPath, hfInspection],
+  );
   const hfHasGgufArtifact = Boolean(hfInspection && (hfInspection.fileSummary.gguf > 0 || hfInspection.formats.includes('GGUF')));
   const hfIsOnnxWithoutGguf = Boolean(hfInspection && !hfHasGgufArtifact && (hfInspection.fileSummary.onnx > 0 || hfInspection.formats.includes('ONNX')));
+  const hfAccessBlocked = form.modelSource === 'huggingface'
+    && (Boolean(hfInspection?.gated) || (hfInspectionStatus === 'error' && isHuggingFaceAccessError(hfInspectionError)));
   const hfLocalGgufBlockReason = hfIsOnnxWithoutGguf
-    ? 'This Hugging Face repo contains ONNX graph artifacts, not GGUF language-model artifacts. Use the graph selection flow for ONNX selective quantization; Run quick eval is only for GGUF/llama.cpp models.'
+    ? 'This Hugging Face repo contains ONNX graph artifacts, not GGUF language-model artifacts. Use Run full eval for whole-model ONNX evaluation, or select a graph block for selective quantization.'
     : hfInspection?.warnings[0] || 'This Hugging Face repo is not supported by the local GGUF quantization runner.';
   const hfUnsupportedForLocal = form.modelSource === 'huggingface'
     && selectedTarget.value === 'local'
     && Boolean(hfInspection)
     && (hfInspection?.localQuantizationStatus === 'unsupported' || hfIsOnnxWithoutGguf);
-  const canRunEval = selectedTarget.value === 'local'
+  const canRunGgufEval = selectedTarget.value === 'local'
+    && !hfAccessBlocked
     && !hfUnsupportedForLocal
     && (form.modelSource === 'huggingface' ? !hfIsOnnxWithoutGguf : true)
     && (form.modelSource === 'local' ? /\.gguf$/i.test(form.localPath) : true)
     && selectedModelName.trim().length > 0;
+  const canRunOnnxEval = selectedTarget.value === 'local'
+    && !hfAccessBlocked
+    && form.modelSource === 'huggingface'
+    && hfIsOnnxWithoutGguf
+    && Boolean(hfInspection?.fileSummary.onnx || hfInspection?.formats.includes('ONNX'))
+    && selectedModelName.trim().length > 0;
+  const canRunEval = canRunGgufEval || canRunOnnxEval;
+  const quickEvalLabel = canRunOnnxEval ? 'Run full eval' : 'Run quick eval';
   const needsLocalGguf = form.modelSource === 'catalog' && selectedTarget.value === 'local';
   const localQuantizationTarget = selectedTarget.value === 'local';
   const quantizeInstalled = Boolean(tools?.quantize);
@@ -511,6 +782,25 @@ export function QuantizationPage(props: {
       .then(setTools)
       .catch(() => setTools(null));
   }, [props.busy]);
+
+  useEffect(() => {
+    if (appliedEvaluationProfile.current === evaluationProfile.id) {
+      return;
+    }
+
+    appliedEvaluationProfile.current = evaluationProfile.id;
+    setForm((current) => ({
+      ...current,
+      dataset: evaluationProfile.datasetOptions.includes(current.dataset) ? current.dataset : evaluationProfile.defaultDataset,
+      benchmarks: evaluationProfile.benchmarks,
+    }));
+  }, [evaluationProfile]);
+
+  useEffect(() => {
+    if (step === 'evaluate' && status === 'complete' && (evalResult || selectiveOnnxRun)) {
+      setStep('analyze');
+    }
+  }, [evalResult, selectiveOnnxRun, status, step]);
 
   useEffect(() => {
     if (form.modelSource !== 'huggingface') {
@@ -554,7 +844,7 @@ export function QuantizationPage(props: {
           }
           setHfInspection(null);
           setHfInspectionStatus('error');
-          setHfInspectionError(error instanceof Error ? error.message : 'Unable to inspect Hugging Face model.');
+          setHfInspectionError(formatHuggingFaceInspectionError(error, repo));
         });
     }, 500);
 
@@ -571,8 +861,11 @@ export function QuantizationPage(props: {
   async function runEvaluation(selectiveQuantization?: SelectiveQuantizationRequest) {
     const canRunRequestedEval = selectiveQuantization
       ? !targetNeedsInstance && selectedModelName.trim().length > 0
-      : canRunEval;
+      : canRunGgufEval;
     if (!canRunRequestedEval) {
+      if (!selectiveQuantization && hfAccessBlocked) {
+        setEvalError(hfInspectionError);
+      }
       if (!selectiveQuantization && hfUnsupportedForLocal) {
         setEvalError(hfLocalGgufBlockReason);
       }
@@ -614,16 +907,52 @@ export function QuantizationPage(props: {
         selectiveQuantization,
       }) as QuantizationResult;
       setEvalResult(result);
+      saveQuantizationComparisonRun({
+        id: result.jobId || `gguf-${Date.now()}`,
+        kind: 'gguf',
+        createdAt: new Date().toISOString(),
+        modelName: selectedModelName || form.hfRepo || form.model || 'Selected model',
+        targetLabel: selectedTarget.label,
+        dataset: form.dataset,
+        scheme: selectedBitOption?.scheme || form.scheme,
+        result,
+      });
       setStatus('complete');
       setProgress(100);
       setStep('analyze');
     } catch (error) {
       setStatus('idle');
-      setEvalError(error instanceof Error ? error.message : 'Quantization evaluation failed.');
+      setEvalError(formatQuantizationEvaluationError(error, form.hfRepo));
     }
   }
 
+  async function runQuickEvaluation() {
+    if (hfAccessBlocked) {
+      setEvalError(hfInspectionError);
+      return;
+    }
+
+    if (canRunOnnxEval && hfInspection) {
+      await runSelectiveOnnxQuantization({
+        bits: 'int8',
+        repoId: form.hfRepo,
+        graphFile: hfInspection.graph?.file,
+        dataset: form.dataset,
+        selection: createFullOnnxGraphSelection(hfInspection),
+      }).catch(() => undefined);
+      return;
+    }
+
+    await runEvaluation();
+  }
+
   async function runSelectiveOnnxQuantization(request: SelectiveQuantizationRequest) {
+    if (hfAccessBlocked) {
+      const message = hfInspectionError || formatGatedHuggingFaceMessage(request.repoId || form.hfRepo);
+      setEvalError(message);
+      throw new Error(message);
+    }
+
     if (!window.desktopBridge?.runSelectiveOnnxQuantization) {
       throw new Error('Selective ONNX quantization is not available in this app build. Restart Electron after updating the app.');
     }
@@ -643,9 +972,21 @@ export function QuantizationPage(props: {
         repoId: request.repoId || form.hfRepo,
         graphFile: request.graphFile,
         bits: request.bits,
+        dataset: form.dataset,
         selection: request.selection,
       }) as SelectiveOnnxQuantizationResult;
       setSelectiveOnnxRun({ request, result });
+      saveQuantizationComparisonRun({
+        id: `onnx-${Date.now()}`,
+        kind: 'onnx',
+        createdAt: new Date().toISOString(),
+        modelName: selectedModelName || request.repoId || form.hfRepo || 'Selected ONNX model',
+        targetLabel: selectedTarget.label,
+        dataset: result.evaluation?.dataset || request.dataset || form.dataset,
+        scheme: request.bits.toUpperCase(),
+        request,
+        result,
+      });
       setStatus('complete');
       setProgress(100);
       setStep('analyze');
@@ -698,9 +1039,9 @@ export function QuantizationPage(props: {
           <h2>Quantization Playground</h2>
           <p>Measure quality loss, token agreement, size, speed, and deployment readiness before shipping a model to edge hardware.</p>
         </div>
-        <button className="primary-button" type="button" onClick={() => runEvaluation()} disabled={!canRunEval}>
+        <button className="primary-button" type="button" onClick={() => runQuickEvaluation()} disabled={!canRunEval || status === 'running'}>
           <Play size={16} />
-          Run quick eval
+          {quickEvalLabel}
         </button>
       </div>
 
@@ -729,7 +1070,7 @@ export function QuantizationPage(props: {
             <div className="banner info" style={{ marginBottom: '18px', gap: '10px', padding: '12px 16px', borderRadius: '12px' }}>
               <Info size={16} style={{ flexShrink: 0, color: '#71beff' }} />
               <span>
-                <strong>ONNX model detected:</strong> Whole-model <em>Run quick eval</em> is only available for GGUF language models. To quantize and evaluate this ONNX model, select <strong>ONNX graph</strong> (for the entire model) or a specific block in the interactive view below, then click <strong>Quantize selected part</strong> in the sidebar.
+                <strong>ONNX model detected:</strong> Click <em>Run full eval</em> to quantize supported ONNX ops across the full graph and run the rebuilt model end-to-end, or select a specific block below for selective quantization.
               </span>
             </div>
           ) : null}
@@ -822,11 +1163,6 @@ export function QuantizationPage(props: {
                     <span>Local Hugging Face quantization works when the repo contains a GGUF artifact. Transformers/safetensors repos still need conversion to GGUF before local quantization can run.</span>
                   </div>
                 ) : null}
-                {hfUnsupportedForLocal ? (
-                  <div className="quant-target-warning">
-                    <span>{hfLocalGgufBlockReason}</span>
-                  </div>
-                ) : null}
                 {localQuantizationTarget && !quantizeInstalled ? (
                   <div className="quant-install-card">
                     <div>
@@ -865,14 +1201,20 @@ export function QuantizationPage(props: {
 
             <Panel title="Evaluation" icon={Gauge} description="Keep calibration and evaluation data separate so results stay honest.">
               <div className="stack-form">
+                <div className="banner info" style={{ gap: '10px', padding: '12px 14px', borderRadius: '12px' }}>
+                  <Info size={16} style={{ flexShrink: 0, color: '#71beff' }} />
+                  <span>
+                    <strong>{evaluationProfile.label}:</strong> {evaluationProfile.description}
+                  </span>
+                </div>
                 <label>
                   <span>Evaluation dataset</span>
                   <select value={form.dataset} onChange={(event) => updateForm({ dataset: event.target.value })}>
-                    {datasetOptions.map((option) => <option key={option}>{option}</option>)}
+                    {evaluationProfile.datasetOptions.map((option) => <option key={option}>{option}</option>)}
                   </select>
                 </label>
                 <div className="quant-toggle-list">
-                  {benchmarkGroups.map((group) => (
+                  {evaluationProfile.groups.map((group) => (
                     <div className="quant-check-group" key={group.title}>
                       <strong>{group.title}</strong>
                       <div>
@@ -970,6 +1312,12 @@ export function QuantizationPage(props: {
               ))}
             </div>
           ) : null}
+          {status === 'complete' && (evalResult || selectiveOnnxRun) ? (
+            <div className="quant-result-ready">
+              <strong>Results are ready.</strong>
+              <span>Opening the analysis view with measured size, quality, and speed values.</span>
+            </div>
+          ) : null}
           <div className="action-row" style={{ marginTop: '18px' }}>
             <button className="secondary-button" type="button" onClick={() => setStep('configure')}>Back</button>
             <button className="primary-button" type="button" onClick={completeEvaluation} disabled={!evalResult && !selectiveOnnxRun}>
@@ -987,6 +1335,7 @@ export function QuantizationPage(props: {
             run={selectiveOnnxRun}
             targetLabel={selectedTarget.label}
             onNavigateToDeploy={() => setStep('deploy')}
+            onNavigateToCompare={props.onNavigateToCompare}
           />
         ) : (
         <>
@@ -1125,10 +1474,14 @@ function SelectiveOnnxAnalyze(props: {
   run: SelectiveOnnxRun;
   targetLabel: string;
   onNavigateToDeploy: () => void;
+  onNavigateToCompare?: () => void;
 }) {
   const { request, result } = props.run;
   const evaluation = result.evaluation;
   const latencyDelta = evaluation?.latencyDeltaPercent ?? null;
+  const requestedDataset = evaluation?.dataset || request.dataset || '';
+  const datasetRequested = Boolean(requestedDataset && /coco/i.test(requestedDataset));
+  const datasetReady = !datasetRequested || evaluation?.datasetStatus === 'success';
   const sizeReduction = getSizeReductionPercent(result.baselineSizeBytes, result.quantizedSizeBytes);
   const quantizedScope = result.nodesQuantized?.length
     ? `${result.nodesQuantized.length} ONNX node${result.nodesQuantized.length === 1 ? '' : 's'}`
@@ -1136,16 +1489,62 @@ function SelectiveOnnxAnalyze(props: {
       ? `${result.opTypesQuantized.join(', ')} op${result.opTypesQuantized.length === 1 ? '' : 's'}`
       : request.selection.label;
   const selectedQuantizedScope = `${request.selection.label} (${quantizedScope})`;
-  const evaluationReady = result.runnerVersion === 2 && evaluation?.status === 'success';
+  const evaluationReady = result.runnerVersion === 2 && evaluation?.status === 'success' && datasetReady;
   const evaluationMessage = result.runnerVersion !== 2
     ? 'This artifact was created by an older Electron handler. Restart Electron and run the selection again to get full-model evaluation.'
     : evaluation?.status === 'failed'
       ? `Artifact created, but full-model evaluation failed: ${evaluation.error || 'unknown error'}`
+      : datasetRequested && evaluation?.datasetStatus === 'failed'
+        ? `Artifact created, but COCO validation failed: ${evaluation.datasetError || 'unknown error'}`
+        : datasetRequested && evaluation?.datasetStatus !== 'success'
+          ? `${requestedDataset} was selected, but dataset validation did not run. Restart Electron so the updated backend can return real COCO metrics.`
+        : datasetRequested && evaluation?.datasetStatus === 'success'
+          ? `The rebuilt ONNX model ran end-to-end and was evaluated on ${requestedDataset}.`
       : evaluationReady
         ? 'The rebuilt ONNX model ran end-to-end and was compared with the baseline model.'
         : 'Artifact created, but full-model evaluation did not report metrics.';
 
-  const metrics = [
+  const qualityMetrics = getOnnxQualityMetrics(evaluation);
+  const metrics = datasetRequested && qualityMetrics.length === 0 ? [
+    {
+      label: 'Full model size',
+      value: formatBytes(result.quantizedSizeBytes) || 'Not measured',
+      delta: sizeReduction === null ? 'baseline unavailable' : `${sizeReduction.toFixed(1)}% smaller`,
+      tone: 'sky',
+    },
+    {
+      label: 'Latency',
+      value: formatMilliseconds(evaluation?.quantizedLatencyMs),
+      delta: latencyDelta === null || latencyDelta === undefined ? 'not measured' : `${formatSignedPercent(latencyDelta)} vs baseline`,
+      tone: latencyDelta !== null && latencyDelta !== undefined && latencyDelta <= 0 ? 'sea' : 'gold',
+    },
+    {
+      label: 'COCO status',
+      value: evaluation?.datasetStatus || 'Not run',
+      delta: requestedDataset,
+      tone: evaluation?.datasetStatus === 'failed' ? 'rose' : 'gold',
+    },
+    {
+      label: 'Images evaluated',
+      value: formatOptionalInteger(evaluation?.imagesEvaluated),
+      delta: 'real dataset metric pending',
+      tone: 'gold',
+    },
+  ] : qualityMetrics.length > 0 ? [
+    {
+      label: 'Full model size',
+      value: formatBytes(result.quantizedSizeBytes) || 'Not measured',
+      delta: sizeReduction === null ? 'baseline unavailable' : `${sizeReduction.toFixed(1)}% smaller`,
+      tone: 'sky',
+    },
+    {
+      label: 'Latency',
+      value: formatMilliseconds(evaluation?.quantizedLatencyMs),
+      delta: latencyDelta === null || latencyDelta === undefined ? 'not measured' : `${formatSignedPercent(latencyDelta)} vs baseline`,
+      tone: latencyDelta !== null && latencyDelta !== undefined && latencyDelta <= 0 ? 'sea' : 'gold',
+    },
+    ...qualityMetrics,
+  ] : [
     {
       label: 'Full model size',
       value: formatBytes(result.quantizedSizeBytes) || 'Not measured',
@@ -1180,10 +1579,18 @@ function SelectiveOnnxAnalyze(props: {
           <h3>{request.bits.toUpperCase()} full model with {request.selection.label} quantized</h3>
           <p>{evaluationMessage}</p>
         </div>
-        <button className="primary-button" type="button" onClick={props.onNavigateToDeploy} disabled={!evaluationReady}>
-          <Rocket size={16} />
-          Prepare deploy
-        </button>
+        <div className="quant-recommendation-actions">
+          {props.onNavigateToCompare ? (
+            <button className="secondary-button" type="button" onClick={props.onNavigateToCompare}>
+              <BarChart3 size={16} />
+              Compare
+            </button>
+          ) : null}
+          <button className="primary-button" type="button" onClick={props.onNavigateToDeploy} disabled={!evaluationReady}>
+            <Rocket size={16} />
+            Prepare deploy
+          </button>
+        </div>
       </div>
 
       <div className="quant-metrics-grid">
@@ -1215,6 +1622,28 @@ function SelectiveOnnxAnalyze(props: {
               <span>Outputs compared</span>
               <strong>{evaluation?.comparableOutputs ?? 0} / {evaluation?.outputCount ?? 0}</strong>
             </div>
+            {datasetRequested ? (
+              <>
+                <div className="data-row">
+                  <span>Evaluation dataset</span>
+                  <strong>{requestedDataset || 'COCO'}</strong>
+                </div>
+                <div className="data-row">
+                  <span>Dataset status</span>
+                  <strong>{evaluation?.datasetStatus || 'not run'}</strong>
+                </div>
+                <div className="data-row">
+                  <span>Images evaluated</span>
+                  <strong>{formatOptionalInteger(evaluation?.imagesEvaluated)}</strong>
+                </div>
+                {evaluation?.datasetError ? (
+                  <div className="data-row">
+                    <span>Dataset error</span>
+                    <strong title={evaluation.datasetError}>{truncateMiddle(evaluation.datasetError, 52)}</strong>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </div>
         </Panel>
 
@@ -1316,9 +1745,18 @@ function HuggingFacePreview(props: {
   }
 
   const graph = getHfViewerGraph(inspection);
+  const accessWarning = inspection.gated
+    ? formatGatedHuggingFaceMessage(inspection.repoId)
+    : inspection.accessError || '';
 
   return (
     <>
+      {accessWarning ? (
+        <div className="quant-hf-status-row warning">
+          <AlertTriangle size={15} />
+          <span>{accessWarning}</span>
+        </div>
+      ) : null}
       <HfInteractiveGraph
         graph={graph}
         granularity={props.graphGranularity}
@@ -2368,6 +2806,67 @@ function isStepComplete(current: PlaygroundStep, candidate: PlaygroundStep) {
   return order.indexOf(candidate) < order.indexOf(current);
 }
 
+function getEvaluationProfile(form: QuantizationForm, inspection: HuggingFaceInspection | null): EvaluationProfile {
+  return evaluationProfiles[getEvaluationModality(form, inspection)];
+}
+
+function getEvaluationModality(form: QuantizationForm, inspection: HuggingFaceInspection | null): EvaluationModality {
+  if (inspection) {
+    const haystack = [
+      inspection.pipelineTag,
+      inspection.libraryName,
+      inspection.name,
+      inspection.repoId,
+      ...inspection.tags,
+      ...inspection.formats,
+    ].join(' ').toLowerCase();
+
+    if (/(video|action-recognition|video-classification|text-to-video|image-to-video)/.test(haystack)) {
+      return 'video';
+    }
+
+    if (/(audio|speech|automatic-speech-recognition|asr|text-to-speech|audio-classification|voice|wav2vec|whisper)/.test(haystack)) {
+      return 'audio';
+    }
+
+    if (/(vision-language|visual-question-answering|vqa|image-to-text|text-to-image|image-text|multimodal|clip)/.test(haystack)) {
+      return 'multimodal';
+    }
+
+    if (/(text|token|llm|language|text-generation|text2text-generation|conversational|question-answering|summarization|translation|fill-mask|feature-extraction|sentence-similarity|embedding|bert|gpt|t5|minilm|gguf|safetensors)/.test(haystack)) {
+      return 'text';
+    }
+
+    if (/(image|vision|object-detection|image-classification|image-segmentation|semantic-segmentation|instance-segmentation|depth-estimation|pose|keypoint|yolo|detr|sam|segmentation|resnet|mobilenet)/.test(haystack)) {
+      return 'image';
+    }
+  }
+
+  if (form.modelSource === 'local') {
+    if (/\.(onnx|tflite)$/i.test(form.localPath)) {
+      return 'unknown';
+    }
+    if (/\.(gguf|safetensors|bin)$/i.test(form.localPath)) {
+      return 'text';
+    }
+  }
+
+  return 'text';
+}
+
+function createFullOnnxGraphSelection(inspection: HuggingFaceInspection): HfGraphSelection {
+  const graph = getHfViewerGraph(inspection);
+  const graphBlock = graph.blockGraph?.blocks.find((block) => block.id === 'graph');
+  return {
+    id: 'graph',
+    label: graphBlock?.label || 'ONNX graph',
+    kind: 'section',
+    opType: graphBlock?.opTypes.join(', ') || 'full model',
+    count: graph.nodeCount || graphBlock?.count || 1,
+    description: 'Quantize all supported ONNX operators across the full model graph.',
+  };
+}
+
 function getSelectedModelName(form: QuantizationForm) {
   if (form.modelSource === 'huggingface') {
     return form.hfRepo.trim();
@@ -2713,11 +3212,81 @@ function getPrimaryRun(result: QuantizationResult) {
 
 function formatSelectiveOnnxQuantizationError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || '');
+  if (isHuggingFaceAccessError(message)) {
+    return formatGatedHuggingFaceMessage();
+  }
+
   if (/No handler registered for 'app:run-selective-onnx-quantization(?:-v2)?'/i.test(message)) {
     return 'Selective ONNX full-model evaluation is installed in the renderer, but the Electron main process is still running the previous build. Quit and restart the Electron app so the v2 quantization handler is registered.';
   }
 
   return message || 'Selective ONNX quantization failed.';
+}
+
+function formatQuantizationEvaluationError(error: unknown, repoId?: string) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (isHuggingFaceAccessError(message)) {
+    return formatGatedHuggingFaceMessage(repoId);
+  }
+
+  return message || 'Quantization evaluation failed.';
+}
+
+function formatHuggingFaceInspectionError(error: unknown, repoId?: string) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (isHuggingFaceAccessError(message)) {
+    return formatGatedHuggingFaceMessage(repoId);
+  }
+
+  return message || 'Unable to inspect Hugging Face model.';
+}
+
+function isHuggingFaceAccessError(error?: unknown) {
+  const message = String(error || '').toLowerCase();
+  return /http\s*(401|403)|unauthorized|forbidden|gated|private|restricted|access.+denied|repository.+not.+found/.test(message)
+    && /hugging face|huggingface|hf_|repo|repository|model|token|access/.test(message);
+}
+
+function formatGatedHuggingFaceMessage(repoId?: string) {
+  const repoText = repoId ? `${repoId} is` : 'This Hugging Face model is';
+  return `${repoText} gated or private. Accept the model terms on Hugging Face and configure a valid HF_TOKEN/Hugging Face access token, then retry inspection and evaluation.`;
+}
+
+function getOnnxQualityMetrics(evaluation?: SelectiveOnnxQuantizationResult['evaluation']) {
+  if (!evaluation || evaluation.datasetStatus !== 'success') {
+    return [];
+  }
+
+  const metrics: Array<{ label: string; value: string; delta: string; tone: string }> = [];
+  const hasKeypointMetric = isFiniteNumber(evaluation.keypointMap5095) || isFiniteNumber(evaluation.keypointMap50);
+  if (hasKeypointMetric) {
+    metrics.push({
+      label: 'Keypoint mAP',
+      value: formatRatioPercent(evaluation.keypointMap5095),
+      delta: `mAP@50 ${formatRatioPercent(evaluation.keypointMap50)}`,
+      tone: 'sea',
+    });
+  }
+
+  if (isFiniteNumber(evaluation.map5095) || isFiniteNumber(evaluation.map50)) {
+    metrics.push({
+      label: hasKeypointMetric ? 'Box mAP' : 'mAP',
+      value: formatRatioPercent(evaluation.map5095),
+      delta: `mAP@50 ${formatRatioPercent(evaluation.map50)}`,
+      tone: 'gold',
+    });
+  }
+
+  if (isFiniteNumber(evaluation.precision) || isFiniteNumber(evaluation.recall)) {
+    metrics.push({
+      label: 'Precision / recall',
+      value: formatRatioPercent(evaluation.precision),
+      delta: `recall ${formatRatioPercent(evaluation.recall)}`,
+      tone: 'sky',
+    });
+  }
+
+  return metrics.slice(0, 2);
 }
 
 function formatSelectiveOnnxEvaluationSummary(evaluation?: SelectiveOnnxQuantizationResult['evaluation']) {
@@ -2745,6 +3314,10 @@ function formatSelectiveOnnxEvaluationSummary(evaluation?: SelectiveOnnxQuantiza
   return `Full rebuilt model ran end-to-end: baseline ${baselineLatency}, quantized ${quantizedLatency}${latencyDelta ? ` (${latencyDelta})` : ''}; ${outputText}.`;
 }
 
+function isFiniteNumber(value?: number | null) {
+  return value !== null && value !== undefined && Number.isFinite(value);
+}
+
 function getSizeReductionPercent(baselineSize?: number | null, quantizedSize?: number | null) {
   if (!baselineSize || !quantizedSize || !Number.isFinite(baselineSize) || !Number.isFinite(quantizedSize) || baselineSize <= 0) {
     return null;
@@ -2768,6 +3341,32 @@ function formatSignedPercent(value?: number | null) {
 
   const sign = value > 0 ? '+' : '';
   return `${sign}${value.toFixed(1)}%`;
+}
+
+function formatRatioPercent(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'Not measured';
+  }
+
+  const normalized = Math.abs(value) <= 1 ? value * 100 : value;
+  return `${normalized.toFixed(1)}%`;
+}
+
+function formatOptionalInteger(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'Not measured';
+  }
+
+  return String(Math.round(value));
+}
+
+function truncateMiddle(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const side = Math.max(4, Math.floor((maxLength - 3) / 2));
+  return `${value.slice(0, side)}...${value.slice(-side)}`;
 }
 
 function formatCompactNumber(value?: number | null) {
