@@ -915,7 +915,7 @@ export function QuantizationPage(props: {
         targetLabel: selectedTarget.label,
         dataset: form.dataset,
         scheme: selectedBitOption?.scheme || form.scheme,
-        result,
+        result: result as any,
       });
       setStatus('complete');
       setProgress(100);

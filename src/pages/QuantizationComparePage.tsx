@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, Boxes, Gauge, GitCompareArrows, Layers3, RotateCcw } from 'lucide-react';
+import { Boxes, RotateCcw } from 'lucide-react';
 
 import { Panel } from '../components/Common';
 import {
@@ -32,8 +32,6 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
     [runs, selectedRunId],
   );
   const comparisonRows = useMemo(() => selectedRun ? getComparisonRows(selectedRun) : [], [selectedRun]);
-  const qualityRows = useMemo(() => selectedRun ? getQualityRows(selectedRun) : [], [selectedRun]);
-  const graphRows = useMemo(() => selectedRun ? getGraphRows(selectedRun) : [], [selectedRun]);
 
   if (!selectedRun) {
     return (
@@ -95,65 +93,9 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
         ))}
       </div>
 
-      <div className="section-grid two-col">
-        <Panel title="Before / after trend" icon={Activity} description="Each line connects the baseline value to the quantized value.">
-          <MetricLineChart rows={comparisonRows} />
-        </Panel>
 
-        <Panel title="Quality signals" icon={Gauge} description="Only measured dataset metrics are shown. Missing baseline quality is left explicit.">
-          <div className="data-list">
-            {qualityRows.map((row) => (
-              <div className="data-row" key={row.label}>
-                <span>{row.label}</span>
-                <strong title={row.title || row.value}>{row.value}</strong>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      </div>
 
-      <div className="section-grid two-col">
-        <Panel title="Graph change view" icon={GitCompareArrows} description="High-level ONNX graph before and after quantization.">
-          <div className="quant-graph-compare">
-            <GraphLane
-              title="Before quantization"
-              nodes={graphRows.before}
-              tone="before"
-            />
-            <GraphLane
-              title="After quantization"
-              nodes={graphRows.after}
-              tone="after"
-            />
-          </div>
-        </Panel>
 
-        <Panel title="Quantized operators" icon={Layers3} description="Nodes and operator families changed by the local quantization run.">
-          <div className="quant-op-cloud">
-            {getOperatorChips(selectedRun).map((chip) => (
-              <span className={chip.tone} key={chip.label}>{chip.label}</span>
-            ))}
-          </div>
-          <div className="data-list quant-artifact-list">
-            <div className="data-row">
-              <span>Selection</span>
-              <strong>{selectedRun.request?.selection?.label || 'Whole model'}</strong>
-            </div>
-            <div className="data-row">
-              <span>Baseline artifact</span>
-              <strong>{formatBytes(selectedRun.result.baselineSizeBytes) || 'Not measured'}</strong>
-            </div>
-            <div className="data-row">
-              <span>Quantized artifact</span>
-              <strong>{formatBytes(selectedRun.result.quantizedSizeBytes) || 'Not measured'}</strong>
-            </div>
-            <div className="data-row">
-              <span>Output path</span>
-              <strong className="path-value" title={selectedRun.result.outputPath || ''}>{selectedRun.result.outputPath || 'Not created'}</strong>
-            </div>
-          </div>
-        </Panel>
-      </div>
 
       <Panel title="Tradeoff line graph" icon={Boxes} description="Normalized score trend from baseline to quantized output.">
         <TradeoffLineGraph run={selectedRun} rows={comparisonRows} />
@@ -162,46 +104,7 @@ export function QuantizationComparePage(_props: { dashboard: DashboardState }) {
   );
 }
 
-function MetricLineChart(props: { rows: ComparisonRow[] }) {
-  const chart = buildLineChartSeries(props.rows);
-  return (
-    <div className="quant-line-chart">
-      <div className="quant-line-axis y">Normalized value</div>
-      <svg viewBox="0 0 720 300" role="img" aria-label="Before and after quantization line graph">
-        <defs>
-          <linearGradient id="quantLineGradient" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%" stopColor="#8fb0cf" />
-            <stop offset="100%" stopColor="#74e3c5" />
-          </linearGradient>
-        </defs>
-        {[0, 1, 2, 3, 4].map((line) => (
-          <line className="grid" x1="72" x2="668" y1={52 + line * 48} y2={52 + line * 48} key={`h-${line}`} />
-        ))}
-        <line className="axis" x1="148" x2="148" y1="42" y2="250" />
-        <line className="axis" x1="568" x2="568" y1="42" y2="250" />
-        <text className="tick" x="148" y="278" textAnchor="middle">Before</text>
-        <text className="tick" x="568" y="278" textAnchor="middle">After</text>
-        {chart.map((series) => (
-          <g key={series.label}>
-            <path className={`trend ${series.tone}`} d={`M 148 ${series.beforeY} C 272 ${series.beforeY}, 444 ${series.afterY}, 568 ${series.afterY}`} />
-            <circle className="point before" cx="148" cy={series.beforeY} r="6" />
-            <circle className={`point ${series.tone}`} cx="568" cy={series.afterY} r="7" />
-            <text className="series-label" x="590" y={series.afterY + 4}>{series.label}</text>
-          </g>
-        ))}
-      </svg>
-      <div className="quant-line-legend">
-        {props.rows.map((row) => (
-          <div key={row.label}>
-            <span className={row.tone} />
-            <strong>{row.label}</strong>
-            <small>{row.before} to {row.after} · {row.delta}</small>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+
 
 function TradeoffLineGraph(props: { run: QuantizationComparisonRun; rows: ComparisonRow[] }) {
   const latencyRow = props.rows.find((row) => row.label === 'Latency');
@@ -245,18 +148,7 @@ function TradeoffLineGraph(props: { run: QuantizationComparisonRun; rows: Compar
   );
 }
 
-function GraphLane(props: { title: string; nodes: string[]; tone: 'before' | 'after' }) {
-  return (
-    <div className={`quant-graph-lane ${props.tone}`}>
-      <strong>{props.title}</strong>
-      <div>
-        {props.nodes.map((node, index) => (
-          <span className="quant-graph-node" key={`${node}-${index}`}>{node}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
+
 
 type ComparisonRow = NonNullable<ReturnType<typeof createCompareRow>>;
 
@@ -276,7 +168,7 @@ function getComparisonRows(run: QuantizationComparisonRun) {
   const rows = [
     createCompareRow('Model size', sizeBefore, sizeAfter, formatBytes, true, 'sky'),
     createCompareRow('Latency', baselineLatency, quantizedLatency, formatMilliseconds, true, 'sea'),
-  ].filter(Boolean) as ReturnType<typeof createCompareRow>[];
+  ].filter(Boolean) as ComparisonRow[];
 
   if (baselineSpeed !== null || quantizedSpeed !== null) {
     const speedRow = createCompareRow('Tokens/sec', baselineSpeed, quantizedSpeed, formatCompactNumber, false, 'sea');
@@ -330,22 +222,7 @@ function createCompareRow(
   };
 }
 
-function buildLineChartSeries(rows: ComparisonRow[]) {
-  return rows.map((row) => {
-    const before = row.beforeValue ?? 0;
-    const after = row.afterValue ?? 0;
-    const max = Math.max(Math.abs(before), Math.abs(after), 1);
-    const beforeNormalized = clamp(Math.abs(before) / max, 0, 1);
-    const afterNormalized = clamp(Math.abs(after) / max, 0, 1);
 
-    return {
-      label: row.label,
-      tone: row.tone,
-      beforeY: 250 - beforeNormalized * 190,
-      afterY: 250 - afterNormalized * 190,
-    };
-  });
-}
 
 function getImprovementPercent(row: ComparisonRow, lowerIsBetter: boolean) {
   if (!isFiniteNumber(row.beforeValue) || !isFiniteNumber(row.afterValue) || row.beforeValue === 0) {
@@ -356,62 +233,11 @@ function getImprovementPercent(row: ComparisonRow, lowerIsBetter: boolean) {
   return lowerIsBetter ? -rawDelta : rawDelta;
 }
 
-function getQualityRows(run: QuantizationComparisonRun) {
-  const detail = getDetailResult(run);
-  const evaluation = run.result.evaluation;
-  const rows: Array<{ label: string; value: string; title?: string }> = [];
 
-  if (run.kind === 'onnx') {
-    rows.push({ label: 'Dataset', value: evaluation?.dataset || run.dataset || 'Not selected' });
-    rows.push({ label: 'Dataset status', value: evaluation?.datasetStatus || 'Not run' });
-    rows.push({ label: 'Images evaluated', value: formatOptionalInteger(evaluation?.imagesEvaluated) });
-    rows.push({ label: 'Baseline dataset quality', value: 'Not recorded yet' });
-    rows.push({ label: 'Quantized keypoint mAP50-95', value: formatRatioPercent(evaluation?.keypointMap5095) });
-    rows.push({ label: 'Quantized keypoint mAP50', value: formatRatioPercent(evaluation?.keypointMap50) });
-    rows.push({ label: 'Quantized box mAP50-95', value: formatRatioPercent(evaluation?.map5095) });
-    rows.push({ label: 'Quantized precision', value: formatRatioPercent(evaluation?.precision) });
-    if (evaluation?.datasetError) {
-      rows.push({ label: 'Dataset error', value: truncateMiddle(evaluation.datasetError, 56), title: evaluation.datasetError });
-    }
-    return rows;
-  }
 
-  rows.push({ label: 'Evaluation dataset', value: run.dataset || 'Not selected' });
-  rows.push({ label: 'Token agreement', value: formatRatioPercent(detail.generation?.tokenAgreement) });
-  rows.push({ label: 'Perplexity', value: formatCompactNumber(detail.perplexity?.value) });
-  rows.push({ label: 'Baseline tokens/sec', value: formatCompactNumber(detail.generation?.baseline?.tokensPerSecond) });
-  rows.push({ label: 'Quantized tokens/sec', value: formatCompactNumber(detail.generation?.quantized?.tokensPerSecond) });
-  return rows;
-}
 
-function getGraphRows(run: QuantizationComparisonRun) {
-  const selection = run.request?.selection?.label || 'ONNX graph';
-  const opTypes = run.result.opTypesQuantized?.slice(0, 4) || [];
-  const quantizedOps = opTypes.length > 0 ? opTypes.join(' / ') : 'supported ops';
 
-  if (run.kind !== 'onnx') {
-    return {
-      before: ['FP16 / FP32 weights', 'GGUF model', 'Generate'],
-      after: [run.scheme || 'Quantized weights', 'GGUF model', 'Generate'],
-    };
-  }
 
-  return {
-    before: ['Input', selection, 'Original ops', 'Output'],
-    after: ['Input', 'QuantizeLinear', quantizedOps, 'DequantizeLinear', 'Output'],
-  };
-}
-
-function getOperatorChips(run: QuantizationComparisonRun) {
-  const opTypes = run.result.opTypesQuantized || [];
-  const nodes = run.result.nodesQuantized || [];
-  const chips = [
-    ...opTypes.map((label) => ({ label, tone: 'op' })),
-    ...nodes.slice(0, Math.max(0, 12 - opTypes.length)).map((label) => ({ label, tone: 'node' })),
-  ];
-
-  return chips.length > 0 ? chips : [{ label: 'No operator list reported', tone: 'muted' }];
-}
 
 function getDetailResult(run: QuantizationComparisonRun): QuantizationComparisonRun['result'] {
   const runs = run.result.runs;
@@ -485,18 +311,7 @@ function formatSignedPercent(value?: number | null) {
   return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
 }
 
-function formatRatioPercent(value?: number | null) {
-  if (!isFiniteNumber(value)) {
-    return 'Not measured';
-  }
 
-  const normalized = Math.abs(value) <= 1 ? value * 100 : value;
-  return `${normalized.toFixed(1)}%`;
-}
-
-function formatOptionalInteger(value?: number | null) {
-  return isFiniteNumber(value) ? String(Math.round(value)) : 'Not measured';
-}
 
 function formatCompactNumber(value?: number | null) {
   if (!isFiniteNumber(value)) {
